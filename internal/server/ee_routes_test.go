@@ -27,6 +27,7 @@ func paidRoutes(id string) []routeCase {
 		{"DELETE /api/instances/{id}/files/content", "DELETE", files + "/content?path=a.xml&baseSha256=x", "", capFiles, license.FeatureConfigEdit},
 		{"GET /api/instances/{id}/files/history", "GET", files + "/history?path=a.xml", "", capFiles, license.FeatureConfigEdit},
 		{"GET /api/instances/{id}/files/backup", "GET", files + "/backup?path=a.xml&id=x", "", capFiles, license.FeatureConfigEdit},
+		{"GET /api/instances/{id}/files/search", "GET", files + "/search?q=ab", "", capFiles, license.FeatureConfigEdit},
 		{"POST /api/instances/{id}/files/restore", "POST", files + "/restore", `{"path":"a.xml","id":"x","baseSha256":""}`, capFiles, license.FeatureConfigEdit},
 	}
 }

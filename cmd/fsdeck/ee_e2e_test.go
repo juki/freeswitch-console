@@ -103,6 +103,12 @@ func TestEndToEndPaid(t *testing.T) {
 	if data, _ := os.ReadFile(filepath.Join(root, "vars.xml")); string(data) != f.Content {
 		t.Fatalf("restored file: %s", data)
 	}
+	var found conffs.SearchResult
+	c.get(p+"/files/search?q=LOCAL_IP", http.StatusOK, &found)
+	if len(found.Rows) != 1 || found.Rows[0].Path != "vars.xml" || found.Rows[0].Line != 2 || found.Truncated || !strings.HasPrefix(found.Rows[0].Text, "<X-PRE-PROCESS") {
+		t.Fatalf("search %+v", found)
+	}
+	c.get(p+"/files/search?q=x", http.StatusBadRequest, nil)
 	if _, err := os.Stat(filepath.Join(sk.dir, "backups", inst.ID)); err != nil {
 		t.Fatalf("backups not beside the data file: %v", err)
 	}
@@ -138,6 +144,10 @@ func TestEndToEndPaid(t *testing.T) {
 	c.get(p+"/files/history?path=vars.xml", http.StatusOK, &hist)
 	if len(hist.Rows) != 1 {
 		t.Fatalf("agent history %+v", hist)
+	}
+	c.get(p+"/files/search?q=include&case=1", http.StatusOK, &found)
+	if len(found.Rows) != 1 || found.Rows[0].Text != "<include/>" {
+		t.Fatalf("search through the agent %+v", found)
 	}
 
 	// An operator: hang up and rescan yes; console, admin operations, user
@@ -189,6 +199,7 @@ func TestEndToEndPaid(t *testing.T) {
 		{"DELETE", fp + "/content?path=vars.xml&baseSha256=x", nil},
 		{"GET", fp + "/history?path=vars.xml", nil},
 		{"GET", fp + "/backup?path=vars.xml&id=x", nil},
+		{"GET", fp + "/search?q=include", nil},
 		{"POST", fp + "/restore", map[string]string{"path": "vars.xml", "id": "x", "baseSha256": ""}},
 		{"GET", "/api/audit", nil},
 		{"POST", "/api/users", map[string]string{"username": "op3", "role": "viewer", "password": "operator-password"}},

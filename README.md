@@ -197,6 +197,9 @@ is overwritten, deleted or restored, its previous content is backed up (the
 last 50 versions per file, outside the conf directory: `backups/<instance
 id>/` beside the data file in local mode, `-backups` on the agent host).
 
+Search finds a literal text in every file the editor can open, at most 500
+matches from 5000 files within 5 seconds.
+
 Saving does not apply anything. Run `reloadxml` afterwards (and `reloadacl`
 for ACLs); changes to a SIP profile need a profile rescan or restart, and some
 modules need a reload. If `reloadxml` reports an error, restore the previous

@@ -268,6 +268,8 @@ func (s *Server) routes() {
 	s.handle(m, "DELETE /api/instances/{id}/channels/{uuid}", capOperate, "channel.hangup", s.handleHangup)
 	s.handle(m, "POST /api/instances/{id}/actions", capOperate, "action.*", s.handleAction)
 	s.handle(m, "POST /api/instances/{id}/console", capConsole, "console.run", s.handleConsole)
+	s.handle(m, "POST /api/instances/{id}/console/complete", capConsole, "console.complete", s.handleComplete)
+	s.handle(m, "GET /api/instances/{id}/console/commands", capConsole, "console.commands", s.handleCommands)
 
 	s.handle(m, "/api/", capRead, "", func(w http.ResponseWriter, _ *http.Request, _ user) {
 		writeError(w, http.StatusNotFound, "not found")

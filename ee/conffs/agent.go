@@ -63,6 +63,15 @@ func NewAgentHandler(store FileStore, token string) http.Handler {
 		res, err := store.Restore(r.Context(), req.Path, req.ID, req.BaseSHA256, req.User)
 		answer(w, res, err)
 	})
+	m.HandleFunc("GET /v1/search", func(w http.ResponseWriter, r *http.Request) {
+		q, opts, err := ParseSearch(r.URL.Query())
+		if err != nil {
+			WriteError(w, err)
+			return
+		}
+		res, err := store.Search(r.Context(), q, opts)
+		answer(w, res, err)
+	})
 	m.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusNotFound, errorBody{Error: "not found"})
 	})

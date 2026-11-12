@@ -43,6 +43,10 @@ type Local struct {
 	// in this process.
 	mu  sync.Mutex
 	now func() time.Time
+
+	// Search bounds, fields so tests can lower them.
+	searchFiles int
+	searchTime  time.Duration
 }
 
 // NewLocal serves the directory root and keeps backups under backups,
@@ -65,7 +69,7 @@ func NewLocal(root, backups string) (*Local, error) {
 	if within(backupsReal, rootReal) || within(rootReal, backupsReal) {
 		return nil, errors.New("the backup directory must not overlap the configuration directory")
 	}
-	return &Local{root: root, backups: backupsReal, now: time.Now}, nil
+	return &Local{root: root, backups: backupsReal, now: time.Now, searchFiles: maxSearchFiles, searchTime: searchTime}, nil
 }
 
 // within reports whether p is dir or below it.
@@ -455,4 +459,109 @@ func (l *Local) Restore(ctx context.Context, p, id, baseSHA256, user string) (Wr
 		return Written{}, err
 	}
 	return l.Write(ctx, b.Path, b.Content, baseSHA256, user)
+}
+
+// Search looks for query in every file Read would open: the allowed types,
+// at most 1 MiB, UTF-8. Others are skipped. The walk stays inside the root,
+// does not enter linked directories (a link may loop) and treats a linked
+// file as Read does.
+func (l *Local) Search(ctx context.Context, query string, opts SearchOptions) (SearchResult, error) {
+	if opts.Limit == 0 {
+		opts.Limit = DefaultSearchLimit
+	}
+	q, o, err := ParseSearch(opts.values(query))
+	if err != nil {
+		return SearchResult{}, err
+	}
+	r, err := l.open()
+	if err != nil {
+		return SearchResult{}, err
+	}
+	defer r.Close()
+	deadline := time.Now().Add(l.searchTime)
+	expired := func() bool { return ctx.Err() != nil || time.Now().After(deadline) }
+
+	files, cut := l.searchable(r, expired)
+	res := SearchResult{Rows: []Match{}, Truncated: cut}
+	needle := q
+	if !o.CaseSensitive {
+		needle = strings.ToLower(q)
+	}
+	for _, p := range files {
+		if expired() {
+			res.Truncated = true
+			break
+		}
+		// One read: a file that changes meanwhile is searched as read.
+		data, _, err := readFile(r, p, true)
+		if err != nil {
+			continue
+		}
+		for i, line := range strings.Split(string(data), "\n") {
+			hay := line
+			if !o.CaseSensitive {
+				// ToLower maps rune by rune, so rune positions still match.
+				hay = strings.ToLower(line)
+			}
+			at := strings.Index(hay, needle)
+			if at < 0 {
+				continue
+			}
+			if len(res.Rows) == o.Limit {
+				res.Truncated = true
+				return res, nil
+			}
+			res.Rows = append(res.Rows, Match{Path: p, Line: i + 1, Text: excerpt(line, utf8.RuneCountInString(hay[:at]))})
+		}
+	}
+	return res, nil
+}
+
+// searchable lists the files a search reads, sorted by path, at most
+// l.searchFiles of them; cut is true when it stopped early.
+func (l *Local) searchable(r *os.Root, expired func() bool) (files []string, cut bool) {
+	defer func() { slices.Sort(files) }()
+	dirs := []string{"."}
+	for len(dirs) > 0 {
+		d := dirs[0]
+		dirs = dirs[1:]
+		f, err := r.Open(d)
+		if err != nil {
+			continue
+		}
+		for {
+			// Batches keep a huge directory from holding the walk past
+			// its time.
+			items, err := f.ReadDir(512)
+			for _, it := range items {
+				name := it.Name()
+				if strings.HasPrefix(name, tmpPrefix) {
+					continue
+				}
+				p := path.Join(d, name)
+				switch {
+				case it.IsDir():
+					dirs = append(dirs, p)
+				case it.Type().IsRegular() || it.Type()&fs.ModeSymlink != 0:
+					if _, err := CleanPath(p, true); err != nil {
+						continue
+					}
+					if len(files) == l.searchFiles {
+						f.Close()
+						return files, true
+					}
+					files = append(files, p)
+				}
+			}
+			if err != nil || len(items) == 0 {
+				break
+			}
+			if expired() {
+				f.Close()
+				return files, true
+			}
+		}
+		f.Close()
+	}
+	return files, false
 }

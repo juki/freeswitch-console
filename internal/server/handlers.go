@@ -291,6 +291,51 @@ func (s *Server) handleConsole(w http.ResponseWriter, r *http.Request, u user) {
 	writeJSON(w, http.StatusOK, map[string]string{"output": out})
 }
 
+// handleComplete answers a Tab in the console. It runs on every key press,
+// so it is not audited.
+func (s *Server) handleComplete(w http.ResponseWriter, r *http.Request, _ user) {
+	inst := s.lookup(w, r)
+	if inst == nil {
+		return
+	}
+	var req struct {
+		Line string `json:"line"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if err := fsapi.CheckCompleteLine(req.Line); err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	if !ready(w, inst) {
+		return
+	}
+	ctx, cancel := eslContext(r, eslTimeout)
+	defer cancel()
+	c, err := fsapi.Complete(ctx, inst.sw, req.Line)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, c)
+}
+
+func (s *Server) handleCommands(w http.ResponseWriter, r *http.Request, _ user) {
+	inst := s.connected(w, r)
+	if inst == nil {
+		return
+	}
+	ctx, cancel := eslContext(r, eslTimeout)
+	defer cancel()
+	rows, err := fsapi.APICommands(ctx, inst.sw)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"rows": rows})
+}
+
 func writeOutput(w http.ResponseWriter) func(string, error) {
 	return func(out string, err error) {
 		if err != nil {

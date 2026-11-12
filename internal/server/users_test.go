@@ -230,6 +230,8 @@ func routeTable(id string) []routeCase {
 		{"DELETE /api/instances/{id}/channels/{uuid}", "DELETE", p + "/channels/abc-123", "", capOperate, ""},
 		{"POST /api/instances/{id}/actions", "POST", p + "/actions", `{"action":"reloadxml"}`, capOperate, ""},
 		{"POST /api/instances/{id}/console", "POST", p + "/console", `{"command":"status"}`, capConsole, ""},
+		{"POST /api/instances/{id}/console/complete", "POST", p + "/console/complete", `{"line":"show ch"}`, capConsole, ""},
+		{"GET /api/instances/{id}/console/commands", "GET", p + "/console/commands", "", capConsole, ""},
 		{"POST /api/instances", "POST", "/api/instances", `{"name":"x","host":"h","port":1,"password":"p"}`, capInstances, ""},
 		{"PUT /api/instances/{id}", "PUT", unknownInstance, `{"name":"x","host":"h","port":1,"password":""}`, capInstances, ""},
 		{"DELETE /api/instances/{id}", "DELETE", unknownInstance, "", capInstances, ""},

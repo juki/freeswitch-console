@@ -16,10 +16,14 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"path"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 const (
@@ -89,6 +93,100 @@ type FileStore interface {
 	History(ctx context.Context, path string) ([]Backup, error)
 	Backup(ctx context.Context, path, id string) (BackupContent, error)
 	Restore(ctx context.Context, path, id, baseSHA256, user string) (Written, error)
+	Search(ctx context.Context, query string, opts SearchOptions) (SearchResult, error)
+}
+
+// Search bounds.
+const (
+	DefaultSearchLimit = 100
+	MaxSearchLimit     = 500
+	maxSearchFiles     = 5000
+	searchTime         = 5 * time.Second
+	maxMatchText       = 300 // characters of a matching line
+)
+
+// SearchOptions shape a search; a Limit of 0 is DefaultSearchLimit.
+type SearchOptions struct {
+	CaseSensitive bool
+	Limit         int
+}
+
+// Match is one line containing the query.
+type Match struct {
+	Path string `json:"path"`
+	Line int    `json:"line"` // 1-based
+	Text string `json:"text"` // trimmed, at most 300 characters
+}
+
+// SearchResult holds the matches by path, then line. Truncated is set when
+// there are more matches than the limit or a bound on files or time cut the
+// search short.
+type SearchResult struct {
+	Rows      []Match `json:"rows"`
+	Truncated bool    `json:"truncated"`
+}
+
+// ParseSearch reads q, case and limit of a search request: q is a literal
+// of 2 to 200 characters on one line, case 0 or 1, limit at least 1 and
+// capped at MaxSearchLimit.
+func ParseSearch(v url.Values) (string, SearchOptions, error) {
+	q := v.Get("q")
+	if n := utf8.RuneCountInString(q); n < 2 || n > 200 || strings.ContainsAny(q, "\r\n") {
+		return "", SearchOptions{}, invalid("q must be 2 to 200 characters on one line")
+	}
+	var opts SearchOptions
+	switch v.Get("case") {
+	case "", "0":
+	case "1":
+		opts.CaseSensitive = true
+	default:
+		return "", SearchOptions{}, invalid("case must be 0 or 1")
+	}
+	opts.Limit = DefaultSearchLimit
+	if l := v.Get("limit"); l != "" {
+		n, err := strconv.Atoi(l)
+		if err != nil || n < 1 {
+			return "", SearchOptions{}, invalid("limit must be a positive number")
+		}
+		opts.Limit = min(n, MaxSearchLimit)
+	}
+	return q, opts, nil
+}
+
+func (o SearchOptions) values(q string) url.Values {
+	v := url.Values{"q": {q}, "case": {"0"}, "limit": {strconv.Itoa(o.Limit)}}
+	if o.CaseSensitive {
+		v.Set("case", "1")
+	}
+	return v
+}
+
+// excerpt is line trimmed and, when longer than maxMatchText characters,
+// cut to a window around the match at rune index at, marked with "…".
+func excerpt(line string, at int) string {
+	r := []rune(line)
+	start, end := 0, len(r)
+	for start < end && unicode.IsSpace(r[start]) {
+		start++
+	}
+	for end > start && unicode.IsSpace(r[end-1]) {
+		end--
+	}
+	r, at = r[start:end], max(0, at-start)
+	if len(r) <= maxMatchText {
+		return string(r)
+	}
+	from := max(0, at-maxMatchText/3)
+	to := min(len(r), from+maxMatchText)
+	from = to - maxMatchText
+	out := append([]rune(nil), r[from:to]...)
+	if from > 0 {
+		out[0] = '…'
+	}
+	if to < len(r) {
+		out[len(out)-1] = '…'
+	}
+	return string(out)
 }
 
 var (

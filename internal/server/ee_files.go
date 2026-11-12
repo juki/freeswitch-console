@@ -34,6 +34,7 @@ func (s *Server) registerFiles(m *http.ServeMux) {
 	s.handlePaid(m, "GET "+p+"/history", capFiles, f, "config.history", s.handleFileHistory)
 	s.handlePaid(m, "GET "+p+"/backup", capFiles, f, "config.backup", s.handleFileBackup)
 	s.handlePaid(m, "POST "+p+"/restore", capFiles, f, "config.restore", s.handleFileRestore)
+	s.handlePaid(m, "GET "+p+"/search", capFiles, f, "config.search", s.handleFileSearch)
 }
 
 // locals holds one Local per configuration and backup directory, so writers
@@ -232,4 +233,25 @@ func (s *Server) handleFileDelete(w http.ResponseWriter, r *http.Request, u user
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleFileSearch is not audited when allowed: it only reads.
+func (s *Server) handleFileSearch(w http.ResponseWriter, r *http.Request, _ user) {
+	q, opts, err := conffs.ParseSearch(r.URL.Query())
+	if err != nil {
+		conffs.WriteError(w, err)
+		return
+	}
+	fs, _ := s.fileStore(w, r)
+	if fs == nil {
+		return
+	}
+	ctx, cancel := filesContext(r)
+	defer cancel()
+	res, err := fs.Search(ctx, q, opts)
+	if err != nil {
+		conffs.WriteError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
 }

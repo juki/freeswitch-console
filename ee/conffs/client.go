@@ -160,3 +160,15 @@ func (c *Client) Restore(ctx context.Context, path, id, baseSHA256, user string)
 	var res Written
 	return res, c.do(ctx, "POST", "/v1/files/restore", nil, agentRestore{Path: path, ID: id, BaseSHA256: baseSHA256, User: user}, &res)
 }
+
+func (c *Client) Search(ctx context.Context, query string, opts SearchOptions) (SearchResult, error) {
+	if opts.Limit == 0 {
+		opts.Limit = DefaultSearchLimit
+	}
+	var res SearchResult
+	err := c.do(ctx, "GET", "/v1/search", opts.values(query), nil, &res)
+	if res.Rows == nil {
+		res.Rows = []Match{}
+	}
+	return res, err
+}

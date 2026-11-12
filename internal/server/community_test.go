@@ -37,6 +37,7 @@ func TestCommunityBuild(t *testing.T) {
 		{"DELETE", p + "/files/content?path=a.xml&baseSha256=x", ""},
 		{"GET", p + "/files/history?path=a.xml", ""},
 		{"GET", p + "/files/backup?path=a.xml&id=x", ""},
+		{"GET", p + "/files/search?q=ab", ""},
 		{"POST", p + "/files/restore", `{"path":"a.xml","id":"x","baseSha256":""}`},
 	} {
 		expect(t, h.do(rq[0], rq[1], admin, rq[2]), 404, `{"error":"not found"}`)

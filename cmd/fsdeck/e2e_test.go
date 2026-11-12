@@ -42,7 +42,11 @@ var cannedAPI = map[string]string{
 	"xml_locate configuration configuration name missing.conf": "can't find anything\n",
 	"uuid_kill abc-123": "+OK\n",
 	"fsctl loglevel 6":  "+OK log level: INFO [6]\n",
-	"status":            "UP 0 years, 1 day\n",
+	// As FreeSWITCH 1.11.3 answers them.
+	"console_complete_xml c=7;show chx":         "<?xml version=\"1.0\"?>\n<complete>\n  <match>channels</match>\n  <match>chat</match>\n  <write length=\"2\">cha</write>\n</complete>\n\n",
+	"console_complete_xml c=14;sofia profile x": "<?xml version=\"1.0\"?>\n<complete>\n  <match>external</match>\n  <match>internal</match>\n  <match>internal</match>\n  <write length=\"0\"></write>\n</complete>\n",
+	"show api as json":                          `{"row_count":2,"rows":[{"name":"status","description":"Show current status","syntax":"","ikey":"mod_commands"},{"name":"sofia","description":"Sofia Controls","syntax":"<cmd> <args>","ikey":"mod_sofia"}]}` + "\n",
+	"status":                                    "UP 0 years, 1 day\n",
 }
 
 // fakeFreeSWITCH speaks enough inbound ESL for the whole stack to run:
@@ -446,6 +450,24 @@ func TestEndToEnd(t *testing.T) {
 			t.Fatalf("audit log lacks %s:\n%s", want, auditData)
 		}
 	}
+	// Console completion and the command list.
+	for line, want := range map[string]string{
+		"show ch":        `{"matches":["channels","chat"],"replace":2,"text":"cha"}`,
+		"sofia profile ": `{"matches":["external","internal"],"replace":0,"text":""}`,
+	} {
+		code, body := c.do("POST", p+"/console/complete", map[string]string{"line": line})
+		if code != http.StatusOK || strings.TrimSpace(string(body)) != want {
+			t.Fatalf("complete %q: %d %s", line, code, body)
+		}
+	}
+	var commands struct {
+		Rows []struct{ Name, Description, Syntax string }
+	}
+	c.get(p+"/console/commands", http.StatusOK, &commands)
+	if len(commands.Rows) != 2 || commands.Rows[0].Name != "sofia" || commands.Rows[0].Syntax != "<cmd> <args>" {
+		t.Fatalf("commands %+v", commands)
+	}
+
 	if body := c.get("/api/license", http.StatusOK, nil); strings.TrimSpace(string(body)) != `{"edition":"community","status":"none","licensee":"","plan":"","features":[],"expires":null}` {
 		t.Fatalf("licence: %s", body)
 	}

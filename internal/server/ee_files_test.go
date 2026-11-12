@@ -259,3 +259,47 @@ func TestFilesAgent(t *testing.T) {
 		t.Fatalf("dead agent %s", r.body)
 	}
 }
+
+func TestFilesSearch(t *testing.T) {
+	var auditPath string
+	h := newHarness(t, licensed(t), withBackups(t), withAudit(t, &auditPath))
+	admin := h.login("admin", adminPW)
+	p := "/api/instances/" + h.id + "/files/search"
+	expect(t, h.do("GET", p+"?q=password", admin, ""), 409, `{"error":"config access is not set up for this instance"}`)
+	root := confDir(t)
+	expect(t, h.do("PUT", "/api/instances/"+h.id, admin, `{"name":"fs01","host":"10.0.0.5","port":8021,"password":"","configMode":"local","configPath":"`+root+`"}`), 200, "")
+
+	expect(t, h.do("GET", p+"?q=DEFAULT_password", admin, ""), 200, `{"rows":[{"path":"vars.xml","line":1,"text":"\u003cinclude\u003e\u003cX-PRE-PROCESS cmd=\"set\" data=\"default_password=1234\"/\u003e\u003c/include\u003e"}],"truncated":false}`)
+	expect(t, h.do("GET", p+"?q=DEFAULT_password&case=1", admin, ""), 200, `{"rows":[],"truncated":false}`)
+	expect(t, h.do("GET", p+"?q=name&limit=1", admin, ""), 200, `{"rows":[{"path":"sip_profiles/internal.xml","line":1,"text":"\u003cprofile name=\"internal\"/\u003e"}],"truncated":false}`)
+	expect(t, h.do("GET", p+"?q=e&limit=1", admin, ""), 400, `{"error":"q must be 2 to 200 characters on one line"}`)
+	for q, msg := range map[string]string{
+		"":                 "q must be 2 to 200 characters on one line",
+		"?q=a%0Ab":         "q must be 2 to 200 characters on one line",
+		"?q=ab&case=yes":   "case must be 0 or 1",
+		"?q=ab&limit=0":    "limit must be a positive number",
+		"?q=ab&limit=many": "limit must be a positive number",
+	} {
+		expect(t, h.do("GET", p+q, admin, ""), 400, `{"error":"`+msg+`"}`)
+	}
+	expect(t, h.do("GET", "/api/instances/0000000000000000/files/search?q=ab", admin, ""), 404, `{"error":"instance not found"}`)
+
+	// Through the agent.
+	l, _ := conffs.NewLocal(root, filepath.Join(t.TempDir(), "agent-backups"))
+	agent := httptest.NewServer(conffs.NewAgentHandler(l, agentToken))
+	defer agent.Close()
+	expect(t, h.do("PUT", "/api/instances/"+h.id, admin, `{"name":"fs01","host":"10.0.0.5","port":8021,"password":"","configMode":"agent","agentURL":"`+agent.URL+`","agentToken":"`+agentToken+`"}`), 200, "")
+	r := h.do("GET", p+"?q=profile", admin, "")
+	expect(t, r, 200, `{"rows":[{"path":"sip_profiles/internal.xml","line":1,"text":"\u003cprofile name=\"internal\"/\u003e"}],"truncated":false}`)
+	agent.Close()
+	expect(t, h.do("GET", p+"?q=profile", admin, ""), 502, "")
+
+	// Viewer: 403, audited as config.search; the admin's searches are not.
+	expect(t, h.do("GET", p+"?q=profile", h.login("viewer", viewerPW), ""), 403, "")
+	data := string(must(t, auditPath))
+	if !strings.Contains(data, `"user":"viewer","ip":"127.0.0.1","action":"config.search","target":"","detail":"GET `+p+`","result":"denied"`) || strings.Contains(data, `"user":"admin","ip":"127.0.0.1","action":"config.search"`) {
+		t.Fatalf("audit %s", data)
+	}
+	h.srv.cfg.License = license.Key{}
+	expect(t, h.do("GET", p+"?q=profile", admin, ""), 402, `{"error":"this feature needs a licence","feature":"config-edit"}`)
+}
