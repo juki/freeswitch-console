@@ -3,7 +3,7 @@
 import { api, instPath, isAbort } from '../api.js';
 import { h, DASH, fmtInt, fmtPct, fmtUptime, sinceText } from '../dom.js';
 import { icon } from '../icons.js';
-import { confirmDialog, emptyState, iconButton, loading, openModal, pill, tag, toast, toastError } from '../ui.js';
+import { confirmDialog, connectionHint, emptyState, iconButton, loading, openModal, pill, tag, toast, toastError } from '../ui.js';
 
 export function address(inst) {
   const host = String(inst.host || '');
@@ -61,7 +61,9 @@ export function mountFleet({ scope, root, ctx }) {
         pill(m.ok ? 'Connected' : 'Disconnected', m.ok ? 'ok' : 'bad')),
       m.ok
         ? h('div', { class: 'inst-stats' }, stat('Sessions', m.sessions), stat('Idle CPU', m.idle), stat('Uptime', m.uptime))
-        : h('div', { class: 'inst-error' }, icon('alert'), h('span', { text: m.error || 'Connecting…' })),
+        : h('div', { class: 'inst-error' }, icon('alert'), h('span', null,
+          connectionHint(m.error) || m.error || 'Connecting…',
+          connectionHint(m.error) ? h('span', { class: 'raw', text: m.error }) : null)),
       h('div', { class: 'inst-foot' },
         m.version ? tag(m.version) : null,
         m.hostname ? h('span', { text: m.hostname }) : null,

@@ -4,7 +4,7 @@
 import { api, instPath, isAbort, rowsOf } from '../api.js';
 import { h, DASH, fmtInt, fmtPct, fmtUptime } from '../dom.js';
 import { icon } from '../icons.js';
-import { errorState, emptyState, kv, meter, panel, pill, sparkline, stateTone } from '../ui.js';
+import { connectionHint, errorState, emptyState, kv, meter, panel, pill, sparkline, stateTone } from '../ui.js';
 
 const GW_DOWN = /^(FAIL|DOWN|TIMEOUT|EXPIRED|UNREGED)/i;
 
@@ -85,7 +85,7 @@ export function mountOverview({ id, scope, root, setState }) {
     content.hidden = true;
     notice.replaceChildren(h('div', { class: 'panel' }, emptyState({
       icon: 'plug', tone: 'calm', title: 'Not connected',
-      text: 'fsdeck has no Event Socket connection to this FreeSWITCH.' + (st && st.lastError ? ' Last error: ' + st.lastError : ''),
+      text: (connectionHint(st && st.lastError) || 'fsdeck has no Event Socket connection to this FreeSWITCH.') + (st && st.lastError ? ' (' + st.lastError + ')' : ''),
     })));
   }
 

@@ -3,7 +3,7 @@
 import { api, instPath, isAbort, rowsOf } from '../api.js';
 import { h, cellText } from '../dom.js';
 import { icon } from '../icons.js';
-import { copyText, dataTable, emptyState, errorState, loading, panel, rowMatches, searchBox, segmented, tableHost, tag, toast } from '../ui.js';
+import { copyText, dataTable, emptyState, errorState, loading, panel, rowMatches, searchBox, segmented, sortState, tableHost, tag, toast } from '../ui.js';
 import { renderXML } from '../xml.js';
 
 const SUBS = {
@@ -117,6 +117,7 @@ function mountVars({ id, scope, root }) {
     render();
   });
   const p = panel({ title: 'Global variables', flush: true, actions: search.el });
+  const sort = sortState(() => render());
   const host = tableHost();
   p.body.append(host.el);
   root.append(p.el);
@@ -127,10 +128,11 @@ function mountVars({ id, scope, root }) {
     p.setCount(query ? shown.length + ' of ' + rows.length : rows.length);
     host.show(dataTable({
       rows: shown,
+      sort,
       empty: emptyState({ icon: 'search', title: query ? 'No match' : 'No global variables' }),
       columns: [
-        { label: 'Name', mono: true, render: (r) => h('span', { class: 'cell-strong', text: cellText(r.name) }) },
-        { label: 'Value', mono: true, wrap: true, render: (r) => (r.value === '********' ? h('span', { class: 'masked', text: 'masked' }) : cellText(r.value)) },
+        { label: 'Name', mono: true, shrink: true, sortBy: (r) => cellText(r.name), render: (r) => h('span', { class: 'cell-strong', text: cellText(r.name) }) },
+        { label: 'Value', mono: true, wrap: true, sortBy: (r) => cellText(r.value), render: (r) => (r.value === '********' ? h('span', { class: 'masked', text: 'masked' }) : cellText(r.value)) },
       ],
     }));
   }
@@ -153,6 +155,7 @@ function mountModules({ id, scope, root }) {
     render();
   });
   const p = panel({ title: 'Modules', flush: true, actions: search.el });
+  const sort = sortState(() => render());
   const host = tableHost();
   p.body.append(h('div', { class: 'panel-body' }, facets), host.el);
   root.append(p.el);
@@ -171,12 +174,13 @@ function mountModules({ id, scope, root }) {
     p.setCount(shown.length === rows.length ? rows.length : shown.length + ' of ' + rows.length);
     host.show(dataTable({
       rows: shown,
+      sort,
       empty: emptyState({ icon: 'search', title: 'No match' }),
       columns: [
-        { label: 'Name', mono: true, render: (r) => h('span', { class: 'cell-strong', text: cellText(r.name) }) },
-        { label: 'Type', render: (r) => tag(cellText(r.type)) },
-        { label: 'Provided by', mono: true, key: 'ikey' },
-        { label: 'File', mono: true, render: (r) => h('span', { class: 'faint', title: cellText(r.filename), text: cellText(r.filename).split('/').pop() }) },
+        { label: 'Name', mono: true, sortBy: (r) => cellText(r.name), render: (r) => h('span', { class: 'cell-strong', text: cellText(r.name) }) },
+        { label: 'Type', sortBy: (r) => cellText(r.type), render: (r) => tag(cellText(r.type)) },
+        { label: 'Provided by', mono: true, key: 'ikey', sortBy: (r) => cellText(r.ikey) },
+        { label: 'File', mono: true, sortBy: (r) => cellText(r.filename), render: (r) => h('span', { class: 'faint', title: cellText(r.filename), text: cellText(r.filename).split('/').pop() }) },
       ],
     }));
   }

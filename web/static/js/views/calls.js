@@ -3,7 +3,7 @@
 import { api, instPath, isAbort, rowsOf } from '../api.js';
 import { h, DASH, cellText, fmtDuration } from '../dom.js';
 import { icon } from '../icons.js';
-import { clip, confirmDialog, dataTable, detailBody, emptyState, iconButton, openDrawer, panel, rowMatches, searchBox, segmented, statePill, tableHost, tag, toast, toastError } from '../ui.js';
+import { clip, confirmDialog, dataTable, detailBody, emptyState, iconButton, openDrawer, panel, rowMatches, searchBox, segmented, sortState, statePill, tableHost, tag, toast, toastError } from '../ui.js';
 
 function party(name, num) {
   const n = cellText(name);
@@ -40,6 +40,7 @@ export function mountCalls({ id, scope, root, isAdmin }) {
   let selected = null;
   let lastError = null;
   let signature = '';
+  const sorts = { channels: sortState(() => render()), calls: sortState(() => render()) };
 
   const seg = segmented([{ key: 'channels', label: 'Channels' }, { key: 'calls', label: 'Bridged calls' }], mode, (k) => {
     mode = k;
@@ -91,25 +92,26 @@ export function mountCalls({ id, scope, root, isAdmin }) {
   const hangupCol = isAdmin ? { label: '', right: true, render: (r) => iconButton('hangup', 'Hang up', () => hangup(r), 'btn-ghost btn-danger') } : null;
 
   const channelCols = [
-    { label: 'Dir', render: (r) => direction(r.direction) },
-    { label: 'Caller', render: (r) => party(r.cid_name, r.cid_num) },
-    { label: 'Destination', mono: true, render: (r) => clip(r.dest) },
-    { label: 'State', render: (r) => statePill(r.callstate) },
-    { label: 'Application', mono: true, render: (r) => (r.application ? clip(cellText(r.application) + (r.application_data ? ' ' + cellText(r.application_data) : ''), 'medium') : '') },
-    { label: 'Codec', render: (r) => codec(r.read_codec, r.read_rate) },
-    { label: 'Duration', right: true, render: (r) => duration(r.created_epoch) },
-    { label: 'Channel', mono: true, render: (r) => clip(r.name, 'faint narrow') },
+    { label: 'Dir', sortBy: (r) => cellText(r.direction), render: (r) => direction(r.direction) },
+    { label: 'Caller', sortBy: (r) => cellText(r.cid_name) || cellText(r.cid_num), render: (r) => party(r.cid_name, r.cid_num) },
+    { label: 'Destination', mono: true, sortBy: (r) => cellText(r.dest), render: (r) => clip(r.dest) },
+    { label: 'State', sortBy: (r) => cellText(r.callstate), render: (r) => statePill(r.callstate) },
+    { label: 'Application', mono: true, sortBy: (r) => cellText(r.application), render: (r) => (r.application ? clip(cellText(r.application) + (r.application_data ? ' ' + cellText(r.application_data) : ''), 'medium') : '') },
+    { label: 'Codec', sortBy: (r) => cellText(r.read_codec), render: (r) => codec(r.read_codec, r.read_rate) },
+    // a later start is a shorter call, hence the sign
+    { label: 'Duration', right: true, sortBy: (r) => -(Number(r.created_epoch) || 0), render: (r) => duration(r.created_epoch) },
+    { label: 'Channel', mono: true, sortBy: (r) => cellText(r.name), render: (r) => clip(r.name, 'faint narrow') },
     hangupCol,
   ].filter(Boolean);
 
   const callCols = [
-    { label: 'From', render: (r) => party(r.cid_name, r.cid_num) },
-    { label: 'To', render: (r) => party(r.b_callee_name || r.dest, r.b_callee_num || r.dest) },
-    { label: 'State', render: (r) => statePill(r.callstate) },
-    { label: 'A leg', mono: true, render: (r) => clip(r.name, 'faint medium') },
-    { label: 'B leg', mono: true, render: (r) => clip(r.b_name, 'faint medium') },
-    { label: 'Codec', render: (r) => codec(r.read_codec, r.read_rate) },
-    { label: 'Duration', right: true, render: (r) => duration(r.call_created_epoch || r.created_epoch) },
+    { label: 'From', sortBy: (r) => cellText(r.cid_name) || cellText(r.cid_num), render: (r) => party(r.cid_name, r.cid_num) },
+    { label: 'To', sortBy: (r) => cellText(r.b_callee_num || r.dest), render: (r) => party(r.b_callee_name || r.dest, r.b_callee_num || r.dest) },
+    { label: 'State', sortBy: (r) => cellText(r.callstate), render: (r) => statePill(r.callstate) },
+    { label: 'A leg', mono: true, sortBy: (r) => cellText(r.name), render: (r) => clip(r.name, 'faint medium') },
+    { label: 'B leg', mono: true, sortBy: (r) => cellText(r.b_name), render: (r) => clip(r.b_name, 'faint medium') },
+    { label: 'Codec', sortBy: (r) => cellText(r.read_codec), render: (r) => codec(r.read_codec, r.read_rate) },
+    { label: 'Duration', right: true, sortBy: (r) => -(Number(r.call_created_epoch || r.created_epoch) || 0), render: (r) => duration(r.call_created_epoch || r.created_epoch) },
     hangupCol,
   ].filter(Boolean);
 
@@ -126,7 +128,8 @@ export function mountCalls({ id, scope, root, isAdmin }) {
     const all = mode === 'channels' ? channels : bridged;
     const rows = all.filter((r) => rowMatches(r, query));
     // An unchanged table is left alone so hover and focus survive the refresh.
-    const sig = JSON.stringify([mode, query, selected, rows]);
+    const sort = sorts[mode];
+    const sig = JSON.stringify([mode, query, selected, sort.col, sort.dir, rows]);
     if (sig === signature) return;
     signature = sig;
     p.el.querySelector('.panel-title').textContent = mode === 'channels' ? 'Channels' : 'Bridged calls';
@@ -134,6 +137,7 @@ export function mountCalls({ id, scope, root, isAdmin }) {
     host.show(dataTable({
       rows,
       columns: mode === 'channels' ? channelCols : callCols,
+      sort,
       keyOf: (r) => cellText(r.uuid),
       selected,
       onRow: details,

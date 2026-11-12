@@ -23,7 +23,10 @@ logs and a command console in the browser.
 | Logs | live log tail with level and text filters | `log <level>` |
 | Console | any API command, like `fs_cli` | `api <command>` |
 
-Light and dark themes; the toggle in the sidebar cycles system, light, dark.
+Tables sort by any column and filter as you type. Light and dark themes; the
+toggle in the sidebar cycles system, light, dark. When an instance cannot
+connect, the card says why in plain words (wrong password, ACL, nothing
+listening) next to the raw error.
 
 Passwords, DSNs and similar values are masked in the configuration and
 variable views.

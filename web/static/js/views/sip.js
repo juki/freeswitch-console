@@ -3,7 +3,7 @@
 import { api, instPath, isAbort, rowsOf } from '../api.js';
 import { h, DASH, cellText, fmtDuration, fmtInt } from '../dom.js';
 import { icon } from '../icons.js';
-import { clip, dataTable, detailBody, emptyState, openDrawer, panel, rowMatches, searchBox, statePill, tableHost, tag, toast, toastError } from '../ui.js';
+import { clip, dataTable, detailBody, emptyState, openDrawer, panel, rowMatches, searchBox, sortState, statePill, tableHost, tag, toast, toastError } from '../ui.js';
 
 // "sip:mod_sofia@10.0.4.21:5060;transport=ws" -> "10.0.4.21:5060"
 function listenAddress(data) {
@@ -38,8 +38,13 @@ export function mountSip({ id, scope, root, isAdmin }) {
   regs.body.append(rHost.el);
   root.append(profiles.el, gateways.el, regs.el);
 
+  let sofiaRows = null;
+  let gwRows = null;
   let regRows = null;
   let selected = null;
+  const pSort = sortState(() => renderProfiles());
+  const gSort = sortState(() => renderGateways());
+  const rSort = sortState(() => renderRegs());
 
   function showDetails(title, subtitle, row, primary) {
     const d = openDrawer({ title, subtitle, onClose: () => { selected = null; } });
@@ -56,18 +61,21 @@ export function mountSip({ id, scope, root, isAdmin }) {
     }
   }
 
-  function renderProfiles(list) {
+  function renderProfiles() {
+    if (!sofiaRows) return;
+    const list = sofiaRows;
     const rows = list.filter((r) => r.type === 'profile');
     profiles.setCount(rows.length);
     pHost.show(dataTable({
       rows,
+      sort: pSort,
       empty: emptyState({ icon: 'radio', title: 'No SIP profiles', text: 'mod_sofia reports no profiles.' }),
       columns: [
-        { label: 'Profile', render: (r) => h('span', { class: 'cell-strong', text: cellText(r.name) }) },
-        { label: 'Listens on', mono: true, render: (r) => listenAddress(r.data) },
-        { label: 'Transport', render: (r) => tag(parseProfileState(r.state).transport) },
-        { label: 'State', render: (r) => statePill(parseProfileState(r.state).state) },
-        { label: 'In use', right: true, render: (r) => h('span', { class: 'num', text: parseProfileState(r.state).inUse || DASH }) },
+        { label: 'Profile', sortBy: (r) => cellText(r.name), render: (r) => h('span', { class: 'cell-strong', text: cellText(r.name) }) },
+        { label: 'Listens on', mono: true, sortBy: (r) => listenAddress(r.data), render: (r) => listenAddress(r.data) },
+        { label: 'Transport', sortBy: (r) => parseProfileState(r.state).transport, render: (r) => tag(parseProfileState(r.state).transport) },
+        { label: 'State', sortBy: (r) => parseProfileState(r.state).state, render: (r) => statePill(parseProfileState(r.state).state) },
+        { label: 'In use', right: true, sortBy: (r) => parseProfileState(r.state).inUse, render: (r) => h('span', { class: 'num', text: parseProfileState(r.state).inUse || DASH }) },
         isAdmin ? {
           label: '', right: true,
           render: (r) => h('button', { type: 'button', class: 'btn btn-sm', title: 'Reload gateways and settings of this profile from the XML', on: { click: () => rescan(cellText(r.name)) } }, icon('refresh'), 'Rescan'),
@@ -79,10 +87,13 @@ export function mountSip({ id, scope, root, isAdmin }) {
     aliases.replaceChildren(h('span', { class: 'muted', text: 'Aliases' }), ...al.map((r) => tag(cellText(r.name) + ' → ' + cellText(r.data))));
   }
 
-  function renderGateways(rows) {
+  function renderGateways() {
+    if (!gwRows) return;
+    const rows = gwRows;
     gateways.setCount(rows.length);
     gHost.show(dataTable({
       rows,
+      sort: gSort,
       keyOf: (r) => 'gw:' + r.name,
       selected,
       onRow: (r) => {
@@ -91,19 +102,20 @@ export function mountSip({ id, scope, root, isAdmin }) {
       },
       empty: emptyState({ icon: 'plug', title: 'No gateways', text: 'No gateway is configured on any SIP profile.' }),
       columns: [
-        { label: 'Gateway', render: (r) => h('span', null, h('span', { class: 'cell-strong', text: cellText(r.name) }), h('span', { class: 'sub', text: 'profile ' + cellText(r.profile) })) },
-        { label: 'Registration', render: (r) => statePill(r.state) },
-        { label: 'Status', render: (r) => statePill(r.status) },
-        { label: 'Proxy', mono: true, render: (r) => clip(stripSip(r.proxy)) },
-        { label: 'Calls in / out', right: true, render: (r) => h('span', { class: 'num', text: fmtInt(r['calls-in']) + ' / ' + fmtInt(r['calls-out']) }) },
+        { label: 'Gateway', sortBy: (r) => cellText(r.name), render: (r) => h('span', null, h('span', { class: 'cell-strong', text: cellText(r.name) }), h('span', { class: 'sub', text: 'profile ' + cellText(r.profile) })) },
+        { label: 'Registration', sortBy: (r) => cellText(r.state), render: (r) => statePill(r.state) },
+        { label: 'Status', sortBy: (r) => cellText(r.status), render: (r) => statePill(r.status) },
+        { label: 'Proxy', mono: true, sortBy: (r) => stripSip(r.proxy), render: (r) => clip(stripSip(r.proxy)) },
+        { label: 'Calls in / out', right: true, sortBy: (r) => (Number(r['calls-in']) || 0) + (Number(r['calls-out']) || 0), render: (r) => h('span', { class: 'num', text: fmtInt(r['calls-in']) + ' / ' + fmtInt(r['calls-out']) }) },
         {
           label: 'Failed in / out', right: true,
+          sortBy: (r) => (Number(r['failed-calls-in']) || 0) + (Number(r['failed-calls-out']) || 0),
           render: (r) => {
             const failed = (Number(r['failed-calls-in']) || 0) + (Number(r['failed-calls-out']) || 0);
             return h('span', { class: failed ? 'num text-bad' : 'num faint', text: fmtInt(r['failed-calls-in']) + ' / ' + fmtInt(r['failed-calls-out']) });
           },
         },
-        { label: 'Up for', right: true, render: (r) => h('span', { class: 'num', text: Number(r['uptime-usec']) > 0 ? fmtDuration(Number(r['uptime-usec']) / 1e6) : DASH }) },
+        { label: 'Up for', right: true, sortBy: (r) => Number(r['uptime-usec']) || 0, render: (r) => h('span', { class: 'num', text: Number(r['uptime-usec']) > 0 ? fmtDuration(Number(r['uptime-usec']) / 1e6) : DASH }) },
       ],
     }));
   }
@@ -115,6 +127,7 @@ export function mountSip({ id, scope, root, isAdmin }) {
     const now = Date.now() / 1000;
     rHost.show(dataTable({
       rows,
+      sort: rSort,
       keyOf: (r) => 'reg:' + r.token,
       selected,
       onRow: (r) => {
@@ -125,18 +138,19 @@ export function mountSip({ id, scope, root, isAdmin }) {
         ? emptyState({ icon: 'search', title: 'No match', text: 'No registration matches the filter.' })
         : emptyState({ icon: 'user', title: 'No registrations', text: 'No endpoint is registered with this FreeSWITCH right now.' }),
       columns: [
-        { label: 'User', render: (r) => h('span', null, h('span', { class: 'cell-strong', text: cellText(r.reg_user) }), h('span', { class: 'faint', text: '@' + cellText(r.realm) })) },
-        { label: 'Contact', mono: true, render: (r) => clip(String(r.url || '').replace(/^sofia\/[^/]+\//, '')) },
-        { label: 'Network', mono: true, render: (r) => cellText(r.network_ip) + ':' + cellText(r.network_port) },
-        { label: 'Transport', render: (r) => (r.network_proto ? tag(String(r.network_proto).toUpperCase()) : '') },
+        { label: 'User', sortBy: (r) => cellText(r.reg_user), render: (r) => h('span', null, h('span', { class: 'cell-strong', text: cellText(r.reg_user) }), h('span', { class: 'faint', text: '@' + cellText(r.realm) })) },
+        { label: 'Contact', mono: true, sortBy: (r) => cellText(r.url), render: (r) => clip(String(r.url || '').replace(/^sofia\/[^/]+\//, '')) },
+        { label: 'Network', mono: true, sortBy: (r) => cellText(r.network_ip) + ':' + cellText(r.network_port), render: (r) => cellText(r.network_ip) + ':' + cellText(r.network_port) },
+        { label: 'Transport', sortBy: (r) => cellText(r.network_proto), render: (r) => (r.network_proto ? tag(String(r.network_proto).toUpperCase()) : '') },
         {
           label: 'Expires in', right: true,
+          sortBy: (r) => Number(r.expires) || 0,
           render: (r) => {
             const left = Number(r.expires) - now;
             return h('span', { class: 'num', text: Number.isFinite(left) ? (left > 0 ? fmtDuration(left) : 'expired') : DASH });
           },
         },
-        { label: 'Host', render: (r) => h('span', { class: 'muted', text: cellText(r.hostname) }) },
+        { label: 'Host', sortBy: (r) => cellText(r.hostname), render: (r) => h('span', { class: 'muted', text: cellText(r.hostname) }) },
       ],
     }));
   }
@@ -144,14 +158,22 @@ export function mountSip({ id, scope, root, isAdmin }) {
   const refresh = scope.poll(async (signal) => {
     const get = (path) => api('GET', instPath(id, path), { signal }).then(rowsOf);
     await Promise.all([
-      get('sofia').then(renderProfiles, (err) => {
+      get('sofia').then((rows) => {
+        sofiaRows = rows;
+        renderProfiles();
+      }, (err) => {
         if (isAbort(err)) throw err;
+        sofiaRows = null;
         profiles.setCount(null);
         aliases.hidden = true;
         pHost.error(err);
       }),
-      get('gateways').then(renderGateways, (err) => {
+      get('gateways').then((rows) => {
+        gwRows = rows;
+        renderGateways();
+      }, (err) => {
         if (isAbort(err)) throw err;
+        gwRows = null;
         gateways.setCount(null);
         gHost.error(err);
       }),

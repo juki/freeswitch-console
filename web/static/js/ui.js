@@ -172,6 +172,19 @@ export function errorState(err) {
   return emptyState({ icon: 'alert', tone: 'error', title: err && err.status === 403 ? 'Not allowed' : 'Could not load', text: msg });
 }
 
+// connectionHint turns an ESL connection error into advice; "" when the
+// error is not one it recognises.
+export function connectionHint(error) {
+  const e = String(error || '').toLowerCase();
+  if (e.includes('authentication failed')) return 'FreeSWITCH rejected the Event Socket password.';
+  if (e.includes('access denied')) return 'FreeSWITCH refused this host: its Event Socket ACL (apply-inbound-acl in event_socket.conf.xml) does not allow the address fsdeck connects from.';
+  if (e.includes('connection refused')) return 'Nothing is listening on that address. Check the host and port, and that mod_event_socket is loaded.';
+  if (e.includes('no such host')) return 'The host name does not resolve.';
+  if (e.includes('timeout') || e.includes('timed out') || e.includes('no route') || e.includes('unreachable')) return 'The host did not answer. Check the address and any firewall in between.';
+  if (e.includes('eof') || e.includes('reset by peer')) return 'The connection was closed before FreeSWITCH answered. Something other than the Event Socket may be listening on that port.';
+  return '';
+}
+
 export function loading() {
   return h('div', { class: 'loading', text: 'Loading…' });
 }
@@ -231,17 +244,56 @@ export function segmented(options, value, onChange) {
 
 // ---------- tables ----------
 
+function compare(a, b) {
+  const x = Number(a);
+  const y = Number(b);
+  if (a !== '' && b !== '' && Number.isFinite(x) && Number.isFinite(y)) return x - y;
+  return String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: 'base' });
+}
+
+// sortState is the sort of one table, owned by the view so that it survives
+// re-renders. onChange is called after the user clicks a header.
+export function sortState(onChange) {
+  return { col: -1, dir: 1, onChange };
+}
+
 // dataTable renders rows with curated columns. A column is
-// {label, key | render(row), right, mono, wrap}. onRow makes rows clickable.
-export function dataTable({ columns, rows, onRow, keyOf, selected, empty }) {
+// {label, key | render(row), right, mono, wrap, shrink, sortBy(row)}.
+// onRow makes rows clickable; sort (a sortState) makes columns with sortBy
+// sortable: a click cycles ascending, descending, original order.
+export function dataTable({ columns, rows, onRow, keyOf, selected, empty, sort }) {
   if (!rows.length) return empty instanceof Node ? empty : emptyState({ title: empty || 'Nothing to show' });
-  const head = h('tr', null, columns.map((c) => h('th', { scope: 'col', class: c.right ? 'right' : undefined, text: c.label })));
+  const sortCol = sort && sort.col >= 0 ? columns[sort.col] : null;
+  if (sortCol && sortCol.sortBy) {
+    rows = [...rows].sort((a, b) => compare(sortCol.sortBy(a), sortCol.sortBy(b)) * sort.dir);
+  }
+  const head = h('tr', null, columns.map((c, i) => {
+    const sortable = Boolean(sort && c.sortBy);
+    const th = h('th', { scope: 'col', class: cx(c.right && 'right', c.shrink && 'shrink', sortable && 'sortable'), text: c.label });
+    if (!sortable) return th;
+    th.tabIndex = 0;
+    th.setAttribute('aria-sort', sort.col === i ? (sort.dir > 0 ? 'ascending' : 'descending') : 'none');
+    const toggle = () => {
+      if (sort.col !== i) Object.assign(sort, { col: i, dir: 1 });
+      else if (sort.dir > 0) sort.dir = -1;
+      else sort.col = -1;
+      sort.onChange();
+    };
+    th.addEventListener('click', toggle);
+    th.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter' || ev.key === ' ') {
+        ev.preventDefault();
+        toggle();
+      }
+    });
+    return th;
+  }));
   const body = rows.map((row) => {
     const isSelected = keyOf && selected !== undefined && selected !== null && keyOf(row) === selected;
     const tr = h('tr', { class: cx(onRow && 'clickable', isSelected && 'selected'), tabIndex: onRow ? 0 : undefined },
       columns.map((c) => {
         const v = c.render ? c.render(row) : cellText(row[c.key]);
-        return h('td', { class: cx(c.right && 'right', c.mono && 'mono', c.wrap && 'wrap') },
+        return h('td', { class: cx(c.right && 'right', c.mono && 'mono', c.wrap && 'wrap', c.shrink && 'shrink') },
           v === '' || v === null || v === undefined ? h('span', { class: 'faint', text: DASH }) : v);
       }));
     if (onRow) {
