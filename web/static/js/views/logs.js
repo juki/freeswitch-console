@@ -6,8 +6,8 @@
 // lines come first, and a divider "Live from 19:20:05 · 312 earlier lines
 // replayed" marks where live starts. While no line is visible, a panel in the
 // middle of the pane says why: still connecting, FreeSWITCH not connected,
-// nothing logged at this level since fsdeck connected (or, without a backlog,
-// since the tail opened), or everything hidden by the filters.
+// nothing logged at this level since fsdeck connected to the switch, or
+// everything hidden by the filters.
 
 import { instPath } from '../api.js';
 import { h, fmtClock, fmtDuration, fmtInt } from '../dom.js';
@@ -167,16 +167,15 @@ export function mountLogs({ id, scope, root, setState, ctx }) {
         })],
       };
     }
-    if (stream !== 'live') {
+    // until the server has replayed its backlog the pane is still filling
+    if (stream !== 'live' || backlog === null) {
       return { cls: 'waiting', icon: 'plug', title: stream === 'connecting' ? t('logs.quiet.connectingTitle') : t('logs.quiet.reconnectingTitle'), text: t('logs.quiet.connectingText') };
     }
     if (!fsConnected) return { cls: 'waiting', icon: 'plug', title: t('logs.quiet.fsDownTitle'), text: t('logs.quiet.fsDownText') };
     return {
       cls: 'listening', icon: 'activity', title: t('logs.quiet.listeningTitle'),
-      text: backlog === 0
-        ? t('logs.quiet.emptyBacklogText', { level: LEVELS[lvl], duration: fmtDuration((Date.now() - quietSince) / 1000) })
-        : t('logs.quiet.listeningText', { level: LEVELS[lvl], time: fmtClock(quietSince, true), duration: fmtDuration((Date.now() - quietSince) / 1000) }),
-      hint: lvl === DEBUG && backlog !== null ? t('logs.quiet.backlogNote') : t('logs.quiet.listeningHint'),
+      text: t('logs.quiet.emptyBacklogText', { level: LEVELS[lvl], duration: fmtDuration((Date.now() - quietSince) / 1000) }),
+      hint: lvl === DEBUG ? t('logs.quiet.backlogNote') : t('logs.quiet.listeningHint'),
       actions: [
         lvl < DEBUG ? action(t('logs.quiet.toDebug'), 'logs', () => {
           select.value = String(DEBUG);

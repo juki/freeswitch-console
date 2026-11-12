@@ -7,7 +7,7 @@ import { api, isAbort } from '../api.js';
 import { h, DASH, fmtDate, fmtDateTime, fmtInt } from '../dom.js';
 import { icon } from '../icons.js';
 import { plural, t } from '../i18n.js';
-import { actionDialog, dataTable, emptyState, errorState, openModal, panel, pill, searchBox, skeleton, sortState, toast } from '../ui.js';
+import { actionDialog, dataTable, emptyState, errorState, openModal, paidState, panel, pill, searchBox, skeleton, sortState, toast } from '../ui.js';
 import { PASSWORD_MAX, PASSWORD_MIN, passwordLength, roleLabel } from './account.js';
 
 const USERNAME = /^[a-z0-9][a-z0-9._-]{1,31}$/;
@@ -69,6 +69,8 @@ function field(id, label, input, note) {
 export function mountUsers({ scope, root, ctx }) {
   document.title = t('users.docTitle');
   const me = ctx.me;
+  // Without the "users" licence feature the list is readable, changes are not.
+  const licensed = ctx.licensed('users');
   const sub = h('p', { class: 'page-sub' });
   let query = '';
   const search = searchBox(t('users.filter'), (q) => {
@@ -87,7 +89,11 @@ export function mountUsers({ scope, root, ctx }) {
       h('div', { class: 'masthead-in solo' },
         h('div', { class: 'crumbs' }, h('span', { text: t('nav.admin') }), icon('chevron'), h('span', { text: t('nav.users') })),
         h('div', { class: 'page-head' }, h('div', { class: 'spacer' }, h('h1', { class: 'page-title', text: t('users.title') }), sub), addBtn))),
-    h('div', { class: 'page-body' }, h('div', { class: 'stack' }, p.el, legend)));
+    h('div', { class: 'page-body' }, h('div', { class: 'stack' }, licensed ? null : paidState('users', 'compact'), p.el, legend)));
+  if (!licensed) {
+    addBtn.title = t('lic.needs');
+    addBtn.append(icon('lock', 'btn-lock'));
+  }
 
   let users = null;
   const sort = sortState(() => render());
@@ -134,7 +140,7 @@ export function mountUsers({ scope, root, ctx }) {
   // actions offers edit and delete only where the server would allow them,
   // and says why not otherwise.
   function actions(u) {
-    const why = u.managed ? t('users.managedHint') : '';
+    const why = !licensed ? t('lic.needs') : u.managed ? t('users.managedHint') : '';
     const edit = h('button', { type: 'button', class: 'btn btn-sm', disabled: Boolean(why), title: why || t('users.editNamed', { name: u.username }), on: { click: () => editDialog(u) } }, icon('edit'), t('users.edit'));
     const delWhy = why || (isMe(u) ? t('users.selfDelete') : '');
     const del = h('button', {
@@ -151,18 +157,18 @@ export function mountUsers({ scope, root, ctx }) {
     loadScope = scope.child();
     api('GET', 'users', { signal: loadScope.signal }).then((data) => {
       users = Array.isArray(data) ? data : [];
-      addBtn.disabled = false;
+      addBtn.disabled = !licensed;
       render();
     }, (err) => {
       if (isAbort(err)) return;
       users = null;
       sub.textContent = '';
       p.setCount(null);
-      if (err.status === 402) {
+      if (err.status === 402 || err.status === 404) {
         // the whole screen is the licence notice
         addBtn.hidden = true;
         p.el.hidden = true;
-        legend.replaceWith(errorState(err));
+        legend.replaceWith(paidState('users', err.status === 402 ? err.message : ''));
         return;
       }
       host.replaceChildren(errorState(err));

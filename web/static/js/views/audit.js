@@ -7,7 +7,7 @@ import { api, isAbort } from '../api.js';
 import { h, cellText, fmtDateTime, fmtInt, fmtStamp } from '../dom.js';
 import { icon } from '../icons.js';
 import { t } from '../i18n.js';
-import { clip, dataTable, detailBody, emptyState, errorState, openDrawer, panel, pill, searchBox, segmented, skeleton, sortState } from '../ui.js';
+import { clip, dataTable, detailBody, emptyState, errorState, openDrawer, paidState, panel, pill, searchBox, segmented, skeleton, sortState } from '../ui.js';
 
 const LIMITS = [200, 500, 1000];
 const RESULT_TONE = { ok: 'ok', denied: 'warn', error: 'bad' };
@@ -34,6 +34,18 @@ export function actionLabel(action) {
     'user.list': () => t('audit.act.userList'),
     'audit.read': () => t('audit.act.auditRead'),
     'password.change': () => t('audit.act.password'),
+    'action.sofia_profile': () => t('audit.act.sofiaProfile'),
+    'action.sofia_gateway': () => t('audit.act.sofiaGateway'),
+    'action.module': () => t('audit.act.module'),
+    'action.fsctl': () => t('audit.act.fsctl'),
+    'action.setvar': () => t('audit.act.setvar'),
+    'config.write': () => t('audit.act.configWrite'),
+    'config.delete': () => t('audit.act.configDelete'),
+    'config.restore': () => t('audit.act.configRestore'),
+    'config.list': () => t('audit.act.configList'),
+    'config.read': () => t('audit.act.configRead'),
+    'config.history': () => t('audit.act.configHistory'),
+    'config.backup': () => t('audit.act.configBackup'),
   };
   if (known[a]) return known[a]();
   if (a.startsWith('action.')) return t('audit.act.other', { name: a.slice(7) });
@@ -44,7 +56,7 @@ function resultLabel(r) {
   return ({ ok: t('audit.result.ok'), denied: t('audit.result.denied'), error: t('audit.result.error') })[r] || String(r || '');
 }
 
-export function mountAudit({ scope, root }) {
+export function mountAudit({ scope, root, ctx }) {
   document.title = t('audit.docTitle');
   let rows = null;
   let enabled = true;
@@ -137,6 +149,12 @@ export function mountAudit({ scope, root }) {
   }
 
   function load() {
+    // without the licence feature there is nothing to ask the server
+    if (ctx && ctx.access('audit') === 'licence') {
+      refreshBtn.hidden = true;
+      body.replaceChildren(paidState('audit'));
+      return;
+    }
     if (loadScope) loadScope.dispose();
     loadScope = scope.child();
     refreshBtn.disabled = true;
@@ -161,9 +179,9 @@ export function mountAudit({ scope, root }) {
       rows = null;
       p.setCount(null);
       note.textContent = '';
-      if (err.status === 402) {
+      if (err.status === 402 || err.status === 404) {
         refreshBtn.hidden = true;
-        body.replaceChildren(errorState(err));
+        body.replaceChildren(paidState('audit', err.status === 402 ? err.message : ''));
         return;
       }
       host.replaceChildren(errorState(err));

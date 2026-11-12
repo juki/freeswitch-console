@@ -4,7 +4,8 @@ import { api, instPath, isAbort, rowsOf } from '../api.js';
 import { h, DASH, cellText, fmtDuration, fmtInt } from '../dom.js';
 import { icon } from '../icons.js';
 import { t } from '../i18n.js';
-import { clip, dataTable, detailBody, emptyState, openDrawer, panel, rowMatches, searchBox, sortState, statePill, tableHost, tag, toast, toastError } from '../ui.js';
+import { clip, dataTable, detailBody, emptyState, openDrawer, openModal, panel, rowMatches, rowMenu, searchBox, sortState, statePill, tableHost, tag } from '../ui.js';
+import { operate } from '../actions.js';
 
 // "sip:mod_sofia@10.0.4.21:5060;transport=ws" -> "10.0.4.21:5060"
 function listenAddress(data) {
@@ -32,6 +33,9 @@ export function mountSip({ id, scope, root, ctx }) {
   const regs = panel({ title: t('sip.regs'), flush: true, actions: search.el });
   const pHost = tableHost({ rows: 4, cols: 4 });
   const gHost = tableHost({ rows: 3, cols: 4 });
+  // short tables: let their action menus overflow instead of being clipped
+  pHost.el.classList.add('no-clip');
+  gHost.el.classList.add('no-clip');
   const rHost = tableHost({ rows: 6, cols: 4 });
   const aliases = h('div', { class: 'panel-body row wrap', hidden: true });
   profiles.body.append(pHost.el, aliases);
@@ -52,14 +56,69 @@ export function mountSip({ id, scope, root, ctx }) {
     d.body.append(...detailBody(row, primary).filter(Boolean));
   }
 
-  async function rescan(profile) {
-    try {
-      const data = await api('POST', instPath(id, 'actions'), { body: { action: 'sofia_rescan', profile }, signal: scope.signal });
-      toast((data && data.output) || t('common.done'), 'ok', t('sip.rescanned', { profile }));
-      refresh();
-    } catch (err) {
-      toastError(err, t('sip.rescanFailed', { profile }));
-    }
+  const canControl = ctx.can('control');
+
+  // profileOp runs "sofia profile <p> <op>"; the ones that drop calls or
+  // registrations are confirmed with the profile named.
+  async function profileOp(profile, op) {
+    const confirms = {
+      restart: { title: t('sip.op.restart.title', { profile }), message: t('sip.op.restart.text', { profile }), confirmLabel: t('sip.op.restart'), danger: true },
+      stop: { title: t('sip.op.stop.title', { profile }), message: t('sip.op.stop.text', { profile }), confirmLabel: t('sip.op.stop'), danger: true },
+      flush_inbound_reg: { title: t('sip.op.flush.title', { profile }), message: t('sip.op.flush.text', { profile }), confirmLabel: t('sip.op.flush'), danger: true },
+      start: null,
+      rescan: null,
+    };
+    const titles = {
+      restart: t('sip.op.restart'), stop: t('sip.op.stop'), start: t('sip.op.start'), rescan: t('sip.rescan'), flush_inbound_reg: t('sip.op.flush'),
+    };
+    const out = await operate({
+      id, scope, body: { action: 'sofia_profile', profile, op }, confirm: confirms[op],
+      done: t('sip.op.done', { op: titles[op], name: profile }), failed: t('sip.op.failed', { op: titles[op], name: profile }),
+    });
+    if (out !== null) refresh();
+  }
+
+  async function gatewayOp(r, op) {
+    const gateway = cellText(r.name);
+    const profile = cellText(r.profile);
+    const confirms = {
+      unregister: { title: t('sip.gw.unregister.title', { gateway }), message: t('sip.gw.unregister.text', { gateway }), confirmLabel: t('sip.gw.unregister') },
+      kill: { title: t('sip.gw.kill.title', { gateway }), message: t('sip.gw.kill.text', { gateway, profile }), confirmLabel: t('sip.gw.kill'), danger: true },
+      register: null,
+    };
+    const titles = { register: t('sip.gw.register'), unregister: t('sip.gw.unregister'), kill: t('sip.gw.kill') };
+    const out = await operate({
+      id, scope, body: { action: 'sofia_gateway', profile, gateway, op }, confirm: confirms[op],
+      done: t('sip.op.done', { op: titles[op], name: gateway }), failed: t('sip.op.failed', { op: titles[op], name: gateway }),
+    });
+    if (out !== null) refresh();
+  }
+
+  // startDialog asks for the name of a stopped profile (it is no longer listed).
+  function startDialog() {
+    const input = h('input', { id: 'sp-name', class: 'input mono', type: 'text', autocomplete: 'off', spellcheck: false, placeholder: 'internal' });
+    const cancel = h('button', { type: 'button', class: 'btn', text: t('common.cancel') });
+    const ok = h('button', { type: 'submit', class: 'btn btn-primary', text: t('sip.op.start') });
+    ok.setAttribute('form', 'sp-form');
+    const form = h('form', { id: 'sp-form', class: 'modal-form' },
+      h('p', { class: 'modal-text', text: t('sip.op.startText') }),
+      h('div', { class: 'field' }, h('label', { for: 'sp-name', text: t('sip.col.profile') }), input));
+    const m = openModal({ title: t('sip.op.startTitle'), body: form, footer: [cancel, ok] });
+    cancel.addEventListener('click', m.close);
+    form.addEventListener('submit', (ev) => {
+      ev.preventDefault();
+      const name = input.value.trim();
+      if (!/^[A-Za-z0-9_.-]+$/.test(name)) {
+        input.setAttribute('aria-invalid', 'true');
+        return;
+      }
+      m.close();
+      profileOp(name, 'start');
+    });
+    input.focus();
+  }
+  if (canControl) {
+    profiles.el.querySelector('.panel-head').append(h('button', { type: 'button', class: 'btn btn-sm', on: { click: startDialog } }, icon('play'), t('sip.op.startTitle')));
   }
 
   function renderProfiles() {
@@ -79,7 +138,17 @@ export function mountSip({ id, scope, root, ctx }) {
         { label: t('sip.col.inUse'), right: true, sortBy: (r) => parseProfileState(r.state).inUse, render: (r) => h('span', { class: 'num', text: parseProfileState(r.state).inUse || DASH }) },
         ctx.can('operate') ? {
           label: '', right: true,
-          render: (r) => h('button', { type: 'button', class: 'btn btn-sm', title: t('sip.rescanTitle'), on: { click: () => rescan(cellText(r.name)) } }, icon('refresh'), t('sip.rescan')),
+          render: (r) => {
+            const name = cellText(r.name);
+            return h('span', { class: 'row-actions' },
+              h('button', { type: 'button', class: 'btn btn-sm', title: t('sip.rescanTitle'), on: { click: () => profileOp(name, 'rescan') } }, icon('refresh'), t('sip.rescan')),
+              canControl ? rowMenu(t('sip.op.menu', { name }), [
+                { label: t('sip.op.restart'), sub: t('sip.op.restartSub'), icon: 'refresh', danger: true, run: () => profileOp(name, 'restart') },
+                { label: t('sip.op.stop'), sub: t('sip.op.stopSub'), icon: 'stop', danger: true, run: () => profileOp(name, 'stop') },
+                { sep: true },
+                { label: t('sip.op.flush'), sub: t('sip.op.flushSub'), icon: 'eraser', run: () => profileOp(name, 'flush_inbound_reg') },
+              ]) : null);
+          },
         } : null,
       ].filter(Boolean),
     }));
@@ -117,7 +186,16 @@ export function mountSip({ id, scope, root, ctx }) {
           },
         },
         { label: t('sip.col.upFor'), right: true, sortBy: (r) => Number(r['uptime-usec']) || 0, render: (r) => h('span', { class: 'num', text: Number(r['uptime-usec']) > 0 ? fmtDuration(Number(r['uptime-usec']) / 1e6) : DASH }) },
-      ],
+        ctx.can('operate') ? {
+          label: '', right: true,
+          render: (r) => rowMenu(t('sip.op.menu', { name: cellText(r.name) }), [
+            { label: t('sip.gw.register'), icon: 'refresh', run: () => gatewayOp(r, 'register') },
+            { label: t('sip.gw.unregister'), icon: 'logout', run: () => gatewayOp(r, 'unregister') },
+            canControl ? { sep: true } : null,
+            canControl ? { label: t('sip.gw.kill'), sub: t('sip.gw.killSub'), icon: 'trash', danger: true, run: () => gatewayOp(r, 'kill') } : null,
+          ]),
+        } : null,
+      ].filter(Boolean),
     }));
   }
 

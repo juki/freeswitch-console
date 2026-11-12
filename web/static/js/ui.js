@@ -219,6 +219,46 @@ export function clip(text, cls) {
   return h('span', { class: cx('clip', cls), text: t, title: t.length > 28 ? t : undefined });
 }
 
+// ---------- leaving with unsaved changes ----------
+
+// One screen at a time can hold unsaved work (the config editor). It
+// registers a guard that says whether there is something to lose; routes,
+// tabs, the language switch and sign-out ask confirmLeave() first.
+let leaveGuard = null;
+
+export function setLeaveGuard(fn) {
+  leaveGuard = fn;
+  return () => {
+    if (leaveGuard === fn) leaveGuard = null;
+  };
+}
+
+export function hasUnsaved() {
+  return Boolean(leaveGuard && leaveGuard());
+}
+
+export async function confirmLeave() {
+  if (!hasUnsaved()) return true;
+  const ok = await confirmDialog({ title: t('guard.title'), message: t('guard.text'), confirmLabel: t('guard.discard'), danger: true });
+  if (ok) leaveGuard = null;
+  return ok;
+}
+
+// rowMenu is a "⋯" button that opens a menu of actions; items are
+// {label, icon, danger, title, disabled, run}.
+export function rowMenu(label, items) {
+  const btn = h('button', { type: 'button', class: 'btn btn-ghost btn-icon btn-sm', 'aria-label': label, title: label }, icon('more'));
+  const panel = h('div', { class: 'menu' });
+  const pop = popover(btn, panel, { label });
+  panel.append(...items.filter(Boolean).map((it) => it.sep
+    ? h('div', { class: 'menu-sep' })
+    : h('button', {
+      type: 'button', class: cx('menu-item', it.danger && 'danger'), role: 'menuitem', disabled: Boolean(it.disabled), title: it.title,
+      on: { click: () => { pop.close(); it.run(); } },
+    }, icon(it.icon || 'chevron'), h('span', { class: 'menu-text' }, it.label, it.sub ? h('span', { class: 'menu-sub', text: it.sub }) : null))));
+  return pop.el;
+}
+
 // popover attaches a floating panel to a trigger button: click toggles it,
 // Escape or a click outside closes it, arrow keys move between the panel's
 // items. Listeners exist only while it is open. align: 'end' (default),
@@ -252,6 +292,16 @@ export function popover(trigger, panel, { up = false, align = 'end', label } = {
   function open() {
     panel.hidden = false;
     trigger.setAttribute('aria-expanded', 'true');
+    // inside a scrolling box, open upwards when there is no room below
+    if (!up) {
+      panel.classList.remove('up');
+      const box = el.closest('.tbl-wrap, .main');
+      if (box) {
+        const p = panel.getBoundingClientRect();
+        const b = box.getBoundingClientRect();
+        if (p.bottom > b.bottom && trigger.getBoundingClientRect().top - b.top > p.height + 8) panel.classList.add('up');
+      }
+    }
     document.addEventListener('pointerdown', onDown);
     el.addEventListener('keydown', onKey);
     const first = panel.querySelector('[aria-checked="true"]') || items()[0];
@@ -271,7 +321,12 @@ export function popover(trigger, panel, { up = false, align = 'end', label } = {
 export function langItems(onPick) {
   return LANGS.map((l) => h('button', {
     type: 'button', class: 'menu-item', role: 'menuitemradio', lang: l.code, 'aria-checked': String(l.code === lang()),
-    on: { click: () => { if (onPick) onPick(); setLang(l.code); } },
+    on: {
+      click: async () => {
+        if (onPick) onPick();
+        if (l.code !== lang() && await confirmLeave()) setLang(l.code);
+      },
+    },
   }, h('span', { class: 'lang-code', text: l.short }), h('span', { class: 'menu-text', text: l.label }), l.code === lang() ? icon('check', 'menu-check') : null));
 }
 
@@ -310,6 +365,13 @@ const PAID = {
 // feature does and that this server has no licence for it.
 export function paidState(feature, serverText) {
   const f = (PAID[feature] || PAID.users)();
+  if (serverText === 'compact') {
+    // a banner above a screen that still works in part (Users without the feature)
+    return h('div', { class: 'paid-banner' },
+      h('span', { class: 'paid-icon sm' }, icon(f.icon), h('span', { class: 'paid-lock' }, icon('lock'))),
+      h('div', { class: 'spacer' }, h('div', { class: 'paid-banner-title', text: f.title }), h('div', { class: 'paid-banner-text', text: f.text })),
+      h('span', { class: 'paid-kicker', text: t('paid.kicker') }));
+  }
   return h('div', { class: 'paid' },
     h('div', { class: 'paid-card' },
       h('span', { class: 'paid-icon' }, icon(f.icon), h('span', { class: 'paid-lock' }, icon('lock'))),
@@ -506,7 +568,7 @@ export function dataTable({ columns, rows, onRow, keyOf, selected, empty, sort }
       }));
     if (onRow) {
       tr.addEventListener('click', (ev) => {
-        if (!ev.target.closest('button, a')) onRow(row);
+        if (!ev.target.closest('button, a, .pop')) onRow(row);
       });
       tr.addEventListener('keydown', (ev) => {
         if (ev.key === 'Enter' && ev.target === tr) onRow(row);

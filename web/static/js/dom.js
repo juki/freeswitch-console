@@ -167,3 +167,12 @@ export function fmtStamp(v) {
   const d = validTime(v);
   return d ? dateFormat('short').format(d) : DASH;
 }
+
+// fmtBytes formats a file size: "830 B", "5.1 KB", "1.2 MB".
+export function fmtBytes(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return DASH;
+  if (n < 1024) return num(n) + ' B';
+  if (n < 1024 * 1024) return num(n / 1024, 1) + ' KB';
+  return num(n / 1024 / 1024, 1) + ' MB';
+}

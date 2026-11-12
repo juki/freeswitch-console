@@ -3,7 +3,7 @@
 import { h, sinceText } from '../dom.js';
 import { icon } from '../icons.js';
 import { t } from '../i18n.js';
-import { emptyState, pill } from '../ui.js';
+import { confirmLeave, emptyState, pill } from '../ui.js';
 import { address } from './fleet.js';
 import { mountOverview } from './overview.js';
 import { mountSip } from './sip.js';
@@ -44,10 +44,10 @@ export function mountInstance({ scope, root, id, ctx }) {
   const nav = h('nav', { class: 'tabs', 'aria-label': t('tab.aria') }, tabs.map((tab) => {
     const a = h('a', { class: 'tab', href: base + tab.key }, icon(tab.icon), tab.label());
     // Clicking the current tab remounts it (reloads its data).
-    a.addEventListener('click', (ev) => {
+    a.addEventListener('click', async (ev) => {
       if (location.hash === base + tab.key) {
         ev.preventDefault();
-        showTab(tab.key);
+        if (await confirmLeave()) showTab(tab.key);
       }
     });
     links.set(tab.key, a);
