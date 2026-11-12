@@ -325,6 +325,12 @@ func sectionEntry(ctx context.Context, c Commander, section, tag, name string) (
 	return out, nil
 }
 
+// Run runs a command whose arguments the caller has already validated and
+// returns its trimmed output; a "-ERR" reply is a *CommandError.
+func Run(ctx context.Context, c Commander, command string) (string, error) {
+	return output(ctx, c, command)
+}
+
 // HangupChannel kills the channel with the given uuid.
 func HangupChannel(ctx context.Context, c Commander, uuid string) (string, error) {
 	if !uuidRe.MatchString(uuid) {

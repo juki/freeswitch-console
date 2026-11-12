@@ -123,6 +123,37 @@ func (s *Server) loginSucceeded(k loginKey) {
 	s.loginMu.Unlock()
 }
 
+// acquireVerify takes one of the password-hashing slots, waiting at most
+// verifyWait. PBKDF2 is slow by design; without a cap, sign-ins for rotating
+// usernames (each a separate rate-limit key) could keep every core busy.
+func (s *Server) acquireVerify(r *http.Request) bool {
+	t := time.NewTimer(s.verifyWait)
+	defer t.Stop()
+	select {
+	case s.verifySlots <- struct{}{}:
+		return true
+	case <-t.C:
+	case <-r.Context().Done():
+	}
+	return false
+}
+
+func (s *Server) releaseVerify() { <-s.verifySlots }
+
+func writeBusy(w http.ResponseWriter) {
+	w.Header().Set("Retry-After", "1")
+	writeError(w, http.StatusServiceUnavailable, "too many password checks at once; try again in a moment")
+}
+
+// writeBlocked answers 429 for a key blocked for wait and returns the
+// seconds it announced.
+func writeBlocked(w http.ResponseWriter, wait time.Duration) int {
+	secs := int((wait + time.Second - 1) / time.Second)
+	w.Header().Set("Retry-After", strconv.Itoa(secs))
+	writeError(w, http.StatusTooManyRequests, fmt.Sprintf("too many failed attempts; try again in %ds", secs))
+	return secs
+}
+
 // clientIP is the client address of r without its port.
 func clientIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
@@ -178,7 +209,8 @@ func (s *Server) auth(c capability, action string, h func(http.ResponseWriter, *
 }
 
 // sessionUser resolves the session cookie to the account as it is now: a
-// disabled, deleted or re-passworded account has no session.
+// disabled, deleted or re-passworded account, or one the licence no longer
+// covers, has no session.
 func (s *Server) sessionUser(r *http.Request) (user, bool) {
 	c, err := r.Cookie(cookieName)
 	if err != nil {
@@ -195,7 +227,7 @@ func (s *Server) sessionUser(r *http.Request) (user, bool) {
 		return user{}, false
 	}
 	acc, found := s.accountByID(sess.userID)
-	if !found || acc.Disabled || subtle.ConstantTimeCompare([]byte(acc.PasswordHash), []byte(sess.hash)) != 1 {
+	if !found || acc.Disabled || !s.licensed(acc) || subtle.ConstantTimeCompare([]byte(acc.PasswordHash), []byte(sess.hash)) != 1 {
 		s.sessMu.Lock()
 		delete(s.sessions, c.Value)
 		s.sessMu.Unlock()
@@ -292,7 +324,7 @@ func (s *Server) checkLogin(username, password string) (account, bool, string) {
 		return acc, false, "unknown user"
 	case acc.Disabled:
 		return acc, false, "account disabled"
-	case roleCaps[acc.Role] == nil:
+	case store.CheckRole(acc.Role) != nil:
 		return acc, false, "unknown role"
 	case !ok:
 		return acc, false, "wrong password"
@@ -314,15 +346,19 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.accountByName(req.Username); ok {
 		known = req.Username
 	}
+	if !s.acquireVerify(r) {
+		writeBusy(w)
+		return
+	}
 	key := clientKey(r, req.Username)
 	if wait := s.loginAttempt(key, time.Now()); wait > 0 {
-		secs := int((wait + time.Second - 1) / time.Second)
+		s.releaseVerify()
+		secs := writeBlocked(w, wait)
 		s.audit(r, audit.Entry{User: known, Action: "login.blocked", Target: known, Detail: fmt.Sprintf("retry in %ds", secs), Result: audit.Denied})
-		w.Header().Set("Retry-After", strconv.Itoa(secs))
-		writeError(w, http.StatusTooManyRequests, fmt.Sprintf("too many failed attempts; try again in %ds", secs))
 		return
 	}
 	acc, ok, why := s.checkLogin(req.Username, req.Password)
+	s.releaseVerify()
 	if !ok {
 		s.audit(r, audit.Entry{User: known, Action: "login.failed", Target: known, Detail: why, Result: audit.Denied})
 		select {
@@ -330,6 +366,13 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		case <-r.Context().Done():
 		}
 		writeError(w, http.StatusUnauthorized, "invalid username or password")
+		return
+	}
+	if !s.licensed(acc) {
+		// The password was right, so saying why is no oracle for guessing;
+		// the attempt stays charged to the rate limit.
+		s.audit(r, audit.Entry{User: acc.Username, Action: "login.failed", Target: acc.Username, Detail: "not covered by the licence", Result: audit.Denied})
+		writeError(w, http.StatusForbidden, errUnlicensedAccount)
 		return
 	}
 	s.loginSucceeded(key)

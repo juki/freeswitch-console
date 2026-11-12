@@ -19,6 +19,7 @@ import (
 	"fsdeck/internal/audit"
 	"fsdeck/internal/esl"
 	"fsdeck/internal/fsapi"
+	"fsdeck/internal/license"
 	"fsdeck/internal/store"
 )
 
@@ -43,12 +44,16 @@ type Config struct {
 	LogBacklogLevel int // highest log level kept, 0..7
 
 	Audit *audit.Log // nil disables the audit log
+
+	License   license.Key // the paid features it grants; ignored by a community build
+	BackupDir string      // config file backups of local-mode instances, one directory per instance
 }
 
 const (
 	eslTimeout     = 15 * time.Second
 	consoleTimeout = 60 * time.Second
 	maxBody        = 1 << 20
+	maxFileBody    = 8 << 20
 )
 
 type Server struct {
@@ -67,7 +72,12 @@ type Server struct {
 	dummyHash string     // verified for unknown usernames so they cost the same
 	usersMu   sync.Mutex // serializes account changes, so the admin guards hold
 
-	routeCaps map[string]capability // pattern -> capability, for the route table test
+	verifySlots chan struct{} // one token per password hash or check in progress
+	verifyWait  time.Duration // how long a request waits for a slot before 503
+
+	// pattern -> capability and paid feature, for the route table test
+	routeCaps     map[string]capability
+	routeFeatures map[string]string
 
 	// loginMaxFails failures within loginWindow block a key for loginBlock;
 	// the table holds at most loginMaxKeys keys.
@@ -152,6 +162,9 @@ func New(cfg Config) (*Server, error) {
 		loginBlock:    time.Minute,
 		loginMaxKeys:  10000,
 		routeCaps:     map[string]capability{},
+		routeFeatures: map[string]string{},
+		verifySlots:   make(chan struct{}, 4),
+		verifyWait:    2 * time.Second,
 	}
 	for _, m := range []struct{ id, name, role, password string }{
 		{managedAdminID, "admin", store.RoleAdmin, cfg.AdminPassword},
@@ -224,11 +237,9 @@ func (s *Server) routes() {
 		writeJSON(w, http.StatusOK, map[string]string{"version": s.cfg.Version})
 	})
 
-	s.handle(m, "GET /api/users", capUsers, "user.list", s.handleListUsers)
-	s.handle(m, "POST /api/users", capUsers, "user.create", s.handleCreateUser)
-	s.handle(m, "PUT /api/users/{id}", capUsers, "user.update", s.handleUpdateUser)
-	s.handle(m, "DELETE /api/users/{id}", capUsers, "user.delete", s.handleDeleteUser)
-	s.handle(m, "GET /api/audit", capUsers, "audit.read", s.handleAudit)
+	s.handle(m, "GET /api/license", capRead, "", s.handleLicense)
+	// Users, the audit query and config files: absent from a community build.
+	s.registerPaid(m)
 
 	s.handle(m, "GET /api/instances", capRead, "", s.handleListInstances)
 	s.handle(m, "POST /api/instances", capInstances, "instance.create", s.handleCreateInstance)
@@ -279,7 +290,11 @@ func (s *Server) Handler() http.Handler {
 		}
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			h.Set("Cache-Control", "no-store")
-			r.Body = http.MaxBytesReader(w, r.Body, maxBody)
+			limit := int64(maxBody)
+			if r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/files/content") {
+				limit = maxFileBody // a config file of up to 1 MiB, JSON-escaped
+			}
+			r.Body = http.MaxBytesReader(w, r.Body, limit)
 			switch r.Method {
 			case http.MethodPost, http.MethodPut, http.MethodDelete:
 				// ContentLength is -1 for a chunked body of unknown length.

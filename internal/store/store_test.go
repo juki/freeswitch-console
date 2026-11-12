@@ -389,3 +389,58 @@ func TestUsersInFileAreValidated(t *testing.T) {
 		}
 	}
 }
+
+func TestConfigAccessFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s.json")
+	s, _ := Open(path, WithSecretKey(testKey))
+	tok := "agent-token-0123456789"
+	a, err := s.Add(Instance{Name: "a", Host: "h", Port: 1, ConfigMode: ConfigAgent, AgentURL: "https://fs:8025", AgentToken: tok, ConfigPath: "/ignored"})
+	if err != nil || a.ConfigPath != "" {
+		t.Fatalf("add %+v %v", a, err)
+	}
+	data, _ := os.ReadFile(path)
+	if strings.Contains(string(data), tok) || strings.Count(string(data), "enc:v1:") != 2 {
+		t.Fatalf("token not encrypted: %s", data)
+	}
+	r, err := Open(path, WithSecretKey(testKey))
+	if got, _ := r.Get(a.ID); err != nil || got.AgentToken != tok || got.AgentURL != "https://fs:8025" {
+		t.Fatalf("reopen %+v %v", got, err)
+	}
+	// An empty token keeps the stored one; another mode drops it.
+	if err := r.Update(Instance{ID: a.ID, Name: "a", Host: "h", Port: 1, ConfigMode: ConfigAgent, AgentURL: "http://fs:8025"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := r.Get(a.ID); got.AgentToken != tok {
+		t.Fatal("token lost")
+	}
+	if err := r.Update(Instance{ID: a.ID, Name: "a", Host: "h", Port: 1, ConfigMode: ConfigLocal, ConfigPath: "/etc/freeswitch"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := r.Get(a.ID); got.AgentToken != "" || got.AgentURL != "" || got.ConfigPath != "/etc/freeswitch" {
+		t.Fatalf("local %+v", got)
+	}
+	for _, bad := range []Instance{
+		{ConfigMode: "nfs"},
+		{ConfigMode: ConfigLocal},
+		{ConfigMode: ConfigLocal, ConfigPath: "etc/freeswitch"},
+		{ConfigMode: ConfigLocal, ConfigPath: "/etc/freeswitch/"},
+		{ConfigMode: ConfigAgent, AgentToken: tok},
+		{ConfigMode: ConfigAgent, AgentURL: "fs:8025", AgentToken: tok},
+		{ConfigMode: ConfigAgent, AgentURL: "https://u:p@fs", AgentToken: tok},
+		{ConfigMode: ConfigAgent, AgentURL: "https://fs#x", AgentToken: tok},
+		{ConfigMode: ConfigAgent, AgentURL: "https://fs", AgentToken: "short"},
+		{ConfigMode: ConfigAgent, AgentURL: "https://fs", AgentToken: tok + "\n"},
+	} {
+		bad.Name, bad.Host, bad.Port = "b", "h", 1
+		if _, err := r.Add(bad); !errors.Is(err, ErrInvalid) {
+			t.Errorf("%+v: %v", bad, err)
+		}
+	}
+	// Without config access the file keeps its old shape.
+	plain, _ := Open(filepath.Join(t.TempDir(), "p.json"))
+	plain.Add(Instance{Name: "a", Host: "h", Port: 1})
+	data, _ = os.ReadFile(plain.path)
+	if strings.Contains(string(data), "config") || strings.Contains(string(data), "agent") {
+		t.Fatalf("shape %s", data)
+	}
+}

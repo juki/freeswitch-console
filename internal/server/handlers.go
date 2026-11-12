@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,24 +13,46 @@ import (
 	"fsdeck/internal/store"
 )
 
-// instanceView is what the API exposes of an instance: never the password.
+// instanceView is what the API exposes of an instance: never the ESL
+// password or the agent token.
 type instanceView struct {
-	ID    string    `json:"id"`
-	Name  string    `json:"name"`
-	Host  string    `json:"host"`
-	Port  int       `json:"port"`
-	State esl.State `json:"state"`
+	ID         string    `json:"id"`
+	Name       string    `json:"name"`
+	Host       string    `json:"host"`
+	Port       int       `json:"port"`
+	State      esl.State `json:"state"`
+	ConfigMode string    `json:"configMode"`
+	ConfigPath string    `json:"configPath"`
+	AgentURL   string    `json:"agentURL"`
 }
 
+// instanceRequest is the body of instance create and update. Without
+// configMode the config access stays as it is; an empty password or
+// agentToken keeps the stored one.
 type instanceRequest struct {
-	Name     string `json:"name"`
-	Host     string `json:"host"`
-	Port     int    `json:"port"`
-	Password string `json:"password"`
+	Name       string  `json:"name"`
+	Host       string  `json:"host"`
+	Port       int     `json:"port"`
+	Password   string  `json:"password"`
+	ConfigMode *string `json:"configMode"`
+	ConfigPath string  `json:"configPath"`
+	AgentURL   string  `json:"agentURL"`
+	AgentToken string  `json:"agentToken"`
+}
+
+// instance builds the stored instance; old supplies the config access when
+// the request does not set configMode.
+func (req instanceRequest) instance(id string, old store.Instance) store.Instance {
+	in := store.Instance{ID: id, Name: req.Name, Host: req.Host, Port: req.Port, Password: req.Password,
+		ConfigMode: old.ConfigMode, ConfigPath: old.ConfigPath, AgentURL: old.AgentURL, AgentToken: old.AgentToken}
+	if req.ConfigMode != nil {
+		in.ConfigMode, in.ConfigPath, in.AgentURL, in.AgentToken = *req.ConfigMode, req.ConfigPath, req.AgentURL, req.AgentToken
+	}
+	return in
 }
 
 func view(in store.Instance, inst *instance) instanceView {
-	v := instanceView{ID: in.ID, Name: in.Name, Host: in.Host, Port: in.Port}
+	v := instanceView{ID: in.ID, Name: in.Name, Host: in.Host, Port: in.Port, ConfigMode: in.ConfigMode, ConfigPath: in.ConfigPath, AgentURL: in.AgentURL}
 	if inst != nil {
 		v.State = inst.sw.State()
 	}
@@ -70,6 +91,12 @@ func instanceEntry(u user, action, id string, req instanceRequest) audit.Entry {
 	if req.Password != "" {
 		detail += " password=changed"
 	}
+	if req.ConfigMode != nil {
+		detail += " config=" + truncate(*req.ConfigMode, 16)
+		if req.AgentToken != "" {
+			detail += " agentToken=changed"
+		}
+	}
 	return audit.Entry{User: u.Username, Action: action, Target: truncate(req.Name, 64), Detail: detail}
 }
 
@@ -88,7 +115,7 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request, u 
 		return
 	}
 	s.mu.Lock()
-	in, err := s.cfg.Store.Add(store.Instance{Name: req.Name, Host: req.Host, Port: req.Port, Password: req.Password})
+	in, err := s.cfg.Store.Add(req.instance("", store.Instance{}))
 	if err != nil {
 		s.mu.Unlock()
 		s.record(r, instanceEntry(u, "instance.create", "", req), err)
@@ -110,7 +137,8 @@ func (s *Server) handleUpdateInstance(w http.ResponseWriter, r *http.Request, u 
 	id := r.PathValue("id")
 	entry := instanceEntry(u, "instance.update", id, req)
 	s.mu.Lock()
-	err := s.cfg.Store.Update(store.Instance{ID: id, Name: req.Name, Host: req.Host, Port: req.Port, Password: req.Password})
+	prev, _ := s.cfg.Store.Get(id)
+	err := s.cfg.Store.Update(req.instance(id, prev))
 	if err != nil {
 		s.mu.Unlock()
 		s.record(r, entry, err)
@@ -118,9 +146,16 @@ func (s *Server) handleUpdateInstance(w http.ResponseWriter, r *http.Request, u 
 		return
 	}
 	in, _ := s.cfg.Store.Get(id)
-	old := s.insts[id]
-	inst := s.newInstance(in)
-	s.insts[id] = inst
+	// An update reconnects, as it always has, unless it changes nothing but
+	// the config access: then the connection, its history and its log
+	// backlog stay.
+	old, inst := s.insts[id], s.insts[id]
+	if inst == nil || in.Name != prev.Name || in.Host != prev.Host || in.Port != prev.Port || req.Password != "" {
+		inst = s.newInstance(in)
+		s.insts[id] = inst
+	} else {
+		old = nil
+	}
 	s.mu.Unlock()
 	if old != nil {
 		old.close()
@@ -209,45 +244,6 @@ func (s *Server) handleHangup(w http.ResponseWriter, r *http.Request, u user) {
 	ctx, cancel := eslContext(r, eslTimeout)
 	defer cancel()
 	out, err := fsapi.HangupChannel(ctx, inst.sw, uuid)
-	s.record(r, entry, err)
-	writeOutput(w)(out, err)
-}
-
-func (s *Server) handleAction(w http.ResponseWriter, r *http.Request, u user) {
-	inst := s.lookup(w, r)
-	if inst == nil {
-		return
-	}
-	var req struct {
-		Action  string `json:"action"`
-		Profile string `json:"profile"`
-	}
-	if !decodeJSON(w, r, &req) {
-		return
-	}
-	var run func(context.Context, fsapi.Commander) (string, error)
-	entry := audit.Entry{User: u.Username, Action: "action." + req.Action, Target: s.instanceName(r.PathValue("id"))}
-	switch req.Action {
-	case "reloadxml":
-		run = fsapi.ReloadXML
-	case "reloadacl":
-		run = fsapi.ReloadACL
-	case "sofia_rescan":
-		entry.Detail = "profile=" + truncate(req.Profile, 128)
-		run = func(ctx context.Context, c fsapi.Commander) (string, error) {
-			return fsapi.SofiaRescan(ctx, c, req.Profile)
-		}
-	default:
-		writeError(w, http.StatusBadRequest, "unknown action")
-		return
-	}
-	if !ready(w, inst) {
-		s.record(r, entry, esl.ErrNotConnected)
-		return
-	}
-	ctx, cancel := eslContext(r, eslTimeout)
-	defer cancel()
-	out, err := run(ctx, inst.sw)
 	s.record(r, entry, err)
 	writeOutput(w)(out, err)
 }

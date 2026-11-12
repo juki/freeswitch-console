@@ -41,6 +41,7 @@ var cannedAPI = map[string]string{
 </configuration>`,
 	"xml_locate configuration configuration name missing.conf": "can't find anything\n",
 	"uuid_kill abc-123": "+OK\n",
+	"fsctl loglevel 6":  "+OK log level: INFO [6]\n",
 	"status":            "UP 0 years, 1 day\n",
 }
 
@@ -194,11 +195,19 @@ func (c *testClient) get(path string, want int, into any) []byte {
 	return body
 }
 
-// TestEndToEnd runs the real ESL client and the real HTTP server against a
-// fake FreeSWITCH, through the same wiring main uses.
-func TestEndToEnd(t *testing.T) {
-	host, port := fakeFreeSWITCH(t)
+// stack is the whole fsdeck wiring against one fake FreeSWITCH.
+type stack struct {
+	host string
+	port int
+	dir  string
+	ts   *httptest.Server
+}
 
+// startStack wires the real ESL client and the real HTTP server to a fake
+// FreeSWITCH, as main does; edit adjusts the configuration.
+func startStack(t *testing.T, edit func(*server.Config)) stack {
+	t.Helper()
+	host, port := fakeFreeSWITCH(t)
 	dir := t.TempDir()
 	st, err := store.Open(filepath.Join(dir, "fsdeck.json"), store.WithSecretKey("an-e2e-secret-key-value"))
 	if err != nil {
@@ -208,9 +217,8 @@ func TestEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer auditLog.Close()
 	// The fake logs at level 7 only; keep those lines in the backlog.
-	app, err := server.New(server.Config{
+	cfg := server.Config{
 		AdminPassword:   "admin-pw",
 		ViewerPassword:  "viewer-pw",
 		Store:           st,
@@ -220,7 +228,12 @@ func TestEndToEnd(t *testing.T) {
 		LogBacklog:      100,
 		LogBacklogLevel: 7,
 		Audit:           auditLog,
-	})
+		BackupDir:       filepath.Join(dir, "backups"),
+	}
+	if edit != nil {
+		edit(&cfg)
+	}
+	app, err := server.New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,7 +241,27 @@ func TestEndToEnd(t *testing.T) {
 	t.Cleanup(func() {
 		app.Close()
 		ts.Close()
+		auditLog.Close()
 	})
+	return stack{host: host, port: port, dir: dir, ts: ts}
+}
+
+// client signs in and returns a client with the session.
+func (sk stack) client(t *testing.T, username, password string) *testClient {
+	t.Helper()
+	jar, _ := cookiejar.New(nil)
+	c := &testClient{t: t, base: sk.ts.URL, http: &http.Client{Jar: jar}}
+	if code, body := c.do("POST", "/api/login", map[string]string{"username": username, "password": password}); code != http.StatusOK {
+		t.Fatalf("login %s: status %d: %s", username, code, body)
+	}
+	return c
+}
+
+// TestEndToEnd runs the real ESL client and the real HTTP server against a
+// fake FreeSWITCH, through the same wiring main uses.
+func TestEndToEnd(t *testing.T) {
+	sk := startStack(t, nil)
+	host, port, dir, ts := sk.host, sk.port, sk.dir, sk.ts
 
 	jar, _ := cookiejar.New(nil)
 	c := &testClient{t: t, base: ts.URL, http: &http.Client{Jar: jar}}
@@ -399,42 +432,22 @@ func TestEndToEnd(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	// The console command is in the audit log, newest first.
-	var auditRows struct {
-		Enabled bool
-		Rows    []struct{ User, Action, Target, Detail, Result string }
+	// A runtime operation, then the audit file has the console command and
+	// the operation.
+	if code, body := c.do("POST", p+"/actions", map[string]any{"action": "fsctl", "op": "loglevel", "value": 6}); code != http.StatusOK || !strings.Contains(string(body), "log level") {
+		t.Fatalf("fsctl: status %d: %s", code, body)
 	}
-	c.get("/api/audit?q=console.run&limit=1", http.StatusOK, &auditRows)
-	if !auditRows.Enabled || len(auditRows.Rows) != 1 || auditRows.Rows[0].User != "admin" || auditRows.Rows[0].Target != "test" || auditRows.Rows[0].Detail != "status" || auditRows.Rows[0].Result != "ok" {
-		t.Fatalf("audit rows %+v", auditRows)
-	}
-
-	// An operator hangs up calls but has no console and no user management.
-	code, body = c.do("POST", "/api/users", map[string]string{"username": "op1", "role": "operator", "password": "operator-password"})
-	if code != http.StatusCreated || bytes.Contains(body, []byte("operator-password")) {
-		t.Fatalf("create operator: status %d: %s", code, body)
-	}
-	ojar, _ := cookiejar.New(nil)
-	o := &testClient{t: t, base: ts.URL, http: &http.Client{Jar: ojar}}
-	if code, body := o.do("POST", "/api/login", map[string]string{"username": "op1", "password": "operator-password"}); code != http.StatusOK || !strings.Contains(string(body), `"role":"operator"`) {
-		t.Fatalf("operator login: status %d: %s", code, body)
-	}
-	if code, body := o.do("DELETE", p+"/channels/abc-123", nil); code != http.StatusOK {
-		t.Fatalf("operator hangup: status %d: %s", code, body)
-	}
-	for _, rq := range []struct {
-		method, path string
-		body         any
-	}{
-		{"POST", p + "/console", map[string]string{"command": "status"}},
-		{"GET", "/api/users", nil},
-		{"POST", "/api/users", map[string]string{"username": "op2", "role": "admin", "password": "operator-password"}},
-		{"GET", "/api/audit", nil},
-		{"POST", "/api/instances", map[string]any{"name": "x", "host": "h", "port": 1, "password": "p"}},
+	auditData, _ := os.ReadFile(filepath.Join(dir, "fsdeck-audit.log"))
+	for _, want := range []string{
+		`"user":"admin","ip":"127.0.0.1","action":"console.run","target":"test","detail":"status","result":"ok"`,
+		`"action":"action.fsctl","target":"test","detail":"op=loglevel value=6","result":"ok"`,
 	} {
-		if code, body := o.do(rq.method, rq.path, rq.body); code != http.StatusForbidden {
-			t.Fatalf("operator %s %s: status %d: %s", rq.method, rq.path, code, body)
+		if !bytes.Contains(auditData, []byte(want)) {
+			t.Fatalf("audit log lacks %s:\n%s", want, auditData)
 		}
+	}
+	if body := c.get("/api/license", http.StatusOK, nil); strings.TrimSpace(string(body)) != `{"edition":"community","status":"none","licensee":"","plan":"","features":[],"expires":null}` {
+		t.Fatalf("licence: %s", body)
 	}
 
 	// The viewer account reads but cannot act.

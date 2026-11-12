@@ -89,12 +89,14 @@ these changes.
 | Flag | Environment | Default | Purpose |
 |---|---|---|---|
 | `-listen` | `FSDECK_LISTEN` | `127.0.0.1:8080` | listen address |
-| `-data` | `FSDECK_DATA` | `fsdeck.json` | data file: instances with their ESL passwords, and accounts (mode 0600) |
+| `-data` | `FSDECK_DATA` | `fsdeck.json` | data file: instances with their ESL passwords and agent tokens, and accounts (mode 0600) |
 | `-audit` | `FSDECK_AUDIT` | `fsdeck-audit.log` beside the data file | audit log; an empty value disables it |
 | `-log-backlog` | `FSDECK_LOG_BACKLOG` | `2000` | log lines kept per instance and replayed when the Logs view opens; `0` disables |
 | `-log-backlog-level` | `FSDECK_LOG_BACKLOG_LEVEL` | `6` (INFO) | highest log level kept in the backlog, `0` to `7` |
 | `-tls-cert`, `-tls-key` | `FSDECK_TLS_CERT`, `FSDECK_TLS_KEY` | unset | serve HTTPS with this PEM certificate and key; both or neither |
-| | `FSDECK_SECRET_KEY` | unset | encrypt the ESL passwords in the data file; at least 16 characters |
+| `-license` | `FSDECK_LICENSE_FILE` | unset | file holding the licence key |
+| | `FSDECK_LICENSE` | unset | the licence key itself, when no file is given |
+| | `FSDECK_SECRET_KEY` | unset | encrypt the ESL passwords and agent tokens in the data file; at least 16 characters |
 | | `FSDECK_ADMIN_PASSWORD` | unset | password of the managed `admin` account |
 | | `FSDECK_VIEWER_PASSWORD` | unset | password of the managed `viewer` account |
 | `-version` | | | print the version and exit |
@@ -102,7 +104,8 @@ these changes.
 With a backlog, fsdeck keeps the ESL log level of every instance at least at
 `-log-backlog-level`, so FreeSWITCH sends INFO lines even while nobody watches
 the Logs view. `GET /healthz` answers `{"status":"ok"}` without signing in, for
-load balancers and container health checks.
+load balancers and container health checks. Backups of config files edited in
+local mode go to `backups/` beside the data file.
 
 ## Accounts
 
@@ -110,18 +113,21 @@ load balancers and container health checks.
 |---|---|---|---|
 | Status, SIP, calls, configuration, dialplan, directory (masked), load history | yes | yes | yes |
 | Logs | no | yes | yes |
-| Hang up, rescan, reloadxml, reloadacl | no | yes | yes |
+| Hang up, reloadxml, reloadacl, profile rescan, gateway register and unregister | no | yes | yes |
+| Profile start, stop, restart and flush; gateway kill; load, unload and reload modules; `fsctl` loglevel, max_sessions, sps, pause, resume; global variables | no | no | yes |
 | Console | no | no | yes |
 | Manage instances | no | no | yes |
-| Manage accounts, read the audit log | no | no | yes |
+| Manage accounts, read the audit log, edit config files | no | no | yes |
 
-Accounts live in the data file and admins manage them in the console.
-Usernames are 2 to 32 lowercase letters, digits, `.`, `_` or `-`; passwords are
-10 to 256 characters and stored as PBKDF2-SHA256 hashes (600000 iterations).
-Everyone can change their own password. Changing an account's role, password
-or disabled flag, or deleting it, signs it out everywhere. Nobody can delete,
-disable or demote the account they are signed in with, and the last enabled
-admin stays.
+Accounts live in the data file. Usernames are 2 to 32 lowercase letters,
+digits, `.`, `_` or `-`; passwords are 10 to 256 characters and stored as
+PBKDF2-SHA256 hashes (600000 iterations). Everyone can change their own
+password. Changing an account's role, password or disabled flag, or deleting
+it, signs it out everywhere. Nobody can delete, disable or demote the account
+they are signed in with, and the last enabled admin stays.
+
+Managing accounts and the `operator` role need a licence (see Editions).
+Without one, only `admin` (role admin) and `viewer` (role viewer) can sign in.
 
 On the first start without accounts and without `FSDECK_ADMIN_PASSWORD`,
 fsdeck creates `admin` with a random password and prints it once.
@@ -131,6 +137,64 @@ fsdeck creates `admin` with a random password and prints it once.
 file says. The console shows them as managed and cannot change or delete
 them; unset the variable to remove the account.
 
+## Editions
+
+fsdeck Community is everything except three paid features, which a licence
+key unlocks:
+
+| Feature | Licence name | Without it |
+|---|---|---|
+| Accounts and the `operator` role | `users` | only `admin` and `viewer` sign in; account changes answer 402 |
+| Audit log search | `audit` | the audit file is still written; the console cannot query it |
+| Config file editing | `config-edit` | the file routes answer 402 |
+
+A licence key is verified offline against the public key built into fsdeck.
+An invalid or expired key never stops fsdeck: it runs as Community and
+`GET /api/license` reports why. `go build -tags community ./cmd/fsdeck` builds
+a binary without any of the paid code (see `ee/LICENSE`).
+
+Licences are issued with `cmd/fsdeck-license`: `keygen -out private.key`
+creates a signing key pair, `sign -key private.key -licensee NAME -plan PLAN
+-features users,audit,config-edit -days 365` prints a key, and
+`verify [-pub KEY] LICENCE` checks one.
+
+## Editing configuration
+
+With the `config-edit` licence an admin can browse, edit, delete and restore
+the FreeSWITCH configuration files of an instance. Set it up when adding or
+editing the instance:
+
+- Local mode (`configMode` `local`): fsdeck runs on the FreeSWITCH host and
+  `configPath` is the conf directory, for example `/etc/freeswitch`. The fsdeck
+  user needs write access to it.
+- Agent mode (`configMode` `agent`): run `fsdeck-agent` on the FreeSWITCH host
+  and give fsdeck its URL and token:
+
+  ```sh
+  head -c 32 /dev/urandom | base64 > /etc/fsdeck-agent.token
+  chmod 600 /etc/fsdeck-agent.token
+  fsdeck-agent -root /etc/freeswitch -backups /var/lib/fsdeck-agent/backups \
+    -token-file /etc/fsdeck-agent.token -listen 0.0.0.0:8025 \
+    -tls-cert agent.pem -tls-key agent.key
+  ```
+
+  Without `-tls-cert` the token and the files cross the network in clear; keep
+  the agent on `127.0.0.1` and use an SSH tunnel then. fsdeck verifies the
+  agent's certificate against the system roots.
+
+Only `.xml .lua .conf .tpl .txt .json .cfg .ini` files up to 1 MiB of UTF-8
+text can be read and written, and nothing outside the conf directory, also not
+through a symbolic link. An `.xml` file must be well-formed to be saved.
+Saving checks that nobody changed the file since it was opened. Before a file
+is overwritten, deleted or restored, its previous content is backed up (the
+last 50 versions per file, outside the conf directory: `backups/<instance
+id>/` beside the data file in local mode, `-backups` on the agent host).
+
+Saving does not apply anything. Run `reloadxml` afterwards (and `reloadacl`
+for ACLs); changes to a SIP profile need a profile rescan or restart, and some
+modules need a reload. If `reloadxml` reports an error, restore the previous
+version.
+
 ## Security notes
 
 - The `admin` role can run any FreeSWITCH API command. Treat it like shell
@@ -139,7 +203,7 @@ them; unset the variable to remove the account.
   a trusted network or behind a TLS-terminating reverse proxy that sets
   `X-Forwarded-Proto: https`, so the session cookie is marked `Secure`. With
   built-in TLS fsdeck also sends `Strict-Transport-Security`.
-- ESL passwords are stored in clear in the data file unless
+- ESL passwords and agent tokens are stored in clear in the data file unless
   `FSDECK_SECRET_KEY` is set; fsdeck warns at start when it is not. With the
   key they are encrypted with AES-256-GCM; existing clear values are encrypted
   at the next change to the data file. fsdeck refuses to start when the file
@@ -147,14 +211,21 @@ them; unset the variable to remove the account.
   the data directory, and protect the data file either way: it also holds the
   password hashes.
 - Five failed sign-ins for an account from one address within five minutes
-  block that pair for a minute. Behind a reverse proxy every client shares the
-  proxy's address, so the block then applies to the account as a whole.
+  block that pair for a minute; wrong current passwords when changing a
+  password count the same way. Behind a reverse proxy every client shares the
+  proxy's address, so the block then applies to the account as a whole. At
+  most four password checks run at once; more answer 503 with `Retry-After`.
 - The audit log records sign-ins (also failed and blocked ones), sign-outs,
-  instance and account changes, password changes, hang-ups, actions, refused
+  instance and account changes, password changes, hang-ups, runtime
+  operations, config file changes (path and hashes, not the content), refused
   requests and every console command in full, with the account and client
-  address. It never records passwords or session tokens, but console commands
-  can carry secrets: the file has mode 0600 and only admins can read it in
-  the console. At 10 MiB it is renamed to `<name>.1` and a new file starts.
+  address. It never records passwords, tokens or session cookies, but console
+  commands can carry secrets: the file has mode 0600 and only admins can read
+  it in the console. At 10 MiB it is renamed to `<name>.1` and a new file
+  starts.
+- Config files are shown and edited as they are, secrets included; that is
+  why editing is admin-only. The agent token gives full access to the conf
+  directory: keep its file at mode 0600.
 - Log lines are not masked and can contain secrets; that is why logs need the
   `operator` or `admin` role.
 

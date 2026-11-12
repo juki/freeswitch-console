@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -30,7 +31,21 @@ type Instance struct {
 	Host     string `json:"host"`
 	Port     int    `json:"port"`
 	Password string `json:"password"` // ESL password; encrypted in the file when a secret key is set
+
+	// Config file access: ConfigMode "" (none), "local" (ConfigPath is the
+	// conf directory on this host) or "agent" (the fsdeck agent at AgentURL,
+	// AgentToken encrypted like Password).
+	ConfigMode string `json:"configMode,omitempty"`
+	ConfigPath string `json:"configPath,omitempty"`
+	AgentURL   string `json:"agentURL,omitempty"`
+	AgentToken string `json:"agentToken,omitempty"`
 }
+
+// Config access modes.
+const (
+	ConfigLocal = "local"
+	ConfigAgent = "agent"
+)
 
 // Roles of a console account.
 const (
@@ -140,7 +155,11 @@ func Open(path string, opts ...Option) (*Store, error) {
 		return nil, fmt.Errorf("store %s: %w", path, err)
 	}
 	for i := range f.Instances {
-		if f.Instances[i].Password, err = s.reveal(f.Instances[i].Password); err != nil {
+		in := &f.Instances[i]
+		if in.Password, err = s.reveal(in.Password); err == nil {
+			in.AgentToken, err = s.reveal(in.AgentToken)
+		}
+		if err != nil {
 			return nil, fmt.Errorf("store %s: %w", path, err)
 		}
 	}
@@ -205,6 +224,7 @@ func (s *Store) Get(id string) (Instance, bool) {
 
 // Add assigns a new ID, stores the instance and returns it.
 func (s *Store) Add(in Instance) (Instance, error) {
+	in = normalize(in)
 	if err := validate(in); err != nil {
 		return Instance{}, err
 	}
@@ -228,8 +248,8 @@ func (s *Store) Add(in Instance) (Instance, error) {
 	return in, nil
 }
 
-// Update replaces the instance with the same ID; an empty Password keeps the
-// stored one.
+// Update replaces the instance with the same ID; an empty Password or
+// AgentToken keeps the stored one.
 func (s *Store) Update(in Instance) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -240,6 +260,10 @@ func (s *Store) Update(in Instance) error {
 	if in.Password == "" {
 		in.Password = s.instances[i].Password
 	}
+	if in.AgentToken == "" {
+		in.AgentToken = s.instances[i].AgentToken
+	}
+	in = normalize(in)
 	if err := validate(in); err != nil {
 		return err
 	}
@@ -388,8 +412,14 @@ func (s *Store) save(instances []Instance, users []User) error {
 	if s.aead != nil {
 		for i := range out.Instances {
 			var err error
-			if out.Instances[i].Password, err = s.seal(out.Instances[i].Password); err != nil {
+			in := &out.Instances[i]
+			if in.Password, err = s.seal(in.Password); err != nil {
 				return err
+			}
+			if in.AgentToken != "" {
+				if in.AgentToken, err = s.seal(in.AgentToken); err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -418,6 +448,17 @@ func (s *Store) save(instances []Instance, users []User) error {
 	return err
 }
 
+// normalize drops the config access fields the mode does not use.
+func normalize(in Instance) Instance {
+	if in.ConfigMode != ConfigLocal {
+		in.ConfigPath = ""
+	}
+	if in.ConfigMode != ConfigAgent {
+		in.AgentURL, in.AgentToken = "", ""
+	}
+	return in
+}
+
 func validate(in Instance) error {
 	switch n := utf8.RuneCountInString(in.Name); {
 	case n < 1 || n > 64:
@@ -426,6 +467,23 @@ func validate(in Instance) error {
 		return fmt.Errorf("%w: host must be non-empty and contain no spaces", ErrInvalid)
 	case in.Port < 1 || in.Port > 65535:
 		return fmt.Errorf("%w: port must be 1 to 65535", ErrInvalid)
+	}
+	switch in.ConfigMode {
+	case "":
+	case ConfigLocal:
+		if !filepath.IsAbs(in.ConfigPath) || filepath.Clean(in.ConfigPath) != in.ConfigPath {
+			return fmt.Errorf("%w: configPath must be a clean absolute path", ErrInvalid)
+		}
+	case ConfigAgent:
+		u, err := url.Parse(in.AgentURL)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+			return fmt.Errorf("%w: agentURL must be an http or https URL without credentials, query or fragment", ErrInvalid)
+		}
+		if n := utf8.RuneCountInString(in.AgentToken); n < 16 || n > 256 || strings.ContainsAny(in.AgentToken, "\r\n") {
+			return fmt.Errorf("%w: agentToken must be 16 to 256 characters on one line", ErrInvalid)
+		}
+	default:
+		return fmt.Errorf("%w: configMode must be empty, local or agent", ErrInvalid)
 	}
 	return nil
 }
