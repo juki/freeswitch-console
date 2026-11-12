@@ -260,7 +260,7 @@ func TestGlobalVars(t *testing.T) {
 		{"empty", ""},
 		{"hold_music", "local_stream://moh"},
 		{"hostname", "fs01"},
-		{"json_db_handle", "pgsql://hostaddr=127.0.0.1 password=x"},
+		{"json_db_handle", "pgsql://hostaddr=127.0.0.1 password=********"},
 		{"local_ip_v4", "10.0.0.5"},
 		{"remote", "http://admin:" + Mask + "@example.com/x"},
 		{"some", "a=b"},
@@ -380,9 +380,21 @@ func TestMaskXML(t *testing.T) {
 			absent:   []string{"pw9", "pw10"},
 		},
 		{
-			name:     "data= inside value is not handled",
-			in:       `<x cmd="set" data="default_password=1234"/>`,
-			contains: []string{`data="default_password=1234"`},
+			name:     "assignment inside an action's data",
+			in:       `<action application="set" data="sip_auth_password=trunk-secret-1"/>`,
+			contains: []string{`data="sip_auth_password=********"`},
+			absent:   []string{"trunk-secret-1"},
+		},
+		{
+			name:     "assignments inside a dial string",
+			in:       `<action application="bridge" data="{sip_auth_username=u1,sip_auth_password=p@ss1,absolute_codec_string=PCMA}sofia/gateway/gw/$1|[api_key=k2]sofia/gateway/gw2/$1"/>`,
+			contains: []string{`{sip_auth_username=u1,sip_auth_password=********,absolute_codec_string=PCMA}sofia/gateway/gw/$1|[api_key=********]sofia/gateway/gw2/$1`},
+			absent:   []string{"p@ss1", "k2"},
+		},
+		{
+			name:     "assignment with a variable or a non-secret name stays",
+			in:       `<a><action application="set" data="bypass_media=true"/><action application="export" data="pass-callee-id=false"/><action application="set" data="call_timeout=30"/></a>`,
+			contains: []string{`data="bypass_media=true"`, `data="pass-callee-id=false"`, `data="call_timeout=30"`},
 		},
 	}
 	for _, tt := range tests {

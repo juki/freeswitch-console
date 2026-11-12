@@ -17,21 +17,27 @@ var (
 	// The password may itself contain '@'; the greedy match stops at the last
 	// '@' before the path.
 	urlPasswordRe = regexp.MustCompile(`([A-Za-z][A-Za-z0-9+.-]*://[^/?#@\s:]*):[^/?#\s]*@`)
+	// A secret assigned inside a longer value, as dialplans do:
+	// data="sip_auth_password=x" or {sip_auth_username=u,sip_auth_password=x}sofia/...
+	assignRe = regexp.MustCompile(`(?i)\b([\w.-]*(?:passw|passphrase|secret|token|a1-hash|dsn|api[-_]?key|auth[-_]?key|credential)[\w.-]*|(?:[\w.-]*[-_.])?pass)=([^,{}\s|&;'"\]]+)`)
 )
 
-func maskURL(s string) string {
-	return urlPasswordRe.ReplaceAllString(s, "${1}:"+Mask+"@")
+// maskInline masks secrets embedded in a value that is not secret as a
+// whole: URL passwords and name=value assignments with a secret-looking name.
+func maskInline(s string) string {
+	s = urlPasswordRe.ReplaceAllString(s, "${1}:"+Mask+"@")
+	return assignRe.ReplaceAllString(s, "${1}="+Mask)
 }
 
-// MaskVars masks the value of every variable whose name looks secret and the
-// password part of URLs in the other values.
+// MaskVars masks the value of every variable whose name looks secret, and
+// URL passwords and secret-looking assignments inside the other values.
 func MaskVars(vars []Var) []Var {
 	out := make([]Var, len(vars))
 	for i, v := range vars {
 		if sensitiveRe.MatchString(v.Name) {
 			v.Value = Mask
 		} else {
-			v.Value = maskURL(v.Value)
+			v.Value = maskInline(v.Value)
 		}
 		out[i] = v
 	}
@@ -49,7 +55,7 @@ type maskNode struct {
 // MaskXML parses an XML document and re-emits it indented with secrets
 // masked: the value and data attributes of an element whose name attribute
 // looks secret, every attribute whose own name looks secret, and URL
-// passwords elsewhere. Comments, processing instructions and directives are
+// passwords and secret-looking name=value assignments elsewhere. Comments, processing instructions and directives are
 // dropped (comments often hold commented-out credentials).
 func MaskXML(doc string) (string, error) {
 	d := newDecoder(doc)
@@ -77,7 +83,7 @@ func MaskXML(doc string) (string, error) {
 			stack = stack[:len(stack)-1]
 		case xml.CharData:
 			if s := strings.TrimSpace(string(t)); s != "" {
-				top.children = append(top.children, &maskNode{text: maskURL(s)})
+				top.children = append(top.children, &maskNode{text: maskInline(s)})
 			}
 		}
 	}
@@ -142,7 +148,7 @@ func maskStart(t xml.StartElement) xml.StartElement {
 		case secretElem && (a.Name.Local == "value" || a.Name.Local == "data"):
 			a.Value = Mask
 		default:
-			a.Value = maskURL(a.Value)
+			a.Value = maskInline(a.Value)
 		}
 		out.Attr[i] = a
 	}
