@@ -1,0 +1,29 @@
+# Build output
+/fsdeck
+/bin/
+/dist/
+
+# Runtime data (instance list with ESL passwords)
+/fsdeck.json
+/data/
+
+# IDE / OS noise
+.idea/
+.vscode/
+.DS_Store
+
+# Secrets / credentials
+.env
+.env.*
+proxy/
+
+# User data / sessions
+userdata/
+session/
+
+# Personal documents and exports
+*_article
+*.docx
+*.doc
+*.xlsx
+*.csv
