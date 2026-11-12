@@ -17,14 +17,14 @@ const TABS = [
   { key: 'sip', label: () => t('tab.sip'), icon: 'radio', mount: mountSip },
   { key: 'calls', label: () => t('tab.calls'), icon: 'calls', mount: mountCalls },
   { key: 'config', label: () => t('tab.config'), icon: 'sliders', mount: mountConfig },
-  { key: 'logs', label: () => t('tab.logs'), icon: 'logs', admin: true, mount: mountLogs },
-  { key: 'console', label: () => t('tab.console'), icon: 'terminal', admin: true, mount: mountConsole },
+  { key: 'logs', label: () => t('tab.logs'), icon: 'logs', cap: 'logs', mount: mountLogs },
+  { key: 'console', label: () => t('tab.console'), icon: 'terminal', cap: 'console', mount: mountConsole },
 ];
 
 // normalizeTab maps an unknown or not-permitted tab to "overview".
-export function normalizeTab(tab, isAdmin) {
+export function normalizeTab(tab, ctx) {
   const found = TABS.find((x) => x.key === tab);
-  return found && (isAdmin || !found.admin) ? tab : 'overview';
+  return found && (!found.cap || ctx.can(found.cap)) ? tab : 'overview';
 }
 
 export function mountInstance({ scope, root, id, ctx }) {
@@ -34,7 +34,7 @@ export function mountInstance({ scope, root, id, ctx }) {
   const glyphDot = h('span', { class: 'dot' });
   const meta = h('div', { class: 'title-meta' });
   const links = new Map();
-  const tabs = TABS.filter((tab) => ctx.isAdmin || !tab.admin);
+  const tabs = TABS.filter((tab) => !tab.cap || ctx.can(tab.cap));
   let tabScope = null;
   let currentTab = null;
   let missing = false;
@@ -132,7 +132,7 @@ export function mountInstance({ scope, root, id, ctx }) {
     if (tabScope) tabScope.dispose();
     tabScope = scope.child();
     body.replaceChildren();
-    TABS.find((tab) => tab.key === key).mount({ id, ctx, isAdmin: ctx.isAdmin, scope: tabScope, root: body, setState });
+    TABS.find((tab) => tab.key === key).mount({ id, ctx, scope: tabScope, root: body, setState });
   }
 
   return { showTab, get tab() { return currentTab; } };

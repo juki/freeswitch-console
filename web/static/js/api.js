@@ -3,11 +3,14 @@
 
 import { t } from './i18n.js';
 
+// ApiError carries the HTTP status and, for a 402 (a licensed feature), the
+// "feature" the server named.
 export class ApiError extends Error {
-  constructor(status, message) {
+  constructor(status, message, data) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
+    this.feature = data && typeof data.feature === 'string' ? data.feature : '';
   }
 }
 
@@ -58,7 +61,7 @@ export async function api(method, path, { body, signal } = {}) {
   }
   if (!res.ok) {
     const msg = data && typeof data.error === 'string' && data.error ? data.error : `HTTP ${res.status}`;
-    throw new ApiError(res.status, msg);
+    throw new ApiError(res.status, msg, data);
   }
   return data;
 }

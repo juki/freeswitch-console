@@ -1,12 +1,13 @@
-// Logs (admin): live tail from /stream?loglevel=N in a terminal pane.
+// Logs (operator, admin): live tail from /stream?loglevel=N in a terminal pane.
 //
-// The pane holds log lines and marks: a mark is a labelled divider such as
-// "Live from 19:20:05" (written when the stream opens), "Level set to DEBUG"
-// or "Reconnected". When the server starts replaying a backlog, the replayed
-// lines go above the first "live" mark. While no line is visible, a panel in
-// the middle of the pane says why: still connecting, FreeSWITCH not
-// connected, nothing logged at this level yet (and for how long the tail has
-// been listening), or everything hidden by the filters.
+// Every time the stream opens, the server first replays the lines it keeps
+// (as ordinary log events), then sends a "backlog" event with their count,
+// then live lines. So the pane is cleared when a stream opens, the replayed
+// lines come first, and a divider "Live from 19:20:05 · 312 earlier lines
+// replayed" marks where live starts. While no line is visible, a panel in the
+// middle of the pane says why: still connecting, FreeSWITCH not connected,
+// nothing logged at this level since fsdeck connected (or, without a backlog,
+// since the tail opened), or everything hidden by the filters.
 
 import { instPath } from '../api.js';
 import { h, fmtClock, fmtDuration, fmtInt } from '../dom.js';
@@ -42,7 +43,7 @@ function lineEl(ev) {
   return el;
 }
 
-export function mountLogs({ id, scope, root, setState }) {
+export function mountLogs({ id, scope, root, setState, ctx }) {
   const base = '#/i/' + encodeURIComponent(id) + '/';
   const select = h('select', { class: 'select', 'aria-label': t('logs.level'), title: t('logs.levelTitle') },
     LEVELS.map((name, i) => h('option', { value: String(i), text: name + ' (' + i + ')' })));
@@ -97,8 +98,7 @@ export function mountLogs({ id, scope, root, setState }) {
   let stream = 'connecting'; // connecting | live | reconnecting
   let fsConnected = true;
   let quietSince = 0; // since when the tail has been listening without a line
-  let opened = 0; // how many times a stream of this view went live
-  let pendingMark = null; // mark text for the next time the stream goes live
+  let backlog = null; // lines the server replayed on this stream; null until it says
   let ticking = false;
 
   // ---- stream state ----
@@ -116,8 +116,8 @@ export function mountLogs({ id, scope, root, setState }) {
     streamText.textContent = STREAM_TEXT[s]();
   }
 
-  function mark(text) {
-    const el = h('div', { class: 'log-mark', role: 'separator' }, h('span', { text }));
+  function mark(text, kind) {
+    const el = h('div', { class: kind ? 'log-mark ' + kind : 'log-mark', role: 'separator' }, h('span', { text }));
     el.dataset.mark = '1';
     pane.append(el);
     if (stick) pane.scrollTop = pane.scrollHeight;
@@ -126,11 +126,10 @@ export function mountLogs({ id, scope, root, setState }) {
   function onStatus(s) {
     stream = s;
     if (s === 'live') {
+      // the server replays its backlog on every open: start from an empty pane
       quietSince = Date.now();
-      const time = fmtClock(quietSince, true);
-      mark(pendingMark ? pendingMark(time) : opened ? t('logs.mark.reconnected', { time }) : t('logs.mark.live', { time }));
-      pendingMark = null;
-      opened++;
+      backlog = null;
+      reset();
     }
     paintStream();
     updateQuiet();
@@ -174,14 +173,16 @@ export function mountLogs({ id, scope, root, setState }) {
     if (!fsConnected) return { cls: 'waiting', icon: 'plug', title: t('logs.quiet.fsDownTitle'), text: t('logs.quiet.fsDownText') };
     return {
       cls: 'listening', icon: 'activity', title: t('logs.quiet.listeningTitle'),
-      text: t('logs.quiet.listeningText', { level: LEVELS[lvl], time: fmtClock(quietSince, true), duration: fmtDuration((Date.now() - quietSince) / 1000) }),
-      hint: t('logs.quiet.listeningHint'),
+      text: backlog === 0
+        ? t('logs.quiet.emptyBacklogText', { level: LEVELS[lvl], duration: fmtDuration((Date.now() - quietSince) / 1000) })
+        : t('logs.quiet.listeningText', { level: LEVELS[lvl], time: fmtClock(quietSince, true), duration: fmtDuration((Date.now() - quietSince) / 1000) }),
+      hint: lvl === DEBUG && backlog !== null ? t('logs.quiet.backlogNote') : t('logs.quiet.listeningHint'),
       actions: [
         lvl < DEBUG ? action(t('logs.quiet.toDebug'), 'logs', () => {
           select.value = String(DEBUG);
           open();
         }) : null,
-        h('a', { class: 'btn btn-sm', href: base + 'console' }, icon('terminal'), t('logs.quiet.openConsole')),
+        ctx.can('console') ? h('a', { class: 'btn btn-sm', href: base + 'console' }, icon('terminal'), t('logs.quiet.openConsole')) : null,
       ].filter(Boolean),
     };
   }
@@ -312,18 +313,41 @@ export function mountLogs({ id, scope, root, setState }) {
     }
   }
 
+  // onBacklog marks where the replayed lines end and live begins.
+  function onBacklog(data) {
+    const n = Math.max(0, Number(data && data.lines) || 0);
+    if (frame) cancelAnimationFrame(frame);
+    flush(); // replayed lines still waiting for a frame go above the divider
+    backlog = n;
+    const time = fmtClock(Date.now(), true);
+    mark(n
+      ? plural(n, t('logs.mark.liveAfter.one', { time, n: fmtInt(n) }), t('logs.mark.liveAfter.other', { time, n: fmtInt(n) }))
+      : t('logs.mark.liveNoBacklog', { time }), 'live');
+    updateQuiet();
+  }
+
+  // reset empties the pane and the counters.
+  function reset() {
+    pane.replaceChildren();
+    held = [];
+    pending = [];
+    total = 0;
+    unseen = 0;
+    counts.err = 0;
+    counts.warn = 0;
+    stick = true;
+    status();
+    paintJump();
+  }
+
   let streamScope = null;
   function open() {
-    if (streamScope) {
-      streamScope.dispose();
-      const name = LEVELS[level(select.value)];
-      pendingMark = (time) => t('logs.mark.level', { level: name, time });
-    }
+    if (streamScope) streamScope.dispose();
     streamScope = scope.child();
     stream = 'connecting';
     paintStream();
     updateQuiet();
-    streamScope.stream('api/' + instPath(id, 'stream') + '?loglevel=' + level(select.value), { log: onLog, state: onState }, { onStatus });
+    streamScope.stream('api/' + instPath(id, 'stream') + '?loglevel=' + level(select.value), { log: onLog, state: onState, backlog: onBacklog }, { onStatus });
   }
   select.addEventListener('change', open);
 
@@ -341,17 +365,8 @@ export function mountLogs({ id, scope, root, setState }) {
   });
 
   clearBtn.addEventListener('click', () => {
-    pane.replaceChildren();
-    held = [];
-    pending = [];
-    total = 0;
-    unseen = 0;
-    counts.err = 0;
-    counts.warn = 0;
-    stick = true;
+    reset();
     quietSince = Date.now();
-    status();
-    paintJump();
     if (stream === 'live') mark(t('logs.mark.cleared', { time: fmtClock(quietSince, true) }));
     updateQuiet();
   });

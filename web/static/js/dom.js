@@ -132,3 +132,38 @@ export function sinceText(v) {
   const d = validTime(v);
   return d ? fmtDuration((Date.now() - d.getTime()) / 1000) : '';
 }
+
+const dateFormats = new Map();
+
+function dateFormat(kind) {
+  const key = document.documentElement.lang + ':' + kind;
+  let f = dateFormats.get(key);
+  if (!f) {
+    const opts = {
+      date: { dateStyle: 'medium' },
+      datetime: { dateStyle: 'medium', timeStyle: 'medium', hourCycle: 'h23' },
+      short: { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' },
+    }[kind];
+    f = new Intl.DateTimeFormat(document.documentElement.lang, opts);
+    dateFormats.set(key, f);
+  }
+  return f;
+}
+
+// fmtDate formats a timestamp as a date ("Nov 12, 2026" / "2026年11月12日").
+export function fmtDate(v) {
+  const d = validTime(v);
+  return d ? dateFormat('date').format(d) : DASH;
+}
+
+// fmtDateTime formats a timestamp with date and time, seconds included.
+export function fmtDateTime(v) {
+  const d = validTime(v);
+  return d ? dateFormat('datetime').format(d) : DASH;
+}
+
+// fmtStamp is the compact form for dense tables: "Nov 12, 20:07:13".
+export function fmtStamp(v) {
+  const d = validTime(v);
+  return d ? dateFormat('short').format(d) : DASH;
+}

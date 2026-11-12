@@ -219,20 +219,20 @@ export function clip(text, cls) {
   return h('span', { class: cx('clip', cls), text: t, title: t.length > 28 ? t : undefined });
 }
 
-// langMenu is the language picker: a globe button (with the language name
-// when label is set) that opens a small menu; up opens it upwards.
-export function langMenu({ label = false, up = false } = {}) {
-  const active = LANGS.find((l) => l.code === lang()) || LANGS[0];
-  const btn = h('button', {
-    type: 'button', class: label ? 'btn btn-ghost btn-sm lang-btn' : 'btn btn-ghost btn-icon btn-sm',
-    'aria-haspopup': 'menu', 'aria-expanded': 'false', 'aria-label': t('lang.choose'), title: t('lang.choose'),
-  }, icon('globe'), label ? h('span', { text: active.label }) : null);
-  const items = LANGS.map((l) => h('button', {
-    type: 'button', class: 'lang-item', role: 'menuitemradio', lang: l.code, 'aria-checked': String(l.code === active.code),
-    on: { click: () => { close(); setLang(l.code); } },
-  }, h('span', { class: 'lang-code', text: l.short }), h('span', { text: l.label }), l.code === active.code ? icon('check') : null));
-  const menu = h('div', { class: cx('lang-menu', up && 'up'), role: 'menu', 'aria-label': t('lang.choose'), hidden: true }, items);
-  const el = h('div', { class: 'lang' }, btn, menu);
+// popover attaches a floating panel to a trigger button: click toggles it,
+// Escape or a click outside closes it, arrow keys move between the panel's
+// items. Listeners exist only while it is open. align: 'end' (default),
+// 'start' or 'center'; up opens it above the trigger.
+export function popover(trigger, panel, { up = false, align = 'end', label } = {}) {
+  panel.classList.add('pop-panel', 'align-' + align);
+  if (up) panel.classList.add('up');
+  panel.setAttribute('role', 'menu');
+  if (label) panel.setAttribute('aria-label', label);
+  panel.hidden = true;
+  trigger.setAttribute('aria-haspopup', 'menu');
+  trigger.setAttribute('aria-expanded', 'false');
+  const el = h('div', { class: 'pop' }, trigger, panel);
+  const items = () => [...panel.querySelectorAll('button:not([disabled]), a[href]')];
   const onDown = (ev) => {
     if (!el.contains(ev.target)) close();
   };
@@ -240,28 +240,51 @@ export function langMenu({ label = false, up = false } = {}) {
     if (ev.key === 'Escape') {
       ev.stopPropagation();
       close();
-      btn.focus();
+      trigger.focus();
     } else if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
       ev.preventDefault();
-      const i = items.indexOf(document.activeElement);
-      items[(i + (ev.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length].focus();
+      const list = items();
+      if (!list.length) return;
+      const i = list.indexOf(document.activeElement);
+      list[(i + (ev.key === 'ArrowDown' ? 1 : list.length - 1)) % list.length].focus();
     }
   };
   function open() {
-    menu.hidden = false;
-    btn.setAttribute('aria-expanded', 'true');
+    panel.hidden = false;
+    trigger.setAttribute('aria-expanded', 'true');
     document.addEventListener('pointerdown', onDown);
     el.addEventListener('keydown', onKey);
-    items[LANGS.indexOf(active)].focus();
+    const first = panel.querySelector('[aria-checked="true"]') || items()[0];
+    if (first) first.focus();
   }
   function close() {
-    menu.hidden = true;
-    btn.setAttribute('aria-expanded', 'false');
+    panel.hidden = true;
+    trigger.setAttribute('aria-expanded', 'false');
     document.removeEventListener('pointerdown', onDown);
     el.removeEventListener('keydown', onKey);
   }
-  btn.addEventListener('click', () => (menu.hidden ? open() : close()));
-  return el;
+  trigger.addEventListener('click', () => (panel.hidden ? open() : close()));
+  return { el, open, close };
+}
+
+// langItems are the menu entries that switch the language.
+export function langItems(onPick) {
+  return LANGS.map((l) => h('button', {
+    type: 'button', class: 'menu-item', role: 'menuitemradio', lang: l.code, 'aria-checked': String(l.code === lang()),
+    on: { click: () => { if (onPick) onPick(); setLang(l.code); } },
+  }, h('span', { class: 'lang-code', text: l.short }), h('span', { class: 'menu-text', text: l.label }), l.code === lang() ? icon('check', 'menu-check') : null));
+}
+
+// langMenu is the stand-alone language picker of the sign-in screen: a globe
+// button with the language name that opens a small menu.
+export function langMenu() {
+  const active = LANGS.find((l) => l.code === lang()) || LANGS[0];
+  const btn = h('button', { type: 'button', class: 'btn btn-ghost btn-sm lang-btn', 'aria-label': t('lang.choose'), title: t('lang.choose') },
+    icon('globe'), h('span', { text: active.label }));
+  const panel = h('div', { class: 'menu' });
+  const pop = popover(btn, panel, { label: t('lang.choose') });
+  panel.append(...langItems(() => pop.close()));
+  return pop.el;
 }
 
 export function iconButton(name, label, onClick, cls) {
@@ -276,14 +299,72 @@ export function emptyState({ icon: name = 'box', title, text, action, tone }) {
     action || null);
 }
 
+// PAID describes the licensed features for the "needs a licence" state.
+const PAID = {
+  users: () => ({ icon: 'users', title: t('paid.users.title'), text: t('paid.users.text') }),
+  audit: () => ({ icon: 'shield', title: t('paid.audit.title'), text: t('paid.audit.text') }),
+  'config-edit': () => ({ icon: 'sliders', title: t('paid.config.title'), text: t('paid.config.text') }),
+};
+
+// paidState is what a screen shows when the server answers 402: what the
+// feature does and that this server has no licence for it.
+export function paidState(feature, serverText) {
+  const f = (PAID[feature] || PAID.users)();
+  return h('div', { class: 'paid' },
+    h('div', { class: 'paid-card' },
+      h('span', { class: 'paid-icon' }, icon(f.icon), h('span', { class: 'paid-lock' }, icon('lock'))),
+      h('span', { class: 'paid-kicker', text: t('paid.kicker') }),
+      h('h2', { class: 'paid-title', text: f.title }),
+      h('p', { class: 'paid-text', text: f.text }),
+      h('p', { class: 'paid-note', text: t('paid.note') }),
+      serverText ? h('code', { class: 'raw-error', text: serverText }) : null));
+}
+
 // errorState renders an API error. 503 (instance not connected) is a calm
-// state, everything else an error.
+// state, 402 the licence state, everything else an error.
 export function errorState(err) {
   if (err && err.status === 503) {
     return emptyState({ icon: 'plug', tone: 'calm', title: t('error.notConnected'), text: t('error.notConnectedText') });
   }
+  if (err && err.status === 402) return paidState(err.feature, err.message);
   const msg = err && err.message ? err.message : String(err);
   return emptyState({ icon: 'alert', tone: 'error', title: err && err.status === 403 ? t('error.forbidden') : t('error.loadFailed'), text: msg });
+}
+
+// actionDialog asks for confirmation and runs the action while the dialog
+// stays open: a failure is shown inside it, next to the button that caused
+// it; success closes it. Resolves to true when the action succeeded.
+export function actionDialog({ title, message, confirmLabel, danger = false, run }) {
+  return new Promise((resolve) => {
+    let done = false;
+    const error = h('div', { class: 'form-error', role: 'alert', hidden: true });
+    const cancel = h('button', { type: 'button', class: 'btn', text: t('common.cancel') });
+    const ok = h('button', { type: 'button', class: danger ? 'btn btn-danger-solid' : 'btn btn-primary', text: confirmLabel });
+    const m = openModal({
+      title,
+      body: [h('p', { class: 'modal-text', text: message }), error],
+      footer: [cancel, ok],
+      onClose: () => resolve(done),
+    });
+    if (danger) m.dialog.classList.add('danger');
+    cancel.addEventListener('click', m.close);
+    ok.addEventListener('click', async () => {
+      ok.disabled = true;
+      cancel.disabled = true;
+      error.hidden = true;
+      try {
+        await run();
+        done = true;
+        m.close();
+      } catch (err) {
+        error.textContent = err && err.message ? err.message : String(err);
+        error.hidden = false;
+        ok.disabled = false;
+        cancel.disabled = false;
+      }
+    });
+    (danger ? cancel : ok).focus();
+  });
 }
 
 // connectionHint turns an ESL connection error into advice; "" when the

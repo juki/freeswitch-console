@@ -33,7 +33,8 @@ function direction(dir) {
   return h('span', { class: inbound ? 'dir in' : 'dir out' }, icon(inbound ? 'in' : 'out'), inbound ? t('calls.in') : t('calls.out'));
 }
 
-export function mountCalls({ id, scope, root, isAdmin }) {
+export function mountCalls({ id, scope, root, ctx }) {
+  const canOperate = ctx.can('operate');
   let mode = 'channels';
   let query = '';
   let channels = null;
@@ -83,14 +84,14 @@ export function mountCalls({ id, scope, root, isAdmin }) {
   function details(row) {
     selected = cellText(row.uuid);
     const d = openDrawer({ kicker: t('calls.kind'), title: cellText(row.name) || selected, subtitle: selected, onClose: () => { selected = null; } });
-    if (isAdmin) {
+    if (canOperate) {
       d.body.append(h('div', { class: 'drawer-actions' },
         h('button', { type: 'button', class: 'btn btn-danger', on: { click: () => hangup(row) } }, icon('hangup'), t('calls.hangup'))));
     }
     d.body.append(...detailBody(row, ['uuid', 'direction', 'callstate', 'state', 'cid_name', 'cid_num', 'dest', 'application', 'application_data', 'read_codec', 'created']).filter(Boolean));
   }
 
-  const hangupCol = isAdmin ? { label: '', right: true, render: (r) => iconButton('hangup', t('calls.hangup'), () => hangup(r), 'btn-ghost btn-danger') } : null;
+  const hangupCol = canOperate ? { label: '', right: true, render: (r) => iconButton('hangup', t('calls.hangup'), () => hangup(r), 'btn-ghost btn-danger') } : null;
 
   const channelCols = [
     { label: t('calls.col.dir'), sortBy: (r) => cellText(r.direction), render: (r) => direction(r.direction) },

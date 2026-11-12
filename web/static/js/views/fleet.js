@@ -22,7 +22,7 @@ export function mountFleet({ scope, root, ctx }) {
   const summary = h('section', { class: 'panel summary', 'aria-label': t('fleet.summary') });
   const grid = h('div', { class: 'fleet' },
     [0, 1, 2].map(() => h('div', { class: 'inst-card' }, skeleton({ rows: 5, cols: 1 }))));
-  const addBtn = ctx.isAdmin
+  const addBtn = ctx.can('manage')
     ? h('button', { type: 'button', class: 'btn btn-primary', on: { click: () => instanceDialog(null) } }, icon('plus'), t('fleet.add'))
     : null;
   root.replaceChildren(
@@ -58,7 +58,7 @@ export function mountFleet({ scope, root, ctx }) {
       h('div', { class: 'inst-top' },
         h('span', { class: m.ok ? 'dot ok' : 'dot bad' }),
         h('a', { class: 'inst-name', href: '#/i/' + encodeURIComponent(inst.id) + '/overview', text: inst.name }),
-        ctx.isAdmin ? h('div', { class: 'inst-actions' },
+        ctx.can('manage') ? h('div', { class: 'inst-actions' },
           iconButton('edit', t('fleet.editNamed', { name: inst.name }), () => instanceDialog(inst)),
           iconButton('trash', t('fleet.deleteNamed', { name: inst.name }), () => remove(inst))) : null),
       h('div', { class: 'inst-addr' },
@@ -127,8 +127,8 @@ export function mountFleet({ scope, root, ctx }) {
       grid.replaceChildren(h('div', { class: 'panel fleet-empty' }, emptyState({
         icon: 'server',
         title: t('fleet.empty.title'),
-        text: ctx.isAdmin ? t('fleet.empty.admin') : t('fleet.empty.viewer'),
-        action: ctx.isAdmin ? h('button', { type: 'button', class: 'btn btn-primary', on: { click: () => instanceDialog(null) } }, icon('plus'), t('fleet.add')) : null,
+        text: ctx.can('manage') ? t('fleet.empty.admin') : t('fleet.empty.viewer'),
+        action: ctx.can('manage') ? h('button', { type: 'button', class: 'btn btn-primary', on: { click: () => instanceDialog(null) } }, icon('plus'), t('fleet.add')) : null,
       })));
       return;
     }

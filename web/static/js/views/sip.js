@@ -21,7 +21,7 @@ function stripSip(v) {
   return String(v || '').replace(/^<?sips?:/, '').replace(/>$/, '');
 }
 
-export function mountSip({ id, scope, root, isAdmin }) {
+export function mountSip({ id, scope, root, ctx }) {
   const profiles = panel({ title: t('sip.profiles'), flush: true });
   const gateways = panel({ title: t('sip.gateways'), flush: true });
   let query = '';
@@ -77,7 +77,7 @@ export function mountSip({ id, scope, root, isAdmin }) {
         { label: t('sip.col.transport'), sortBy: (r) => parseProfileState(r.state).transport, render: (r) => tag(parseProfileState(r.state).transport) },
         { label: t('sip.col.state'), sortBy: (r) => parseProfileState(r.state).state, render: (r) => statePill(parseProfileState(r.state).state) },
         { label: t('sip.col.inUse'), right: true, sortBy: (r) => parseProfileState(r.state).inUse, render: (r) => h('span', { class: 'num', text: parseProfileState(r.state).inUse || DASH }) },
-        isAdmin ? {
+        ctx.can('operate') ? {
           label: '', right: true,
           render: (r) => h('button', { type: 'button', class: 'btn btn-sm', title: t('sip.rescanTitle'), on: { click: () => rescan(cellText(r.name)) } }, icon('refresh'), t('sip.rescan')),
         } : null,

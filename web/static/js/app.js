@@ -5,19 +5,37 @@ import { api, onUnauthorized, isAbort } from './api.js';
 import { h } from './dom.js';
 import { icon, brandMark } from './icons.js';
 import { Scope } from './scope.js';
-import { closeDrawer, emptyState, iconButton, langMenu, toastError } from './ui.js';
+import { closeDrawer, emptyState, toastError } from './ui.js';
 import { onLangChange, t } from './i18n.js';
 import { mountLogin } from './views/login.js';
 import { mountFleet } from './views/fleet.js';
 import { mountInstance, normalizeTab } from './views/instance.js';
+import { mountUsers } from './views/users.js';
+import { mountAudit } from './views/audit.js';
+import { accountMenu } from './views/account.js';
 
 const app = document.getElementById('app');
 
-let me = null; // {username, role}
+// What each role may do. Views ask ctx.can(capability); the server enforces
+// the same rules and answers 403 otherwise.
+//   logs     the live log tail
+//   operate  hang up channels, reload XML/ACL, rescan SIP profiles
+//   console  the API console
+//   manage   add, edit and delete instances
+//   users    user accounts
+//   audit    the audit log
+const CAPABILITIES = {
+  viewer: [],
+  operator: ['logs', 'operate'],
+  admin: ['logs', 'operate', 'console', 'manage', 'users', 'audit'],
+};
+
+let me = null; // {username, role, managed}
+let version = '';
 let appScope = null; // lives while signed in
 let viewScope = null;
 let current = null; // {kind, id, tab, view}
-let shell = null; // {main, list, count, fleetLink}
+let shell = null; // {main, list, count, fleetLink, adminLinks}
 let instances = [];
 let loaded = false;
 let refresh = null;
@@ -25,8 +43,11 @@ const listeners = new Set();
 
 // ctx is what views get to know about the session and the instance list.
 const ctx = {
-  get isAdmin() {
-    return Boolean(me) && me.role === 'admin';
+  can(capability) {
+    return Boolean(me) && (CAPABILITIES[me.role] || []).includes(capability);
+  },
+  get me() {
+    return me;
   },
   instances: () => instances,
   loaded: () => loaded,
@@ -54,55 +75,41 @@ function publish() {
 
 // ---------- shell ----------
 
-const THEME_ICONS = { auto: 'contrast', light: 'sun', dark: 'moon' };
-const themeLabel = (mode) => ({ auto: t('theme.auto'), light: t('theme.light'), dark: t('theme.dark') })[mode] || t('theme.auto');
-
-function themeButton() {
-  const btn = h('button', { type: 'button', class: 'btn btn-ghost btn-icon btn-sm' });
-  const paint = () => {
-    const mode = window.fsdeckTheme.get();
-    const label = themeLabel(mode);
-    btn.replaceChildren(icon(THEME_ICONS[mode] || THEME_ICONS.auto));
-    btn.title = label;
-    btn.setAttribute('aria-label', label);
-  };
-  btn.addEventListener('click', () => {
-    const order = ['auto', 'light', 'dark'];
-    window.fsdeckTheme.set(order[(order.indexOf(window.fsdeckTheme.get()) + 1) % order.length]);
-    paint();
-  });
-  paint();
-  return btn;
-}
-
 function buildShell() {
   const list = h('div', { class: 'side-list' });
   const count = h('span', { class: 'count' });
   const fleetLink = h('a', { class: 'side-link', href: '#/', title: t('nav.all') }, icon('grid'), h('span', { class: 'name', text: t('nav.all') }));
+  const adminLinks = {};
+  const admin = [];
+  if (ctx.can('users')) {
+    adminLinks.users = h('a', { class: 'side-link', href: '#/admin/users', title: t('nav.users') }, icon('users'), h('span', { class: 'name', text: t('nav.users') }));
+    admin.push(adminLinks.users);
+  }
+  if (ctx.can('audit')) {
+    adminLinks.audit = h('a', { class: 'side-link', href: '#/admin/audit', title: t('nav.audit') }, icon('shield'), h('span', { class: 'name', text: t('nav.audit') }));
+    admin.push(adminLinks.audit);
+  }
   const main = h('main', { class: 'main' });
   const side = h('aside', { class: 'side' },
     h('a', { class: 'brand', href: '#/' }, brandMark(), h('span', { text: 'fsdeck' }), h('span', { class: 'brand-tag', text: t('brand.tag') })),
-    h('nav', { class: 'side-scroll', 'aria-label': t('nav.instances') },
+    h('nav', { class: 'side-scroll', 'aria-label': t('nav.main') },
       fleetLink,
       h('div', { class: 'side-label' }, t('nav.instances'), count),
-      list),
-    h('div', { class: 'side-foot' },
-      h('div', { class: 'avatar', text: me.username.slice(0, 1) }),
-      h('div', { class: 'who' }, h('div', { class: 'who-name', text: me.username }), h('div', { class: 'who-role', text: me.role === 'admin' ? t('role.admin') : t('role.viewer') })),
-      h('span', { class: 'spacer' }),
-      langMenu({ up: true }),
-      themeButton(),
-      iconButton('logout', t('nav.signOut'), logout)));
+      list,
+      admin.length ? h('div', { class: 'side-label' }, t('nav.admin')) : null,
+      admin.length ? h('div', { class: 'side-list admin-list' }, admin) : null),
+    h('div', { class: 'side-foot' }, accountMenu({ me, version, onSignOut: logout })));
   app.replaceChildren(h('div', { class: 'shell' }, side, main));
-  shell = { main, list, count, fleetLink };
+  shell = { main, list, count, fleetLink, adminLinks };
 }
 
 function renderSide() {
   if (!shell) return;
   const activeId = current && current.kind === 'instance' ? current.id : null;
   const tab = current && current.kind === 'instance' ? current.tab : 'overview';
-  if (current && current.kind === 'fleet') shell.fleetLink.setAttribute('aria-current', 'page');
-  else shell.fleetLink.removeAttribute('aria-current');
+  const mark = (el, on) => (on ? el.setAttribute('aria-current', 'page') : el.removeAttribute('aria-current'));
+  mark(shell.fleetLink, current && current.kind === 'fleet');
+  for (const [key, el] of Object.entries(shell.adminLinks)) mark(el, current && current.kind === 'admin' && current.page === key);
   shell.count.textContent = instances.length ? String(instances.length) : '';
   if (!instances.length) {
     shell.list.replaceChildren(h('div', { class: 'side-empty', text: loaded ? t('nav.none') : t('common.loadingDots') }));
@@ -128,9 +135,13 @@ function teardown() {
   current = null;
 }
 
+const ADMIN_PAGES = { users: { cap: 'users', mount: mountUsers }, audit: { cap: 'audit', mount: mountAudit } };
+
 function parseRoute() {
   const hash = location.hash.replace(/^#/, '') || '/';
   if (hash === '/') return { kind: 'fleet' };
+  const a = hash.match(/^\/admin\/(\w+)\/?$/);
+  if (a && ADMIN_PAGES[a[1]]) return { kind: 'admin', page: a[1] };
   const m = hash.match(/^\/i\/([^/]+)(?:\/([^/]*))?\/?$/);
   if (!m) return { kind: 'unknown' };
   try {
@@ -150,13 +161,13 @@ function newPage() {
 function route() {
   if (!me || !shell) return;
   const r = parseRoute();
-  if (r.kind === 'unknown') {
+  if (r.kind === 'unknown' || (r.kind === 'admin' && !ctx.can(ADMIN_PAGES[r.page].cap))) {
     history.replaceState(null, '', '#/');
     route();
     return;
   }
   if (r.kind === 'instance') {
-    const tab = normalizeTab(r.tab, ctx.isAdmin);
+    const tab = normalizeTab(r.tab, ctx);
     if (tab !== r.tab) history.replaceState(null, '', '#/i/' + encodeURIComponent(r.id) + '/' + tab);
     if (current && current.kind === 'instance' && current.id === r.id) {
       closeDrawer();
@@ -169,6 +180,11 @@ function route() {
       current = { kind: 'instance', id: r.id, tab, view };
       view.showTab(tab);
     }
+  } else if (r.kind === 'admin') {
+    teardown();
+    viewScope = new Scope();
+    current = { kind: 'admin', page: r.page };
+    ADMIN_PAGES[r.page].mount({ scope: viewScope, root: newPage(), ctx });
   } else {
     teardown();
     viewScope = new Scope();
@@ -225,6 +241,15 @@ function start() {
       // keep the last known list; the next poll retries
     }
   }, 5000);
+  // The version only decorates the account menu; without it the menu says less.
+  if (!version) {
+    api('GET', 'version', { signal: appScope.signal }).then((data) => {
+      if (!data || typeof data.version !== 'string' || !data.version || !shell) return;
+      version = data.version;
+      const foot = shell.main.parentNode.querySelector('.side-foot');
+      if (foot) foot.replaceChildren(accountMenu({ me, version, onSignOut: logout }));
+    }, () => {});
+  }
   route();
 }
 
