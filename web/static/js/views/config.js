@@ -11,11 +11,13 @@ import { operate } from '../actions.js';
 import { mountXmlBrowser } from './xmlbrowser.js';
 import { mountFiles } from './files.js';
 import { mountRuntime } from './runtime.js';
+import { instHash } from '../nav.js';
+import { sourceAction } from './source.js';
 
 const SUBS = {
-  configuration: (o) => mountXmlBrowser({ ...o, kind: 'configuration' }),
-  dialplan: (o) => mountXmlBrowser({ ...o, kind: 'dialplan' }),
-  directory: (o) => mountXmlBrowser({ ...o, kind: 'directory' }),
+  configuration: (o) => mountXmlBrowser({ ...o, kind: 'configuration', label: t('cfg.sub.configuration') }),
+  dialplan: (o) => mountXmlBrowser({ ...o, kind: 'dialplan', label: t('cfg.sub.dialplan') }),
+  directory: (o) => mountXmlBrowser({ ...o, kind: 'directory', label: t('cfg.sub.directory') }),
   vars: mountVars,
   modules: mountModules,
   files: (o) => (o.ctx.access('files') === 'licence' ? o.root.append(paidState('config-edit')) : mountFiles(o)),
@@ -26,7 +28,7 @@ const SUBS = {
 // browser tab comes back to the editor.
 let lastSub = 'configuration';
 
-export function mountConfig({ id, scope, root, ctx }) {
+export function mountConfig({ id, scope, root, ctx, nav = {} }) {
   const body = h('div');
   let sub = null;
   let currentKey = null;
@@ -39,13 +41,14 @@ export function mountConfig({ id, scope, root, ctx }) {
     ctx.access('files') !== 'role' ? { key: 'files', label: t('cfg.sub.files') } : null,
     ctx.can('control') ? { key: 'runtime', label: t('cfg.sub.runtime') } : null,
   ].filter(Boolean);
-  function show(key) {
+  function show(key, params) {
     if (sub) sub.dispose();
     sub = scope.child();
     currentKey = key;
     lastSub = key;
     body.replaceChildren();
-    SUBS[key]({ id, ctx, scope: sub, root: body });
+    if (!params) ctx.setHash(instHash(id, 'config', key));
+    SUBS[key]({ id, ctx, scope: sub, root: body, params: params || new URLSearchParams() });
     note.hidden = key === 'files' || key === 'runtime';
   }
   const seg = segmented(options, 'configuration', async (key) => {
@@ -66,12 +69,14 @@ export function mountConfig({ id, scope, root, ctx }) {
   root.append(h('div', { class: 'toolbar' }, seg.el,
     h('span', { class: 'spacer' }), note,
     ctx.can('operate') ? h('span', { class: 'row' }, reload('reloadxml', t('ops.reloadxml')), reload('reloadacl', t('ops.reloadacl'))) : null), body);
-  const start = options.some((o) => o.key === lastSub) ? lastSub : 'configuration';
+  // the address names the sub-tab (and what is open in it) when it can
+  const fromHash = options.some((o) => o.key === nav.sub);
+  const start = fromHash ? nav.sub : options.some((o) => o.key === lastSub) ? lastSub : 'configuration';
   seg.set(start);
-  show(start);
+  show(start, fromHash ? nav.params : null);
 }
 
-function mountVars({ id, scope, root }) {
+function mountVars({ id, scope, root, ctx }) {
   let rows = null;
   let query = '';
   const search = searchBox(t('cfg.vars.filter'), (q) => {
@@ -96,7 +101,11 @@ function mountVars({ id, scope, root }) {
       columns: [
         { label: t('cfg.col.name'), mono: true, shrink: true, sortBy: (r) => cellText(r.name), render: (r) => h('span', { class: 'cell-strong', text: cellText(r.name) }) },
         { label: t('cfg.col.value'), mono: true, wrap: true, sortBy: (r) => cellText(r.value), render: (r) => (r.value === '********' ? h('span', { class: 'masked', text: t('cfg.masked') }) : cellText(r.value)) },
-      ],
+        ctx.access('files') !== 'role' ? {
+          label: '', right: true,
+          render: (r) => sourceAction(ctx, { id, scope, kind: 'variable', name: cellText(r.name), label: t('cfg.sub.vars'), compact: true }),
+        } : null,
+      ].filter(Boolean),
     }));
   }
 

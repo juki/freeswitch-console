@@ -5,6 +5,8 @@
 //
 // A reader returns {el, filter(q) -> [shown, total]} or null when the XML is
 // not what it expects, in which case the browser falls back to the raw XML.
+// opts.source(kind, name, hint) may return an "Edit source" control for an
+// extension or a user (see source.js).
 
 import { h, fmtInt } from '../dom.js';
 import { plural, t, tx } from '../i18n.js';
@@ -82,7 +84,7 @@ function condition(c, words) {
   return h('div', { class: 'dp-cond' }, test, steps.length ? list : null, nested);
 }
 
-export function readDialplan(xml) {
+export function readDialplan(xml, { source, context } = {}) {
   const ctx = parse(xml, 'context');
   if (!ctx) return null;
   const exts = kids(ctx, 'extension');
@@ -96,6 +98,7 @@ export function readDialplan(xml) {
         h('span', { class: 'dp-name', text: attr(ext, 'name') || t('dp.unnamed') }),
         attr(ext, 'continue') === 'true' ? h('span', { class: 'tag', title: t('dp.continueTitle'), text: 'continue' }) : null,
         h('span', { class: 'spacer' }),
+        source ? source('extension', attr(ext, 'name'), context) : null,
         h('span', { class: 'dp-meta', text: plural(conds.length, t('dp.conds.one', { n: fmtInt(conds.length) }), t('dp.conds.other', { n: fmtInt(conds.length) })) + ' · ' + plural(actions, t('dp.acts.one', { n: fmtInt(actions) }), t('dp.acts.other', { n: fmtInt(actions) })) })),
       conds.length ? conds : h('div', { class: 'dp-cond faint', text: t('dp.noConds') }));
     return { el, key: words.join(' ').toLowerCase() };
@@ -127,7 +130,7 @@ function settings(el) {
   return out;
 }
 
-export function readDirectory(xml) {
+export function readDirectory(xml, { source } = {}) {
   const domain = parse(xml, 'domain');
   if (!domain) return null;
   const users = new Map(); // id -> record
@@ -202,6 +205,8 @@ export function readDirectory(xml) {
         render();
       },
     });
+    const src = source ? source('user', r.id, '', true) : null;
+    if (src) d.body.append(h('div', { class: 'drawer-actions' }, src));
     d.body.append(...detailBody(flat, ['id', 'groups', 'effective_caller_id_name', 'effective_caller_id_number', 'user_context', 'callgroup', 'toll_allow', 'accountcode', 'password']).filter(Boolean));
   }
 
@@ -225,7 +230,8 @@ export function readDirectory(xml) {
           label: t('dir.col.password'), sortBy: (r) => (r.defined ? (r.secret ? 1 : 0) : 2),
           render: (r) => (!r.defined ? h('span', { class: 'faint', text: t('dir.pointerOnly') }) : r.secret ? pill(t('dir.pass.set'), '', true) : pill(t('dir.pass.none'), 'warn')),
         },
-      ],
+        source ? { label: '', right: true, render: (r) => source('user', r.id) } : null,
+      ].filter(Boolean),
     }));
   }
   render();

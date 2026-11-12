@@ -78,6 +78,14 @@ const ctx = {
   refreshInstances() {
     if (refresh) refresh();
   },
+  // setHash records where the user is inside a view (a sub-tab, an open
+  // item or file) without re-routing, so a reload or a shared link comes back
+  // to the same place.
+  setHash(hash) {
+    if (location.hash === hash) return;
+    history.replaceState(null, '', hash);
+    lastHash = hash;
+  },
   // patchState applies a connection state learned from an event stream, so
   // the sidebar does not wait for the next poll.
   patchState(id, state) {
@@ -181,10 +189,11 @@ function parseRoute() {
   if (hash === '/') return { kind: 'fleet' };
   const a = hash.match(/^\/admin\/(\w+)\/?$/);
   if (a && ADMIN_PAGES[a[1]]) return { kind: 'admin', page: a[1] };
-  const m = hash.match(/^\/i\/([^/]+)(?:\/([^/]*))?\/?$/);
+  // #/i/<id>/<tab>[/<sub>][?query] — see nav.js
+  const m = hash.match(/^\/i\/([^/?]+)(?:\/([^/?]*))?(?:\/([^/?]+))?\/?(?:\?(.*))?$/);
   if (!m) return { kind: 'unknown' };
   try {
-    return { kind: 'instance', id: decodeURIComponent(m[1]), tab: m[2] || '' };
+    return { kind: 'instance', id: decodeURIComponent(m[1]), tab: m[2] || '', sub: m[3] || '', params: new URLSearchParams(m[4] || '') };
   } catch {
     return { kind: 'unknown' };
   }
@@ -228,17 +237,18 @@ function route() {
   }
   if (r.kind === 'instance') {
     const tab = normalizeTab(r.tab, ctx);
+    const nav = tab === r.tab ? { sub: r.sub, params: r.params } : { sub: '', params: new URLSearchParams() };
     if (tab !== r.tab) history.replaceState(null, '', '#/i/' + encodeURIComponent(r.id) + '/' + tab);
     if (current && current.kind === 'instance' && current.id === r.id) {
       closeDrawer();
       current.tab = tab;
-      current.view.showTab(tab);
+      current.view.showTab(tab, nav);
     } else {
       teardown();
       viewScope = new Scope();
       const view = mountInstance({ scope: viewScope, root: newPage(), id: r.id, ctx });
       current = { kind: 'instance', id: r.id, tab, view };
-      view.showTab(tab);
+      view.showTab(tab, nav);
     }
   } else if (r.kind === 'admin') {
     teardown();

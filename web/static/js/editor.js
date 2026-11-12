@@ -148,6 +148,7 @@ export function createEditor({ xml = true, label = '', onChange, onSave, onFind,
   let curLine = -1;
   let errLine = -1;
   let charW = 0;
+  let flashed = null;
 
   function makeLine(text, startState) {
     const div = document.createElement('div');
@@ -372,11 +373,27 @@ export function createEditor({ xml = true, label = '', onChange, onSave, onFind,
       ta.setSelectionRange(start, end);
       reveal();
     },
+    // flashLine puts the cursor at the start of line n and highlights the
+    // line briefly (a CSS animation; no timer to clean up).
+    flashLine(n) {
+      if (flashed && flashed.isConnected) flashed.classList.remove('flash');
+      this.revealLine(n);
+      flashed = lineEls[n - 1] || null;
+      if (flashed) {
+        void flashed.offsetWidth; // restart the animation
+        flashed.classList.add('flash');
+      }
+    },
     revealLine(n) {
       let pos = 0;
       for (let i = 1; i < n && pos >= 0; i++) pos = ta.value.indexOf('\n', pos) + 1;
       ta.focus({ preventScroll: true });
       ta.setSelectionRange(pos, pos);
+      // put the line a third of the way down, so its context shows above it
+      const top = PAD_TOP + (n - 1) * LINE;
+      if (top < scroller.scrollTop || top > scroller.scrollTop + scroller.clientHeight - 2 * LINE) {
+        scroller.scrollTop = Math.max(0, top - Math.floor(scroller.clientHeight / 3));
+      }
       reveal();
     },
     setXml(on) {

@@ -10,6 +10,8 @@ import { icon } from '../icons.js';
 import { copyText, emptyState, errorState, searchBox, segmented, skeleton, toast } from '../ui.js';
 import { renderXML } from '../xml.js';
 import { readDialplan, readDirectory } from './readers.js';
+import { instHash } from '../nav.js';
+import { sourceAction } from './source.js';
 
 // count renders "12 extensions" with the singular/plural pair picked for n.
 function count(n, one, other) {
@@ -78,9 +80,12 @@ function rangesIn(el, q) {
   return out;
 }
 
-export function mountXmlBrowser({ id, scope, root, kind }) {
+export function mountXmlBrowser({ id, scope, root, kind, ctx, label, params = new URLSearchParams() }) {
   const K = KINDS[kind];
   const T = K.text();
+  // what an item is called in the XML, for "Edit source"
+  const ITEM_KIND = { configuration: 'configuration', dialplan: 'context', directory: 'domain' }[kind];
+  const sourceSlot = h('span', { class: 'src-slot' });
   const list = h('div', { class: 'conf-list' });
   const title = h('div', { class: 'conf-title', text: T.select });
   const desc = h('div', { class: 'faint' });
@@ -126,7 +131,7 @@ export function mountXmlBrowser({ id, scope, root, kind }) {
     h('div', { class: 'conf' },
       h('div', { class: 'conf-side' }, h('div', { class: 'conf-search' }, search.el), list),
       h('div', { class: 'conf-main' },
-        h('div', { class: 'conf-head' }, h('div', { class: 'spacer' }, title, desc), modeSeg ? modeSeg.el : null, find.el, findCount, prevBtn, nextBtn, wrapBtn, copyBtn),
+        h('div', { class: 'conf-head' }, h('div', { class: 'spacer' }, title, desc), sourceSlot, modeSeg ? modeSeg.el : null, find.el, findCount, prevBtn, nextBtn, wrapBtn, copyBtn),
         notice,
         view))));
   list.append(skeleton({ rows: 10, cols: 1 }));
@@ -211,6 +216,11 @@ export function mountXmlBrowser({ id, scope, root, kind }) {
     loadScope = scope.child();
     title.textContent = item.name;
     desc.textContent = item.description;
+    const here = instHash(id, 'config', kind, { item: item.name });
+    ctx.setHash(here);
+    // the readers' per-extension and per-user actions come back here too
+    const source = (k, name, hint, full) => sourceAction(ctx, { id, scope: loadScope, kind: k, name, hint, label, back: here, compact: !full && k !== 'extension' });
+    sourceSlot.replaceChildren(sourceAction(ctx, { id, scope: loadScope, kind: ITEM_KIND, name: item.name, label, back: here }) || '');
     copyBtn.disabled = true;
     find.input.disabled = true;
     notice.hidden = true;
@@ -225,7 +235,7 @@ export function mountXmlBrowser({ id, scope, root, kind }) {
       pre.classList.toggle('wrap', wrap);
       pre.classList.toggle('has-ranges', HL);
       if (K.reader) {
-        reading = K.reader(raw);
+        reading = K.reader(raw, { source, context: item.name });
         if (!reading) {
           notice.replaceChildren(icon('alert'), T.unreadable);
           notice.hidden = false;
@@ -260,7 +270,7 @@ export function mountXmlBrowser({ id, scope, root, kind }) {
       view.replaceChildren(emptyState({ icon: 'sliders', title: T.none, text: T.noneText }));
       return;
     }
-    open(items.find((it) => it.name === K.prefer) || items[0]);
+    open(items.find((it) => it.name === params.get('item')) || items.find((it) => it.name === K.prefer) || items[0]);
   }, (err) => {
     if (isAbort(err)) return;
     list.replaceChildren();

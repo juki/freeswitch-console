@@ -18,6 +18,8 @@ import { createEditor } from '../editor.js';
 import { diffLines, diffSummary, renderDiff } from '../diff.js';
 import { wellFormed } from '../xml.js';
 import { instanceDialog } from './fleet.js';
+import { fileHash, getBack, instHash } from '../nav.js';
+import { marked, searchFiles } from './source.js';
 
 const EXT = /\.(xml|lua|conf|tpl|txt|json|cfg|ini)$/i;
 const FILE_NAME = /^[A-Za-z0-9_.-]+$/;
@@ -29,7 +31,7 @@ const baseOf = (p) => p.slice(p.lastIndexOf('/') + 1);
 const join = (dir, name) => (dir ? dir + '/' + name : name);
 const shortSha = (s) => String(s || '').slice(0, 10);
 
-export function mountFiles({ id, ctx, scope, root }) {
+export function mountFiles({ id, ctx, scope, root, params = new URLSearchParams() }) {
   const inst = ctx.instances().find((i) => i.id === id);
   if (inst && !inst.configMode) {
     root.append(setupState(ctx, inst));
@@ -47,10 +49,124 @@ export function mountFiles({ id, ctx, scope, root }) {
     renderTree();
   }, 'sm');
   const treeEl = h('div', { class: 'fe-tree', role: 'tree', 'aria-label': t('files.tree') }, skeleton({ rows: 10, cols: 1 }));
+
+  // ---- search in all files ----
+  let sCase = false;
+  let sTimer = null;
+  let sScope = null;
+  scope.onCleanup(() => clearTimeout(sTimer));
+  const sInput = h('input', { type: 'search', class: 'input', placeholder: t('fs.placeholder'), 'aria-label': t('fs.placeholder'), spellcheck: false, autocomplete: 'off' });
+  const sCaseBtn = h('button', { type: 'button', class: 'btn btn-sm btn-icon case-btn', 'aria-pressed': 'false', title: t('fs.case'), 'aria-label': t('fs.case'), text: 'Aa' });
+  const sGo = h('button', { type: 'button', class: 'btn btn-sm btn-icon', title: t('fs.run'), 'aria-label': t('fs.run') }, icon('search'));
+  const sNote = h('div', { class: 'fs-note' });
+  const sResults = h('div', { class: 'fs-results', role: 'listbox', 'aria-label': t('fs.results') });
+  const searchPane = h('div', { class: 'fs-pane', hidden: true },
+    h('div', { class: 'fs-head' }, h('label', { class: 'search sm fs-search' }, icon('search'), sInput), sCaseBtn, sGo),
+    sNote, sResults);
+  const sideTabs = segmented([{ key: 'tree', label: t('fs.tabFiles') }, { key: 'search', label: t('fs.tabSearch') }], 'tree', (k) => showSide(k), 'sm');
+  function showSide(k) {
+    sideTabs.set(k);
+    const tree = k === 'tree';
+    treeHead.hidden = !tree;
+    treeEl.hidden = !tree;
+    searchPane.hidden = tree;
+    // results need room: the side panel widens while searching
+    const grid = treeEl.closest('.fe-grid');
+    if (grid) grid.classList.toggle('searching', !tree);
+    if (!tree) {
+      sInput.focus();
+      sInput.select();
+    }
+  }
+  sCaseBtn.addEventListener('click', () => {
+    sCase = !sCase;
+    sCaseBtn.setAttribute('aria-pressed', String(sCase));
+    if (sInput.value.trim().length >= 2) runSearch();
+  });
+  sGo.addEventListener('click', () => runSearch());
+  sInput.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter') {
+      ev.preventDefault();
+      runSearch();
+    } else if (ev.key === 'ArrowDown') {
+      const first = sResults.querySelector('.fs-hit');
+      if (first) {
+        ev.preventDefault();
+        first.focus();
+      }
+    }
+  });
+  sResults.addEventListener('keydown', (ev) => {
+    if (ev.key !== 'ArrowDown' && ev.key !== 'ArrowUp') return;
+    ev.preventDefault();
+    const hits = [...sResults.querySelectorAll('.fs-hit')];
+    const i = hits.indexOf(document.activeElement);
+    if (ev.key === 'ArrowUp' && i <= 0) {
+      sInput.focus();
+      return;
+    }
+    hits[Math.min(hits.length - 1, i + (ev.key === 'ArrowDown' ? 1 : -1))].focus();
+  });
+
+  async function runSearch() {
+    const q = sInput.value.trim();
+    clearTimeout(sTimer);
+    if (q.length < 2) {
+      sNote.className = 'fs-note';
+      sNote.textContent = q ? t('fs.tooShort') : '';
+      sResults.replaceChildren(q ? '' : h('p', { class: 'fs-empty', text: t('fs.intro') }));
+      return;
+    }
+    if (sScope) sScope.dispose();
+    sScope = scope.child();
+    const mine = sScope;
+    sNote.className = 'fs-note';
+    sNote.textContent = '';
+    // a skeleton only if the answer takes noticeably long
+    sTimer = setTimeout(() => {
+      if (!mine.disposed) sResults.replaceChildren(skeleton({ rows: 6, cols: 1 }));
+    }, 250);
+    try {
+      const res = await searchFiles(id, q, { caseSensitive: sCase, limit: 300, signal: mine.signal });
+      clearTimeout(sTimer);
+      renderResults(q, res);
+    } catch (err) {
+      clearTimeout(sTimer);
+      if (isAbort(err)) return;
+      sResults.replaceChildren(err.status === 402 || err.status === 404 ? paidState('config-edit') : errorState(err));
+    }
+  }
+
+  function renderResults(q, { rows, truncated }) {
+    const files = new Map();
+    for (const r of rows) {
+      if (!files.has(r.path)) files.set(r.path, []);
+      files.get(r.path).push(r);
+    }
+    sNote.className = truncated ? 'fs-note warn' : 'fs-note';
+    sNote.replaceChildren(
+      rows.length ? t('fs.count', { n: fmtInt(rows.length), files: fmtInt(files.size) }) : '',
+      truncated ? h('span', { class: 'fs-trunc' }, icon('info'), t('fs.truncated')) : '');
+    if (!rows.length) {
+      sResults.replaceChildren(h('p', { class: 'fs-empty' }, t('fs.none', { q })));
+      return;
+    }
+    sResults.replaceChildren(...[...files].map(([path, hits]) => h('div', { class: 'fs-file' },
+      h('div', { class: 'fs-file-head', title: path },
+        icon('file'),
+        h('span', { class: 'fs-dir', text: dirOf(path) ? dirOf(path) + '/' : '' }), h('b', { text: baseOf(path) }),
+        h('span', { class: 'fs-n', text: fmtInt(hits.length) })),
+      hits.map((r) => h('button', {
+        type: 'button', class: 'fs-hit', role: 'option', title: r.path + ':' + r.line + '  ' + r.text,
+        on: { click: () => openAt(r.path, r.line) },
+      }, h('span', { class: 'fs-line num', text: String(r.line) }), h('span', { class: 'fs-text' }, marked(r.text, q, sCase)))))));
+  }
   const newBtn = h('button', { type: 'button', class: 'btn btn-sm btn-icon', title: t('files.new'), 'aria-label': t('files.new'), on: { click: () => newFileDialog() } }, icon('plus'));
   const refreshBtn = h('button', { type: 'button', class: 'btn btn-sm btn-icon btn-ghost', title: t('files.refresh'), 'aria-label': t('files.refresh'), on: { click: () => refreshTree() } }, icon('refresh'));
 
+  const treeHead = h('div', { class: 'fe-side-head' }, filterBox.el, newBtn, refreshBtn);
   const pathEl = h('div', { class: 'fe-path' });
+  const backLink = h('a', { class: 'btn btn-sm btn-ghost fe-back', hidden: true });
   const badge = h('span', { class: 'fe-badge', hidden: true });
   const findBtn = h('button', { type: 'button', class: 'btn btn-sm btn-ghost btn-icon', title: t('files.findTitle'), 'aria-label': t('files.findTitle'), on: { click: () => openFind() } }, icon('search'));
   const histBtn = h('button', { type: 'button', class: 'btn btn-sm', on: { click: () => historyDrawer() } }, icon('history'), t('files.history'));
@@ -61,7 +177,7 @@ export function mountFiles({ id, ctx, scope, root }) {
   let finds = [];
   let findAt = -1;
   const findCount = h('span', { class: 'find-count' });
-  const findBox = searchBox(t('xb.find'), () => runFind(), 'sm');
+  const findBox = searchBox(t('files.findHere'), () => runFind(), 'sm');
   const findBar = h('div', { class: 'fe-find', hidden: true }, findBox.el, findCount,
     h('button', { type: 'button', class: 'btn btn-ghost btn-sm btn-icon', 'aria-label': t('xb.prev'), title: t('xb.prevTitle'), on: { click: () => stepFind(-1) } }, icon('chevronUp')),
     h('button', { type: 'button', class: 'btn btn-ghost btn-sm btn-icon', 'aria-label': t('xb.next'), title: t('xb.nextTitle'), on: { click: () => stepFind(1) } }, icon('chevronDown')),
@@ -92,13 +208,13 @@ export function mountFiles({ id, ctx, scope, root }) {
   });
   const placeholder = emptyState({ icon: 'file', title: t('files.pick'), text: t('files.pickText') });
   const editorWrap = h('div', { class: 'fe-editor', hidden: true },
-    h('div', { class: 'fe-head' }, pathEl, badge, h('span', { class: 'spacer' }), findBtn, histBtn, delBtn, saveBtn),
+    h('div', { class: 'fe-head' }, backLink, pathEl, badge, h('span', { class: 'spacer' }), findBtn, histBtn, delBtn, saveBtn),
     h('p', { class: 'fe-secret' }, icon('lock'), t('files.secrets')),
     msgs, findBar, editor.el, status);
   const main = h('div', { class: 'fe-main' }, placeholder, editorWrap);
   root.append(h('section', { class: 'panel fe' },
     h('div', { class: 'fe-grid' },
-      h('div', { class: 'fe-side' }, h('div', { class: 'fe-side-head' }, filterBox.el, newBtn, refreshBtn), treeEl),
+      h('div', { class: 'fe-side' }, h('div', { class: 'fe-side-tabs' }, sideTabs.el), treeHead, treeEl, searchPane),
       main)));
 
   // ---------- state ----------
@@ -210,7 +326,19 @@ export function mountFiles({ id, ctx, scope, root }) {
       }
     }
   }
-  refreshTree();
+  refreshTree().then(() => {
+    if (scope.disposed) return;
+    const q = params.get('q');
+    if (q) {
+      showSide('search');
+      sInput.value = q;
+      runSearch();
+      ctx.setHash(instHash(id, 'config', 'files'));
+    }
+    const path = params.get('path');
+    if (path) openAt(path, Number(params.get('line')) || 0);
+  });
+  sResults.replaceChildren(h('p', { class: 'fs-empty', text: t('fs.intro') }));
 
   // ---------- open / new / delete ----------
   function showEditor() {
@@ -219,11 +347,43 @@ export function mountFiles({ id, ctx, scope, root }) {
     pathEl.replaceChildren(...cur.path.split('/').flatMap((part, i, all) => [i ? h('span', { class: 'fe-sep', text: '/' }) : null, h('span', { class: i === all.length - 1 ? 'fe-file' : 'fe-dir', text: part })]).filter(Boolean));
     histBtn.disabled = cur.isNew;
     delBtn.disabled = cur.isNew;
+    paintBack();
+    if (!cur.isNew) ctx.setHash(fileHash(id, cur.path));
     editor.setXml(/\.xml$/i.test(cur.path));
     msgs.replaceChildren();
     editor.markError(null);
     changed();
     renderTree();
+  }
+
+  // paintBack shows "← Back to Dialplan" while the file is the one an
+  // "Edit source" jump opened.
+  function paintBack() {
+    const b = cur && getBack(cur.path);
+    backLink.hidden = !b;
+    if (!b) return;
+    backLink.href = b.hash;
+    backLink.replaceChildren(icon('undo'), t('src.back', { view: b.label }));
+  }
+
+  // openAt opens a file at a line: the cursor goes there and the line flashes.
+  async function openAt(path, line) {
+    if (cur && cur.path === path) {
+      if (line) {
+        editor.flashLine(line);
+        ctx.setHash(fileHash(id, path, line));
+      }
+      return;
+    }
+    // reveal the file in the tree too
+    const parts = path.split('/');
+    for (let i = 1; i < parts.length; i++) open.add(parts.slice(0, i).join('/'));
+    await openFile(path);
+    if (cur && cur.path === path && line) {
+      editor.flashLine(line);
+      ctx.setHash(fileHash(id, path, line));
+    }
+    for (const d of open) if (!cache.has(d)) loadDir(d).then(renderTree, () => {});
   }
 
   async function openFile(path, { force = false } = {}) {
@@ -532,6 +692,15 @@ export function mountFiles({ id, ctx, scope, root }) {
       }
       btn.disabled = false;
       if (failed) offerFix();
+      else offerBack();
+    }
+
+    // offerBack: once FreeSWITCH has taken the change, go back to the view the
+    // "Edit source" jump came from to see the effect (it reloads its data).
+    function offerBack() {
+      const b = getBack(path);
+      if (!b || bar.querySelector('.apply-back')) return;
+      bar.querySelector('.apply-actions').append(h('a', { class: 'btn btn-sm btn-primary apply-back', href: b.hash }, icon('undo'), t('src.backSee', { view: b.label })));
     }
 
     function offerFix() {

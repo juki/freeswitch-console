@@ -122,7 +122,7 @@ export function mountInstance({ scope, root, id, ctx }) {
   });
   sync();
 
-  function showTab(key) {
+  function showTab(key, nav = {}) {
     if (missing) return;
     currentTab = key;
     for (const [k, a] of links) {
@@ -132,7 +132,7 @@ export function mountInstance({ scope, root, id, ctx }) {
     if (tabScope) tabScope.dispose();
     tabScope = scope.child();
     body.replaceChildren();
-    TABS.find((tab) => tab.key === key).mount({ id, ctx, scope: tabScope, root: body, setState });
+    TABS.find((tab) => tab.key === key).mount({ id, ctx, scope: tabScope, root: body, setState, nav });
   }
 
   return { showTab, get tab() { return currentTab; } };
