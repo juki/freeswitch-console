@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -20,12 +22,21 @@ const (
 	maxBackoff       = 30 * time.Second
 )
 
+var errNoAnswer = errors.New("esl: no answer from FreeSWITCH")
+
 // Client is an inbound ESL client. It keeps one authenticated connection to
 // mod_event_socket open and reconnects when it drops.
 type Client struct {
 	addr     string
 	password string
 	backoff  time.Duration // first reconnect delay; tests shorten it
+
+	// A connection that has received nothing for probeAfter is sent
+	// "api uptime" and dropped if no reply arrives within probeTimeout.
+	// Without it a peer that vanishes silently is only noticed by TCP
+	// keepalive. Tests shorten both.
+	probeAfter   time.Duration
+	probeTimeout time.Duration
 
 	ctx      context.Context
 	cancel   context.CancelFunc
@@ -47,16 +58,18 @@ type Client struct {
 func NewClient(addr, password string) *Client {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Client{
-		addr:     addr,
-		password: password,
-		backoff:  time.Second,
-		ctx:      ctx,
-		cancel:   cancel,
-		logCh:    make(chan struct{}, 1),
-		loopDone: make(chan struct{}),
-		state:    State{Since: time.Now()},
-		logLevel: -1,
-		subs:     make(map[chan Message]struct{}),
+		addr:         addr,
+		password:     password,
+		backoff:      time.Second,
+		probeAfter:   30 * time.Second,
+		probeTimeout: 10 * time.Second,
+		ctx:          ctx,
+		cancel:       cancel,
+		logCh:        make(chan struct{}, 1),
+		loopDone:     make(chan struct{}),
+		state:        State{Since: time.Now()},
+		logLevel:     -1,
+		subs:         make(map[chan Message]struct{}),
 	}
 }
 
@@ -123,7 +136,7 @@ func (c *Client) API(ctx context.Context, command string) (string, error) {
 	if cn == nil {
 		return "", ErrNotConnected
 	}
-	ch, err := cn.send(ctx, "api "+command)
+	ch, err := cn.send(ctx, "api "+command, sendCall)
 	if err != nil {
 		return "", err
 	}
@@ -264,7 +277,7 @@ func (c *Client) session() bool {
 		return false
 	}
 
-	cn := &conn{nc: nc, wsem: make(chan struct{}, 1), dead: make(chan struct{})}
+	cn := &conn{nc: nc, start: time.Now(), wsem: make(chan struct{}, 1), dead: make(chan struct{})}
 	select {
 	case <-c.logCh: // the level read below already covers it
 	default:
@@ -278,7 +291,7 @@ func (c *Client) session() bool {
 		cmds = append(cmds, logCommand(level))
 	}
 	for _, cmd := range cmds {
-		if _, err := cn.send(c.ctx, cmd); err != nil {
+		if _, err := cn.send(c.ctx, cmd, sendIgnore); err != nil {
 			cn.fail(err)
 			c.setDown(cn.reason())
 			return true
@@ -288,6 +301,9 @@ func (c *Client) session() bool {
 	c.setState(cn, "")
 	readErr := make(chan error, 1)
 	go func() { readErr <- c.readLoop(cn, r) }()
+	idle := time.NewTimer(c.probeAfter)
+	defer idle.Stop()
+	var probe <-chan result // reply to the outstanding probe, if any
 	for {
 		select {
 		case err := <-readErr:
@@ -298,7 +314,31 @@ func (c *Client) session() bool {
 			c.mu.Lock()
 			level := c.logLevel
 			c.mu.Unlock()
-			cn.send(c.ctx, logCommand(level))
+			cn.send(c.ctx, logCommand(level), sendIgnore)
+		case <-idle.C:
+			if probe != nil && len(probe) == 0 {
+				// Handled like an abandoned API reply: the closed socket
+				// ends readLoop and the case above reports this reason.
+				cn.fail(errNoAnswer)
+				continue
+			}
+			probe = nil
+			if left := c.probeAfter - cn.idle(); left > 0 {
+				idle.Reset(left)
+				continue
+			}
+			ch, err := cn.send(c.ctx, "api uptime", sendProbe)
+			switch {
+			case err != nil:
+				// The socket is closed, so readErr follows.
+			case ch == nil:
+				// An API call is pending and its own deadline covers
+				// liveness; FreeSWITCH would answer a probe only after it.
+				idle.Reset(c.probeAfter)
+			default:
+				probe = ch
+				idle.Reset(c.probeTimeout)
+			}
 		}
 	}
 }
@@ -351,6 +391,7 @@ func (c *Client) readLoop(cn *conn, r *bufio.Reader) error {
 			}
 			return fmt.Errorf("esl: read: %w", err)
 		}
+		cn.lastRx.Store(int64(time.Since(cn.start)))
 		switch f.header["Content-Type"] {
 		case "api/response":
 			cn.complete(result{body: string(f.body)})
@@ -379,16 +420,34 @@ type result struct {
 // conn is one authenticated connection. Writers hold wsem while queueing a
 // waiter and writing, so the waiter queue has the same order as the wire.
 type conn struct {
-	nc   net.Conn
-	wsem chan struct{}
-	dead chan struct{} // closed by fail
+	nc     net.Conn
+	start  time.Time
+	lastRx atomic.Int64 // when the last frame arrived, as time since start
+	wsem   chan struct{}
+	dead   chan struct{} // closed by fail
 
 	mu      sync.Mutex
-	pending []chan result
-	err     error // why the connection ended
+	pending []chan result // nil entries hold the place of ignored replies
+	err     error         // why the connection ended
 }
 
-func (cn *conn) send(ctx context.Context, cmd string) (<-chan result, error) {
+type sendMode int
+
+const (
+	sendCall   sendMode = iota // an API call waits for the reply
+	sendIgnore                 // setup and log commands: the reply is dropped
+	sendProbe                  // like sendCall, but sends nothing while an API reply is pending
+)
+
+// idle returns how long ago the last frame arrived.
+func (cn *conn) idle() time.Duration {
+	return time.Since(cn.start) - time.Duration(cn.lastRx.Load())
+}
+
+// send writes cmd and queues its place in the reply order. The channel is nil
+// for sendIgnore, and for sendProbe when nothing was sent. The probe check runs
+// under wsem, so no API call can be written between the check and the probe.
+func (cn *conn) send(ctx context.Context, cmd string, mode sendMode) (<-chan result, error) {
 	select {
 	case cn.wsem <- struct{}{}:
 	case <-cn.dead:
@@ -398,11 +457,20 @@ func (cn *conn) send(ctx context.Context, cmd string) (<-chan result, error) {
 	}
 	defer func() { <-cn.wsem }()
 
-	ch := make(chan result, 1)
+	var ch chan result
+	if mode != sendIgnore {
+		ch = make(chan result, 1)
+	}
 	cn.mu.Lock()
 	if cn.err != nil {
 		cn.mu.Unlock()
 		return nil, ErrNotConnected
+	}
+	// Only API replies have non-nil channels here: the session loop sends
+	// at most one probe and only after its reply has been delivered.
+	if mode == sendProbe && slices.ContainsFunc(cn.pending, func(p chan result) bool { return p != nil }) {
+		cn.mu.Unlock()
+		return nil, nil
 	}
 	cn.pending = append(cn.pending, ch)
 	cn.mu.Unlock()
@@ -424,7 +492,9 @@ func (cn *conn) complete(r result) {
 	}
 	ch := cn.pending[0]
 	cn.pending = cn.pending[1:]
-	ch <- r
+	if ch != nil {
+		ch <- r
+	}
 }
 
 // fail closes the connection and fails every pending reply; only the first
@@ -435,7 +505,9 @@ func (cn *conn) fail(reason error) {
 		cn.err = reason
 		close(cn.dead)
 		for _, ch := range cn.pending {
-			ch <- result{err: fmt.Errorf("%w: %v", ErrNotConnected, reason)}
+			if ch != nil {
+				ch <- result{err: fmt.Errorf("%w: %v", ErrNotConnected, reason)}
+			}
 		}
 		cn.pending = nil
 	}

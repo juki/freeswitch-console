@@ -16,7 +16,10 @@ import (
 	"time"
 )
 
-const testPassword = "ClueCon"
+const (
+	testPassword = "ClueCon"
+	slowReply    = 250 * time.Millisecond // delay of "api slow"
+)
 
 // fakeServer speaks enough of mod_event_socket's inbound protocol for tests.
 type fakeServer struct {
@@ -25,6 +28,7 @@ type fakeServer struct {
 	password string
 	silent   bool   // accept but never send auth/request
 	reject   string // answer with text/rude-rejection carrying this body
+	mute     int32  // the first mute connections authenticate, then never answer
 
 	cmds         chan string    // every command received after auth
 	conns        chan *fakeConn // every authenticated connection
@@ -79,7 +83,7 @@ func (s *fakeServer) acceptLoop() {
 		if err != nil {
 			return
 		}
-		s.accepted.Add(1)
+		n := s.accepted.Add(1)
 		s.mu.Lock()
 		s.open[nc] = struct{}{}
 		s.mu.Unlock()
@@ -92,7 +96,7 @@ func (s *fakeServer) acceptLoop() {
 				s.mu.Unlock()
 				nc.Close()
 			}()
-			s.serve(nc)
+			s.serve(nc, n <= s.mute)
 		}()
 	}
 }
@@ -147,7 +151,7 @@ func logFrame(level int, text string) string {
 		"Log-File: switch_core.c\nLog-Func: test_func\nLog-Line: 42\nUser-Data: \n\n%s", len(text), level, text)
 }
 
-func (s *fakeServer) serve(nc net.Conn) {
+func (s *fakeServer) serve(nc net.Conn, mute bool) {
 	fc := &fakeConn{nc: nc}
 	if s.silent {
 		io.Copy(io.Discard, nc)
@@ -176,7 +180,9 @@ func (s *fakeServer) serve(nc net.Conn) {
 			return
 		}
 		s.cmds <- cmd
-		s.handle(fc, cmd)
+		if !mute {
+			s.handle(fc, cmd)
+		}
 	}
 }
 
@@ -190,6 +196,13 @@ func (s *fakeServer) handle(fc *fakeConn, cmd string) {
 		fc.write(apiResponse("-ERR fail Command not found!\n"))
 	case cmd == "api sleep":
 		// never answered
+	case cmd == "api slow":
+		// Blocks reading, like FreeSWITCH running one connection's commands
+		// one after another.
+		time.Sleep(slowReply)
+		fc.write(apiResponse("done"))
+	case cmd == "api uptime":
+		fc.write(apiResponse("42\n"))
 	case cmd == "api event-first":
 		fc.write(eventFrame(`{"Event-Name":"CUSTOM","_body":"not a reply"}`))
 		fc.write(apiResponse("after event"))
@@ -658,4 +671,126 @@ func TestNoGoroutineLeak(t *testing.T) {
 	for range msgs {
 	}
 	waitFor(t, "goroutines to exit", func() bool { return runtime.NumGoroutine() <= before })
+}
+
+func probingClient(t *testing.T, s *fakeServer, after, timeout time.Duration) *Client {
+	t.Helper()
+	c := newTestClient(t, s)
+	c.probeAfter, c.probeTimeout = after, timeout
+	return c
+}
+
+// noDisconnect fails the test if msgs holds a disconnected state.
+func noDisconnect(t *testing.T, msgs <-chan Message) {
+	t.Helper()
+	for {
+		select {
+		case m := <-msgs:
+			if isState(false)(m) {
+				t.Fatalf("disconnected: %q", m.Headers["error"])
+			}
+		default:
+			return
+		}
+	}
+}
+
+func TestProbeSilentPeer(t *testing.T) {
+	const after, timeout = 60 * time.Millisecond, 60 * time.Millisecond
+	s := newFakeServer(t, func(s *fakeServer) { s.mute = 1 })
+	c := probingClient(t, s, after, timeout)
+	c.backoff = 300 * time.Millisecond // keeps the failed state observable
+	msgs, cancel := c.Subscribe(64)
+	defer cancel()
+	c.Start()
+	waitMsg(t, msgs, "connect", isState(true))
+	start := time.Now()
+
+	// The unanswered setup command must not hold the probe back.
+	m := waitMsg(t, msgs, "disconnect", isState(false))
+	elapsed := time.Since(start)
+	const want = "esl: no answer from FreeSWITCH"
+	if m.Headers["error"] != want {
+		t.Errorf("error header = %q, want %q", m.Headers["error"], want)
+	}
+	if st := c.State(); st.Connected || st.LastError != want {
+		t.Errorf("state = %+v, want LastError %q", st, want)
+	}
+	if elapsed < after || elapsed > after+timeout+time.Second {
+		t.Errorf("disconnected after %v, want about %v", elapsed, after+timeout)
+	}
+	s.expectCmds("event json HEARTBEAT", "api uptime")
+
+	waitMsg(t, msgs, "reconnect", isState(true))
+	if got := api(t, c, "echo alive"); got != "alive" {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestProbeQuietPeer(t *testing.T) {
+	const after = 40 * time.Millisecond
+	s := newFakeServer(t, nil)
+	c := probingClient(t, s, after, 40*time.Millisecond)
+	msgs, cancel := c.Subscribe(64)
+	defer cancel()
+	c.Start()
+	waitMsg(t, msgs, "connect", isState(true))
+	start := time.Now()
+	for i := 0; i < 4; i++ {
+		s.expectCmds("api uptime")
+	}
+	// Each reply resets the idle timer, so probes are spaced by probeAfter.
+	if elapsed := time.Since(start); elapsed < 3*after {
+		t.Errorf("4 probes within %v", elapsed)
+	}
+	noDisconnect(t, msgs)
+	if n := s.accepted.Load(); n != 1 || !c.State().Connected {
+		t.Errorf("accepted %d connections, state %+v", n, c.State())
+	}
+}
+
+func TestProbeChattyPeer(t *testing.T) {
+	s := newFakeServer(t, nil)
+	c := probingClient(t, s, 80*time.Millisecond, 80*time.Millisecond)
+	c.Start()
+	fc := s.nextConn()
+	for end := time.Now().Add(400 * time.Millisecond); time.Now().Before(end); {
+		fc.write(eventFrame(`{"Event-Name":"HEARTBEAT"}`))
+		time.Sleep(10 * time.Millisecond)
+	}
+	for {
+		select {
+		case cmd := <-s.cmds:
+			if cmd == "api uptime" {
+				t.Fatal("probed a peer that sends events")
+			}
+		default:
+			if !c.State().Connected {
+				t.Errorf("state = %+v", c.State())
+			}
+			return
+		}
+	}
+}
+
+func TestProbeWaitsForPendingAPI(t *testing.T) {
+	const after, timeout = 40 * time.Millisecond, 40 * time.Millisecond
+	if slowReply <= 2*(after+timeout) {
+		t.Fatal("slowReply too short for this test")
+	}
+	s := newFakeServer(t, nil)
+	c := probingClient(t, s, after, timeout)
+	msgs, cancel := c.Subscribe(64)
+	defer cancel()
+	c.Start()
+	waitMsg(t, msgs, "connect", isState(true))
+	// The fake reads nothing while "slow" runs, so a probe sent meanwhile
+	// would time out and drop the connection, failing the call.
+	if got := api(t, c, "slow"); got != "done" {
+		t.Errorf("got %q", got)
+	}
+	noDisconnect(t, msgs)
+	if n := s.accepted.Load(); n != 1 || !c.State().Connected {
+		t.Errorf("accepted %d connections, state %+v", n, c.State())
+	}
 }
