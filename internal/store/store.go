@@ -1,8 +1,13 @@
-// Package store keeps the list of FreeSWITCH instances in a JSON file.
+// Package store keeps the FreeSWITCH instances and the console accounts in a
+// JSON file.
 package store
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -10,8 +15,10 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
+	"time"
 	"unicode"
 	"unicode/utf8"
 )
@@ -22,28 +29,105 @@ type Instance struct {
 	Name     string `json:"name"`
 	Host     string `json:"host"`
 	Port     int    `json:"port"`
-	Password string `json:"password"` // ESL password, stored in clear
+	Password string `json:"password"` // ESL password; encrypted in the file when a secret key is set
+}
+
+// Roles of a console account.
+const (
+	RoleAdmin    = "admin"
+	RoleOperator = "operator"
+	RoleViewer   = "viewer"
+)
+
+// User is a console account. The store keeps the password hash as given; the
+// server creates and checks it.
+type User struct {
+	ID           string    `json:"id"` // 16 hex chars, generated
+	Username     string    `json:"username"`
+	Role         string    `json:"role"`
+	PasswordHash string    `json:"passwordHash"`
+	Disabled     bool      `json:"disabled"`
+	CreatedAt    time.Time `json:"createdAt"`
 }
 
 var (
-	ErrNotFound = errors.New("instance not found")
-	ErrInvalid  = errors.New("invalid instance")
+	ErrNotFound     = errors.New("instance not found")
+	ErrInvalid      = errors.New("invalid instance")
+	ErrUserNotFound = errors.New("user not found")
+	ErrInvalidUser  = errors.New("invalid user")
+	ErrDuplicate    = errors.New("username already exists")
+
+	ErrSecretKeyShort   = errors.New("the secret key (FSDECK_SECRET_KEY) must be at least 16 characters")
+	ErrSecretKeyMissing = errors.New("the file holds encrypted ESL passwords but no secret key is set (FSDECK_SECRET_KEY)")
+	ErrSecretKeyWrong   = errors.New("cannot decrypt the ESL passwords: the secret key (FSDECK_SECRET_KEY) is wrong")
 )
+
+// encPrefix marks an encrypted ESL password: enc:v1:<base64(nonce|ciphertext)>.
+const encPrefix = "enc:v1:"
+
+var usernameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{1,31}$`)
+
+// CheckUsername explains why name cannot be a username, or returns nil.
+func CheckUsername(name string) error {
+	if !usernameRE.MatchString(name) {
+		return fmt.Errorf("%w: username must be 2 to 32 characters: lowercase letters, digits, '.', '_' or '-', starting with a letter or digit", ErrInvalidUser)
+	}
+	return nil
+}
+
+// CheckRole explains why role is not a role, or returns nil.
+func CheckRole(role string) error {
+	if role != RoleAdmin && role != RoleOperator && role != RoleViewer {
+		return fmt.Errorf("%w: role must be admin, operator or viewer", ErrInvalidUser)
+	}
+	return nil
+}
 
 // Store is safe for concurrent use.
 type Store struct {
 	path      string
+	aead      cipher.AEAD // nil: ESL passwords are written in clear
 	mu        sync.Mutex
 	instances []Instance
+	users     []User
 }
 
+// file is the on-disk shape. Users is omitted while there are none, so a file
+// written by an older version keeps its shape.
 type file struct {
 	Instances []Instance `json:"instances"`
+	Users     []User     `json:"users,omitempty"`
+}
+
+// Option configures Open.
+type Option func(*Store) error
+
+// WithSecretKey encrypts the ESL passwords in the file with AES-256-GCM under
+// the SHA-256 of secret. Plain values in an existing file are read as they are
+// and encrypted on the next save.
+func WithSecretKey(secret string) Option {
+	return func(s *Store) error {
+		if utf8.RuneCountInString(secret) < 16 {
+			return ErrSecretKeyShort
+		}
+		key := sha256.Sum256([]byte(secret))
+		block, err := aes.NewCipher(key[:])
+		if err != nil {
+			return err
+		}
+		s.aead, err = cipher.NewGCM(block)
+		return err
+	}
 }
 
 // Open loads the store at path; a missing file is an empty store.
-func Open(path string) (*Store, error) {
+func Open(path string, opts ...Option) (*Store, error) {
 	s := &Store{path: path}
+	for _, opt := range opts {
+		if err := opt(s); err != nil {
+			return nil, err
+		}
+	}
 	data, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return s, nil
@@ -55,8 +139,52 @@ func Open(path string) (*Store, error) {
 	if err := json.Unmarshal(data, &f); err != nil {
 		return nil, fmt.Errorf("store %s: %w", path, err)
 	}
-	s.instances = f.Instances
+	for i := range f.Instances {
+		if f.Instances[i].Password, err = s.reveal(f.Instances[i].Password); err != nil {
+			return nil, fmt.Errorf("store %s: %w", path, err)
+		}
+	}
+	for i, u := range f.Users {
+		if err := validateUser(u); err != nil {
+			return nil, fmt.Errorf("store %s: user %d: %w", path, i+1, err)
+		}
+		for _, o := range f.Users[:i] {
+			if o.Username == u.Username || o.ID == u.ID {
+				return nil, fmt.Errorf("store %s: user %q: %w", path, u.Username, ErrDuplicate)
+			}
+		}
+	}
+	s.instances, s.users = f.Instances, f.Users
 	return s, nil
+}
+
+// reveal returns the clear text of a stored ESL password.
+func (s *Store) reveal(v string) (string, error) {
+	enc, ok := strings.CutPrefix(v, encPrefix)
+	if !ok {
+		return v, nil
+	}
+	if s.aead == nil {
+		return "", ErrSecretKeyMissing
+	}
+	raw, err := base64.StdEncoding.DecodeString(enc)
+	n := s.aead.NonceSize()
+	if err != nil || len(raw) < n {
+		return "", errors.New("malformed encrypted ESL password")
+	}
+	plain, err := s.aead.Open(nil, raw[:n], raw[n:], nil)
+	if err != nil {
+		return "", ErrSecretKeyWrong
+	}
+	return string(plain), nil
+}
+
+func (s *Store) seal(v string) (string, error) {
+	nonce := make([]byte, s.aead.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		return "", err
+	}
+	return encPrefix + base64.StdEncoding.EncodeToString(s.aead.Seal(nonce, nonce, []byte(v), nil)), nil
 }
 
 // List returns a copy of the instances in insertion order.
@@ -93,7 +221,7 @@ func (s *Store) Add(in Instance) (Instance, error) {
 		}
 	}
 	next := append(append([]Instance(nil), s.instances...), in)
-	if err := s.save(next); err != nil {
+	if err := s.save(next, s.users); err != nil {
 		return Instance{}, err
 	}
 	s.instances = next
@@ -117,7 +245,7 @@ func (s *Store) Update(in Instance) error {
 	}
 	next := append([]Instance(nil), s.instances...)
 	next[i] = in
-	if err := s.save(next); err != nil {
+	if err := s.save(next, s.users); err != nil {
 		return err
 	}
 	s.instances = next
@@ -132,7 +260,7 @@ func (s *Store) Delete(id string) error {
 		return ErrNotFound
 	}
 	next := append(append([]Instance(nil), s.instances[:i]...), s.instances[i+1:]...)
-	if err := s.save(next); err != nil {
+	if err := s.save(next, s.users); err != nil {
 		return err
 	}
 	s.instances = next
@@ -148,13 +276,124 @@ func (s *Store) index(id string) int {
 	return -1
 }
 
+// Users returns a copy of the accounts in insertion order.
+func (s *Store) Users() []User {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]User(nil), s.users...)
+}
+
+func (s *Store) User(id string) (User, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if i := s.userIndex(func(u User) bool { return u.ID == id }); i >= 0 {
+		return s.users[i], true
+	}
+	return User{}, false
+}
+
+func (s *Store) UserByName(username string) (User, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if i := s.userIndex(func(u User) bool { return u.Username == username }); i >= 0 {
+		return s.users[i], true
+	}
+	return User{}, false
+}
+
+// AddUser assigns a new ID and, when unset, the creation time.
+func (s *Store) AddUser(u User) (User, error) {
+	if err := validateUser(u); err != nil {
+		return User{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.userIndex(func(o User) bool { return o.Username == u.Username }) >= 0 {
+		return User{}, ErrDuplicate
+	}
+	for {
+		id, err := newID()
+		if err != nil {
+			return User{}, err
+		}
+		if s.userIndex(func(o User) bool { return o.ID == id }) < 0 {
+			u.ID = id
+			break
+		}
+	}
+	if u.CreatedAt.IsZero() {
+		u.CreatedAt = time.Now().UTC().Truncate(time.Second)
+	}
+	next := append(append([]User(nil), s.users...), u)
+	if err := s.save(s.instances, next); err != nil {
+		return User{}, err
+	}
+	s.users = next
+	return u, nil
+}
+
+// UpdateUser replaces the account with the same ID and keeps its creation
+// time.
+func (s *Store) UpdateUser(u User) error {
+	if err := validateUser(u); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	i := s.userIndex(func(o User) bool { return o.ID == u.ID })
+	if i < 0 {
+		return ErrUserNotFound
+	}
+	if j := s.userIndex(func(o User) bool { return o.Username == u.Username }); j >= 0 && j != i {
+		return ErrDuplicate
+	}
+	u.CreatedAt = s.users[i].CreatedAt
+	next := append([]User(nil), s.users...)
+	next[i] = u
+	if err := s.save(s.instances, next); err != nil {
+		return err
+	}
+	s.users = next
+	return nil
+}
+
+func (s *Store) DeleteUser(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	i := s.userIndex(func(u User) bool { return u.ID == id })
+	if i < 0 {
+		return ErrUserNotFound
+	}
+	next := append(append([]User(nil), s.users[:i]...), s.users[i+1:]...)
+	if err := s.save(s.instances, next); err != nil {
+		return err
+	}
+	s.users = next
+	return nil
+}
+
+func (s *Store) userIndex(match func(User) bool) int {
+	for i, u := range s.users {
+		if match(u) {
+			return i
+		}
+	}
+	return -1
+}
+
 // save writes a temp file in the target directory and renames it over the
 // store, so a crash never leaves a truncated file. CreateTemp uses mode 0600.
-func (s *Store) save(list []Instance) error {
-	if list == nil {
-		list = []Instance{}
+func (s *Store) save(instances []Instance, users []User) error {
+	out := file{Instances: append([]Instance{}, instances...), Users: users}
+	if s.aead != nil {
+		for i := range out.Instances {
+			var err error
+			if out.Instances[i].Password, err = s.seal(out.Instances[i].Password); err != nil {
+				return err
+			}
+		}
 	}
-	data, err := json.MarshalIndent(file{Instances: list}, "", "  ")
+	data, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -187,6 +426,19 @@ func validate(in Instance) error {
 		return fmt.Errorf("%w: host must be non-empty and contain no spaces", ErrInvalid)
 	case in.Port < 1 || in.Port > 65535:
 		return fmt.Errorf("%w: port must be 1 to 65535", ErrInvalid)
+	}
+	return nil
+}
+
+func validateUser(u User) error {
+	if err := CheckUsername(u.Username); err != nil {
+		return err
+	}
+	if err := CheckRole(u.Role); err != nil {
+		return err
+	}
+	if u.PasswordHash == "" {
+		return fmt.Errorf("%w: password hash is required", ErrInvalidUser)
 	}
 	return nil
 }

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func openTemp(t *testing.T) (*Store, string) {
@@ -190,5 +192,200 @@ func TestConcurrent(t *testing.T) {
 	r, _ := Open(path)
 	if len(r.List()) != 20 {
 		t.Fatalf("got %d instances", len(r.List()))
+	}
+}
+
+const testKey = "a-secret-key-of-32-characters-xx"
+
+func TestEncryptedRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s.json")
+	s, err := Open(path, WithSecretKey(testKey))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := s.Add(Instance{Name: "a", Host: "h", Port: 1, Password: "ClueCon-secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Add(Instance{Name: "b", Host: "h", Port: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.Get(a.ID); got.Password != "ClueCon-secret" {
+		t.Fatalf("in memory %q", got.Password)
+	}
+	data, _ := os.ReadFile(path)
+	if strings.Contains(string(data), "ClueCon-secret") || strings.Count(string(data), `"password": "enc:v1:`) != 2 {
+		t.Fatalf("file %s", data)
+	}
+	r, err := Open(path, WithSecretKey(testKey))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if list := r.List(); list[0].Password != "ClueCon-secret" || list[1].Password != "" {
+		t.Fatalf("reopened %+v", list)
+	}
+	// A fresh nonce per save: the same value encrypts differently.
+	if err := r.Update(Instance{ID: a.ID, Name: "a", Host: "h", Port: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if again, _ := os.ReadFile(path); string(again) == string(data) {
+		t.Fatal("ciphertext reused")
+	}
+
+	if _, err := Open(path); !errors.Is(err, ErrSecretKeyMissing) {
+		t.Fatalf("no key: %v", err)
+	}
+	if _, err := Open(path, WithSecretKey("another-key-of-sufficient-length")); !errors.Is(err, ErrSecretKeyWrong) {
+		t.Fatalf("wrong key: %v", err)
+	}
+	if _, err := Open(path, WithSecretKey("short-key-15chr")); !errors.Is(err, ErrSecretKeyShort) {
+		t.Fatalf("short key: %v", err)
+	}
+	if _, err := Open(filepath.Join(t.TempDir(), "new.json"), WithSecretKey("ünïcödé-sixteen!")); err != nil {
+		t.Fatalf("16 runes: %v", err)
+	}
+	for _, bad := range []string{"enc:v1:!!!", "enc:v1:AAAA"} {
+		os.WriteFile(path, []byte(`{"instances":[{"id":"x","name":"a","host":"h","port":1,"password":"`+bad+`"}]}`), 0o600)
+		if _, err := Open(path, WithSecretKey(testKey)); err == nil || !strings.Contains(err.Error(), "malformed") {
+			t.Fatalf("%s: %v", bad, err)
+		}
+	}
+}
+
+func TestPlainMigratesOnNextSave(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s.json")
+	legacy := `{"instances":[{"id":"0123456789abcdef","name":"a","host":"h","port":8021,"password":"ClueCon"}]}`
+	os.WriteFile(path, []byte(legacy), 0o600)
+	s, err := Open(path, WithSecretKey(testKey))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := s.List(); got[0].Password != "ClueCon" {
+		t.Fatalf("plain value read as %q", got[0].Password)
+	}
+	if data, _ := os.ReadFile(path); string(data) != legacy {
+		t.Fatal("file rewritten before any change")
+	}
+	if _, err := s.Add(Instance{Name: "b", Host: "h", Port: 1, Password: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(path)
+	if strings.Contains(string(data), "ClueCon") || strings.Count(string(data), "enc:v1:") != 2 {
+		t.Fatalf("not migrated: %s", data)
+	}
+	r, err := Open(path, WithSecretKey(testKey))
+	if err != nil || r.List()[0].Password != "ClueCon" {
+		t.Fatalf("reopen: %v %+v", err, r.List())
+	}
+}
+
+func TestLegacyFileLoadsAndKeepsShape(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s.json")
+	os.WriteFile(path, []byte(`{"instances":[{"id":"0123456789abcdef","name":"a","host":"h","port":8021,"password":"ClueCon"}]}`), 0o600)
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(s.Users()) != 0 || len(s.List()) != 1 {
+		t.Fatalf("loaded %+v %+v", s.List(), s.Users())
+	}
+	if _, err := s.Add(Instance{Name: "b", Host: "h", Port: 1}); err != nil {
+		t.Fatal(err)
+	}
+	var raw map[string]json.RawMessage
+	data, _ := os.ReadFile(path)
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) != 1 || raw["instances"] == nil || strings.Contains(string(data), "enc:") {
+		t.Fatalf("shape changed: %s", data)
+	}
+}
+
+func TestUsers(t *testing.T) {
+	s, path := openTemp(t)
+	inst, _ := s.Add(Instance{Name: "a", Host: "h", Port: 1, Password: "p"})
+	u, err := s.AddUser(User{ID: "ignored", Username: "alice", Role: RoleOperator, PasswordHash: "h1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !regexp.MustCompile(`^[0-9a-f]{16}$`).MatchString(u.ID) || u.CreatedAt.IsZero() || u.CreatedAt.Location() != time.UTC {
+		t.Fatalf("added %+v", u)
+	}
+	if _, err := s.AddUser(User{Username: "alice", Role: RoleViewer, PasswordHash: "h"}); !errors.Is(err, ErrDuplicate) {
+		t.Fatalf("duplicate: %v", err)
+	}
+	b, _ := s.AddUser(User{Username: "bob", Role: RoleAdmin, PasswordHash: "h2"})
+	for _, bad := range []User{
+		{Username: "a", Role: RoleAdmin, PasswordHash: "h"},
+		{Username: "Alice", Role: RoleAdmin, PasswordHash: "h"},
+		{Username: "-alice", Role: RoleAdmin, PasswordHash: "h"},
+		{Username: "al ice", Role: RoleAdmin, PasswordHash: "h"},
+		{Username: strings.Repeat("a", 33), Role: RoleAdmin, PasswordHash: "h"},
+		{Username: "carol", Role: "root", PasswordHash: "h"},
+		{Username: "carol", Role: RoleAdmin},
+	} {
+		if _, err := s.AddUser(bad); !errors.Is(err, ErrInvalidUser) {
+			t.Errorf("AddUser(%+v) = %v", bad, err)
+		}
+	}
+	for _, good := range []string{"a1", "0.x", "x_y-z.w", strings.Repeat("a", 32)} {
+		if CheckUsername(good) != nil {
+			t.Errorf("%q rejected", good)
+		}
+	}
+
+	u.Role, u.Disabled, u.PasswordHash, u.CreatedAt = RoleViewer, true, "h3", time.Time{}
+	if err := s.UpdateUser(u); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateUser(User{ID: b.ID, Username: "alice", Role: RoleAdmin, PasswordHash: "h"}); !errors.Is(err, ErrDuplicate) {
+		t.Fatalf("rename onto another: %v", err)
+	}
+	if err := s.UpdateUser(User{ID: "nope", Username: "x1", Role: RoleAdmin, PasswordHash: "h"}); !errors.Is(err, ErrUserNotFound) {
+		t.Fatalf("update unknown: %v", err)
+	}
+
+	r, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := r.UserByName("alice")
+	if !ok || got.Role != RoleViewer || !got.Disabled || got.PasswordHash != "h3" || got.CreatedAt.IsZero() || got.ID != u.ID {
+		t.Fatalf("reopened %+v", got)
+	}
+	if got, ok := r.User(b.ID); !ok || got.Username != "bob" {
+		t.Fatalf("by id %+v", got)
+	}
+	if list := r.List(); len(list) != 1 || list[0].ID != inst.ID {
+		t.Fatalf("instances %+v", list)
+	}
+	if err := r.DeleteUser(u.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.DeleteUser(u.ID); !errors.Is(err, ErrUserNotFound) {
+		t.Fatalf("delete twice: %v", err)
+	}
+	if _, ok := r.UserByName("alice"); ok {
+		t.Fatal("deleted user found")
+	}
+	// Instance changes keep the users.
+	r.Delete(inst.ID)
+	if r2, _ := Open(path); len(r2.Users()) != 1 {
+		t.Fatalf("users after instance delete: %+v", r2.Users())
+	}
+}
+
+func TestUsersInFileAreValidated(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s.json")
+	for _, users := range []string{
+		`[{"id":"1","username":"Bad Name","role":"admin","passwordHash":"h"}]`,
+		`[{"id":"1","username":"alice","role":"root","passwordHash":"h"}]`,
+		`[{"id":"1","username":"alice","role":"admin","passwordHash":"h"},{"id":"2","username":"alice","role":"admin","passwordHash":"h"}]`,
+	} {
+		os.WriteFile(path, []byte(`{"instances":[],"users":`+users+`}`), 0o600)
+		if _, err := Open(path); err == nil {
+			t.Errorf("opened %s", users)
+		}
 	}
 }

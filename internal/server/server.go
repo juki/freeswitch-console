@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"fsdeck/internal/audit"
 	"fsdeck/internal/esl"
 	"fsdeck/internal/fsapi"
 	"fsdeck/internal/store"
@@ -31,11 +32,17 @@ type Switch interface {
 }
 
 type Config struct {
-	AdminPassword  string // required
-	ViewerPassword string // empty disables the viewer account
+	AdminPassword  string // FSDECK_ADMIN_PASSWORD: the managed account admin; empty for none
+	ViewerPassword string // FSDECK_VIEWER_PASSWORD: the managed account viewer; empty for none
 	Store          *store.Store
 	Dial           func(addr, password string) Switch // returns a started client
 	Static         fs.FS
+	Version        string // reported by GET /api/version; empty is "dev"
+
+	LogBacklog      int // log lines kept per instance; 0 disables the backlog
+	LogBacklogLevel int // highest log level kept, 0..7
+
+	Audit *audit.Log // nil disables the audit log
 }
 
 const (
@@ -56,6 +63,12 @@ type Server struct {
 	sessMu   sync.Mutex
 	sessions map[string]session
 
+	managed   []account  // from the environment; they hide file users of the same name
+	dummyHash string     // verified for unknown usernames so they cost the same
+	usersMu   sync.Mutex // serializes account changes, so the admin guards hold
+
+	routeCaps map[string]capability // pattern -> capability, for the route table test
+
 	// loginMaxFails failures within loginWindow block a key for loginBlock;
 	// the table holds at most loginMaxKeys keys.
 	loginMu       sync.Mutex
@@ -70,21 +83,45 @@ type instance struct {
 	sw   Switch
 	done chan struct{} // closed when the instance is deleted or replaced, or the server closes
 
-	logMu   sync.Mutex
-	levels  map[int]int // log level -> open streams asking for it
-	applied int         // level last passed to SetLogLevel
+	// logMu guards the log-level bookkeeping, the backlog and the open
+	// streams. The collector stores and forwards each message while holding
+	// it, so a stream that copies the backlog and registers in one critical
+	// section gets every later line exactly once.
+	logMu       sync.Mutex
+	levels      map[int]int // log level -> open streams asking for it
+	applied     int         // level last passed to SetLogLevel
+	floor       int         // the level never goes below this: the backlog level, or -1 without a backlog
+	streams     map[*stream]struct{}
+	backlog     []logEvent // ring; the oldest is at backlogNext once full
+	backlogSize int        // 0 disables the backlog
+	backlogNext int
+	seq         uint64 // sequence number of the last stored line
 
 	histMu    sync.Mutex
 	history   [historySize]sample // ring; the oldest is at histNext once full
 	histNext  int
 	histLen   int
-	collected chan struct{} // closed when the history collector has returned
+	collected chan struct{} // closed when the collector has returned
 }
 
-// newInstance starts the history collector of sw.
-func newInstance(sw Switch) *instance {
-	i := &instance{sw: sw, done: make(chan struct{}), levels: map[int]int{}, applied: -1, collected: make(chan struct{})}
-	msgs, cancel := sw.Subscribe(64)
+// newInstance starts the collector of sw. With a backlog the ESL log level is
+// raised to backlogLevel at once, so lines are kept before any stream opens.
+func newInstance(sw Switch, backlog, backlogLevel int) *instance {
+	i := &instance{
+		sw:          sw,
+		done:        make(chan struct{}),
+		levels:      map[int]int{},
+		applied:     -1,
+		floor:       -1,
+		streams:     map[*stream]struct{}{},
+		backlogSize: backlog,
+		collected:   make(chan struct{}),
+	}
+	msgs, cancel := sw.Subscribe(1024)
+	if backlog > 0 {
+		i.floor, i.applied = backlogLevel, backlogLevel
+		sw.SetLogLevel(backlogLevel)
+	}
 	go i.collect(msgs, cancel)
 	return i
 }
@@ -92,10 +129,15 @@ func newInstance(sw Switch) *instance {
 // New dials every stored instance.
 func New(cfg Config) (*Server, error) {
 	switch {
-	case cfg.AdminPassword == "":
-		return nil, errors.New("server: admin password is required")
 	case cfg.Store == nil || cfg.Dial == nil || cfg.Static == nil:
 		return nil, errors.New("server: Store, Dial and Static are required")
+	case cfg.LogBacklog < 0:
+		return nil, errors.New("server: the log backlog must not be negative")
+	case cfg.LogBacklog > 0 && (cfg.LogBacklogLevel < 0 || cfg.LogBacklogLevel > 7):
+		return nil, errors.New("server: the log backlog level must be 0 to 7")
+	}
+	if cfg.Version == "" {
+		cfg.Version = "dev"
 	}
 	s := &Server{
 		cfg:          cfg,
@@ -109,9 +151,30 @@ func New(cfg Config) (*Server, error) {
 		loginWindow:   5 * time.Minute,
 		loginBlock:    time.Minute,
 		loginMaxKeys:  10000,
+		routeCaps:     map[string]capability{},
+	}
+	for _, m := range []struct{ id, name, role, password string }{
+		{managedAdminID, "admin", store.RoleAdmin, cfg.AdminPassword},
+		{managedViewerID, "viewer", store.RoleViewer, cfg.ViewerPassword},
+	} {
+		if m.password == "" {
+			continue
+		}
+		hash, err := hashPassword(m.password)
+		if err != nil {
+			return nil, err
+		}
+		s.managed = append(s.managed, account{User: store.User{ID: m.id, Username: m.name, Role: m.role, PasswordHash: hash}, Managed: true})
+	}
+	dummy, err := randomPassword()
+	if err == nil {
+		s.dummyHash, err = hashPassword(dummy)
+	}
+	if err != nil {
+		return nil, err
 	}
 	for _, in := range cfg.Store.List() {
-		s.insts[in.ID] = newInstance(s.dial(in))
+		s.insts[in.ID] = s.newInstance(in)
 	}
 	s.routes()
 	return s, nil
@@ -142,46 +205,63 @@ func eslContext(r *http.Request, d time.Duration) (context.Context, context.Canc
 	return context.WithTimeout(context.WithoutCancel(r.Context()), d)
 }
 
-func (s *Server) dial(in store.Instance) Switch {
-	return s.cfg.Dial(net.JoinHostPort(in.Host, strconv.Itoa(in.Port)), in.Password)
+// newInstance dials in and starts its collector.
+func (s *Server) newInstance(in store.Instance) *instance {
+	sw := s.cfg.Dial(net.JoinHostPort(in.Host, strconv.Itoa(in.Port)), in.Password)
+	return newInstance(sw, s.cfg.LogBacklog, s.cfg.LogBacklogLevel)
 }
 
 func (s *Server) routes() {
 	m := http.NewServeMux()
-	m.HandleFunc("POST /api/login", s.handleLogin)
-	m.HandleFunc("POST /api/logout", s.auth(false, s.handleLogout))
-	m.HandleFunc("GET /api/me", s.auth(false, s.handleMe))
+	s.handlePublic(m, "GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	})
+	s.handlePublic(m, "POST /api/login", s.handleLogin)
+	s.handle(m, "POST /api/logout", capRead, "", s.handleLogout)
+	s.handle(m, "GET /api/me", capRead, "", s.handleMe)
+	s.handle(m, "POST /api/me/password", capRead, "", s.handleChangePassword)
+	s.handle(m, "GET /api/version", capRead, "", func(w http.ResponseWriter, _ *http.Request, _ user) {
+		writeJSON(w, http.StatusOK, map[string]string{"version": s.cfg.Version})
+	})
 
-	m.HandleFunc("GET /api/instances", s.auth(false, s.handleListInstances))
-	m.HandleFunc("POST /api/instances", s.auth(true, s.handleCreateInstance))
-	m.HandleFunc("PUT /api/instances/{id}", s.auth(true, s.handleUpdateInstance))
-	m.HandleFunc("DELETE /api/instances/{id}", s.auth(true, s.handleDeleteInstance))
+	s.handle(m, "GET /api/users", capUsers, "user.list", s.handleListUsers)
+	s.handle(m, "POST /api/users", capUsers, "user.create", s.handleCreateUser)
+	s.handle(m, "PUT /api/users/{id}", capUsers, "user.update", s.handleUpdateUser)
+	s.handle(m, "DELETE /api/users/{id}", capUsers, "user.delete", s.handleDeleteUser)
+	s.handle(m, "GET /api/audit", capUsers, "audit.read", s.handleAudit)
 
-	m.HandleFunc("GET /api/instances/{id}/status", s.auth(false, s.handleStatus))
-	m.HandleFunc("GET /api/instances/{id}/sofia", rowsRoute(s, fsapi.SofiaStatus))
-	m.HandleFunc("GET /api/instances/{id}/gateways", rowsRoute(s, fsapi.SofiaGateways))
+	s.handle(m, "GET /api/instances", capRead, "", s.handleListInstances)
+	s.handle(m, "POST /api/instances", capInstances, "instance.create", s.handleCreateInstance)
+	s.handle(m, "PUT /api/instances/{id}", capInstances, "instance.update", s.handleUpdateInstance)
+	s.handle(m, "DELETE /api/instances/{id}", capInstances, "instance.delete", s.handleDeleteInstance)
+
+	s.handle(m, "GET /api/instances/{id}/status", capRead, "", s.handleStatus)
+	s.handle(m, "GET /api/instances/{id}/sofia", capRead, "", rowsRoute(s, fsapi.SofiaStatus))
+	s.handle(m, "GET /api/instances/{id}/gateways", capRead, "", rowsRoute(s, fsapi.SofiaGateways))
 	for _, kind := range []string{"registrations", "channels", "calls", "modules"} {
-		m.HandleFunc("GET /api/instances/{id}/"+kind, rowsRoute(s, func(ctx context.Context, c fsapi.Commander) ([]map[string]any, error) {
+		s.handle(m, "GET /api/instances/{id}/"+kind, capRead, "", rowsRoute(s, func(ctx context.Context, c fsapi.Commander) ([]map[string]any, error) {
 			return fsapi.Rows(ctx, c, kind)
 		}))
 	}
-	m.HandleFunc("GET /api/instances/{id}/vars", rowsRoute(s, fsapi.GlobalVars))
-	m.HandleFunc("GET /api/instances/{id}/config", rowsRoute(s, fsapi.ConfigList))
-	m.HandleFunc("GET /api/instances/{id}/config/{name}", s.auth(false, s.handleConfig))
-	m.HandleFunc("GET /api/instances/{id}/dialplan", rowsRoute(s, fsapi.DialplanContexts))
-	m.HandleFunc("GET /api/instances/{id}/dialplan/{name}", xmlRoute(s, fsapi.DialplanContext))
-	m.HandleFunc("GET /api/instances/{id}/directory", rowsRoute(s, fsapi.DirectoryDomains))
-	m.HandleFunc("GET /api/instances/{id}/directory/{name}", xmlRoute(s, fsapi.DirectoryDomain))
-	m.HandleFunc("GET /api/instances/{id}/history", s.auth(false, s.handleHistory))
-	m.HandleFunc("DELETE /api/instances/{id}/channels/{uuid}", s.auth(true, s.handleHangup))
-	m.HandleFunc("POST /api/instances/{id}/actions", s.auth(true, s.handleAction))
-	m.HandleFunc("POST /api/instances/{id}/console", s.auth(true, s.handleConsole))
-	m.HandleFunc("GET /api/instances/{id}/stream", s.auth(false, s.handleStream))
+	s.handle(m, "GET /api/instances/{id}/vars", capRead, "", rowsRoute(s, fsapi.GlobalVars))
+	s.handle(m, "GET /api/instances/{id}/config", capRead, "", rowsRoute(s, fsapi.ConfigList))
+	s.handle(m, "GET /api/instances/{id}/config/{name}", capRead, "", s.handleConfig)
+	s.handle(m, "GET /api/instances/{id}/dialplan", capRead, "", rowsRoute(s, fsapi.DialplanContexts))
+	s.handle(m, "GET /api/instances/{id}/dialplan/{name}", capRead, "", xmlRoute(s, fsapi.DialplanContext))
+	s.handle(m, "GET /api/instances/{id}/directory", capRead, "", rowsRoute(s, fsapi.DirectoryDomains))
+	s.handle(m, "GET /api/instances/{id}/directory/{name}", capRead, "", xmlRoute(s, fsapi.DirectoryDomain))
+	s.handle(m, "GET /api/instances/{id}/history", capRead, "", s.handleHistory)
+	// The stream is readable by every role; log lines need capLogs, checked
+	// in the handler.
+	s.handle(m, "GET /api/instances/{id}/stream", capRead, "", s.handleStream)
+	s.handle(m, "DELETE /api/instances/{id}/channels/{uuid}", capOperate, "channel.hangup", s.handleHangup)
+	s.handle(m, "POST /api/instances/{id}/actions", capOperate, "action.*", s.handleAction)
+	s.handle(m, "POST /api/instances/{id}/console", capConsole, "console.run", s.handleConsole)
 
-	m.HandleFunc("/api/", s.auth(false, func(w http.ResponseWriter, _ *http.Request, _ user) {
+	s.handle(m, "/api/", capRead, "", func(w http.ResponseWriter, _ *http.Request, _ user) {
 		writeError(w, http.StatusNotFound, "not found")
-	}))
-	m.Handle("/", http.FileServerFS(s.cfg.Static))
+	})
+	s.handlePublic(m, "/", http.FileServerFS(s.cfg.Static).ServeHTTP)
 	s.mux = m
 }
 
@@ -194,6 +274,9 @@ func (s *Server) Handler() http.Handler {
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("Referrer-Policy", "no-referrer")
+		if r.TLS != nil {
+			h.Set("Strict-Transport-Security", "max-age=31536000")
+		}
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			h.Set("Cache-Control", "no-store")
 			r.Body = http.MaxBytesReader(w, r.Body, maxBody)
@@ -219,8 +302,8 @@ func (s *Server) Handler() http.Handler {
 }
 
 // rowsRoute serves a read-only query as {"rows": [...]}.
-func rowsRoute[T any](s *Server, fetch func(context.Context, fsapi.Commander) ([]T, error)) http.HandlerFunc {
-	return s.auth(false, func(w http.ResponseWriter, r *http.Request, _ user) {
+func rowsRoute[T any](s *Server, fetch func(context.Context, fsapi.Commander) ([]T, error)) func(http.ResponseWriter, *http.Request, user) {
+	return func(w http.ResponseWriter, r *http.Request, _ user) {
 		inst := s.connected(w, r)
 		if inst == nil {
 			return
@@ -236,12 +319,12 @@ func rowsRoute[T any](s *Server, fetch func(context.Context, fsapi.Commander) ([
 			rows = []T{}
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"rows": rows})
-	})
+	}
 }
 
 // xmlRoute serves one named XML entry as {"name": ..., "xml": ...}.
-func xmlRoute(s *Server, fetch func(context.Context, fsapi.Commander, string) (string, error)) http.HandlerFunc {
-	return s.auth(false, func(w http.ResponseWriter, r *http.Request, _ user) {
+func xmlRoute(s *Server, fetch func(context.Context, fsapi.Commander, string) (string, error)) func(http.ResponseWriter, *http.Request, user) {
+	return func(w http.ResponseWriter, r *http.Request, _ user) {
 		inst := s.connected(w, r)
 		if inst == nil {
 			return
@@ -255,7 +338,7 @@ func xmlRoute(s *Server, fetch func(context.Context, fsapi.Commander, string) (s
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"name": name, "xml": doc})
-	})
+	}
 }
 
 // lookup writes 404 and returns nil for an unknown instance.

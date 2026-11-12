@@ -88,33 +88,75 @@ these changes.
 
 | Flag | Environment | Default | Purpose |
 |---|---|---|---|
-| `-listen` | `FSDECK_LISTEN` | `127.0.0.1:8080` | HTTP listen address |
-| `-data` | `FSDECK_DATA` | `fsdeck.json` | instance list file (holds ESL passwords, mode 0600) |
-| | `FSDECK_ADMIN_PASSWORD` | random, printed at start | password of the `admin` account |
-| | `FSDECK_VIEWER_PASSWORD` | unset (account disabled) | password of the read-only `viewer` account |
+| `-listen` | `FSDECK_LISTEN` | `127.0.0.1:8080` | listen address |
+| `-data` | `FSDECK_DATA` | `fsdeck.json` | data file: instances with their ESL passwords, and accounts (mode 0600) |
+| `-audit` | `FSDECK_AUDIT` | `fsdeck-audit.log` beside the data file | audit log; an empty value disables it |
+| `-log-backlog` | `FSDECK_LOG_BACKLOG` | `2000` | log lines kept per instance and replayed when the Logs view opens; `0` disables |
+| `-log-backlog-level` | `FSDECK_LOG_BACKLOG_LEVEL` | `6` (INFO) | highest log level kept in the backlog, `0` to `7` |
+| `-tls-cert`, `-tls-key` | `FSDECK_TLS_CERT`, `FSDECK_TLS_KEY` | unset | serve HTTPS with this PEM certificate and key; both or neither |
+| | `FSDECK_SECRET_KEY` | unset | encrypt the ESL passwords in the data file; at least 16 characters |
+| | `FSDECK_ADMIN_PASSWORD` | unset | password of the managed `admin` account |
+| | `FSDECK_VIEWER_PASSWORD` | unset | password of the managed `viewer` account |
+| `-version` | | | print the version and exit |
+
+With a backlog, fsdeck keeps the ESL log level of every instance at least at
+`-log-backlog-level`, so FreeSWITCH sends INFO lines even while nobody watches
+the Logs view. `GET /healthz` answers `{"status":"ok"}` without signing in, for
+load balancers and container health checks.
 
 ## Accounts
 
-| | `admin` | `viewer` |
-|---|---|---|
-| Status, SIP, calls, config (masked) | yes | yes |
-| Manage instances | yes | no |
-| Hang up, rescan, reloadxml, reloadacl | yes | no |
-| Logs and console | yes | no |
+| | `viewer` | `operator` | `admin` |
+|---|---|---|---|
+| Status, SIP, calls, configuration, dialplan, directory (masked), load history | yes | yes | yes |
+| Logs | no | yes | yes |
+| Hang up, rescan, reloadxml, reloadacl | no | yes | yes |
+| Console | no | no | yes |
+| Manage instances | no | no | yes |
+| Manage accounts, read the audit log | no | no | yes |
+
+Accounts live in the data file and admins manage them in the console.
+Usernames are 2 to 32 lowercase letters, digits, `.`, `_` or `-`; passwords are
+10 to 256 characters and stored as PBKDF2-SHA256 hashes (600000 iterations).
+Everyone can change their own password. Changing an account's role, password
+or disabled flag, or deleting it, signs it out everywhere. Nobody can delete,
+disable or demote the account they are signed in with, and the last enabled
+admin stays.
+
+On the first start without accounts and without `FSDECK_ADMIN_PASSWORD`,
+fsdeck creates `admin` with a random password and prints it once.
+
+`FSDECK_ADMIN_PASSWORD` and `FSDECK_VIEWER_PASSWORD` keep the accounts `admin`
+(role admin) and `viewer` (role viewer) with that password, whatever the data
+file says. The console shows them as managed and cannot change or delete
+them; unset the variable to remove the account.
 
 ## Security notes
 
-- The `admin` account can run any FreeSWITCH API command. Treat it like shell
+- The `admin` role can run any FreeSWITCH API command. Treat it like shell
   access to the switch.
-- fsdeck serves plain HTTP. Keep it on a trusted network or put it behind a
-  TLS-terminating reverse proxy that sets `X-Forwarded-Proto: https`, so the
-  session cookie is marked `Secure`.
-- ESL passwords are stored in clear in the data file. Protect that file.
+- Without `-tls-cert` and `-tls-key` fsdeck serves plain HTTP. Then keep it on
+  a trusted network or behind a TLS-terminating reverse proxy that sets
+  `X-Forwarded-Proto: https`, so the session cookie is marked `Secure`. With
+  built-in TLS fsdeck also sends `Strict-Transport-Security`.
+- ESL passwords are stored in clear in the data file unless
+  `FSDECK_SECRET_KEY` is set; fsdeck warns at start when it is not. With the
+  key they are encrypted with AES-256-GCM; existing clear values are encrypted
+  at the next change to the data file. fsdeck refuses to start when the file
+  holds encrypted values and the key is missing or wrong. Keep the key outside
+  the data directory, and protect the data file either way: it also holds the
+  password hashes.
 - Five failed sign-ins for an account from one address within five minutes
   block that pair for a minute. Behind a reverse proxy every client shares the
   proxy's address, so the block then applies to the account as a whole.
-- Log lines are not masked and can contain secrets; that is why logs are
-  admin-only.
+- The audit log records sign-ins (also failed and blocked ones), sign-outs,
+  instance and account changes, password changes, hang-ups, actions, refused
+  requests and every console command in full, with the account and client
+  address. It never records passwords or session tokens, but console commands
+  can carry secrets: the file has mode 0600 and only admins can read it in
+  the console. At 10 MiB it is renamed to `<name>.1` and a new file starts.
+- Log lines are not masked and can contain secrets; that is why logs need the
+  `operator` or `admin` role.
 
 ## Not in scope (yet)
 

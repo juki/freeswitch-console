@@ -183,7 +183,7 @@ type harness struct {
 	dialed []*fakeSwitch
 }
 
-func newHarness(t *testing.T) *harness {
+func newHarness(t *testing.T, opts ...func(*Config)) *harness {
 	t.Helper()
 	st, err := store.Open(filepath.Join(t.TempDir(), "instances.json"))
 	if err != nil {
@@ -194,13 +194,17 @@ func newHarness(t *testing.T) *harness {
 		t.Fatal(err)
 	}
 	h := &harness{t: t, st: st, id: in.ID}
-	h.srv, err = New(Config{
+	cfg := Config{
 		AdminPassword:  adminPW,
 		ViewerPassword: viewerPW,
 		Store:          st,
 		Dial:           h.dial,
 		Static:         fstest.MapFS{"index.html": {Data: []byte("<!doctype html><title>fsdeck</title>")}},
-	})
+	}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	h.srv, err = New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -307,7 +311,7 @@ func TestLoginLogoutMe(t *testing.T) {
 	expect(t, h.do("POST", "/api/login", "", `{"username":"admin","password":"x"} {}`), 400, "")
 
 	r := h.do("POST", "/api/login", "", `{"username":"admin","password":"`+adminPW+`"}`)
-	expect(t, r, 200, `{"username":"admin","role":"admin"}`)
+	expect(t, r, 200, `{"username":"admin","role":"admin","managed":true}`)
 	cookies := r.resp.Cookies()
 	if len(cookies) != 1 {
 		t.Fatalf("cookies %v", cookies)
@@ -316,7 +320,7 @@ func TestLoginLogoutMe(t *testing.T) {
 	if c.Name != "fsdeck_session" || len(c.Value) != 64 || !c.HttpOnly || c.SameSite != http.SameSiteStrictMode || c.Path != "/" || c.Secure || c.MaxAge != 12*3600 {
 		t.Fatalf("cookie %+v", c)
 	}
-	expect(t, h.do("GET", "/api/me", c.Value, ""), 200, `{"username":"admin","role":"admin"}`)
+	expect(t, h.do("GET", "/api/me", c.Value, ""), 200, `{"username":"admin","role":"admin","managed":true}`)
 
 	r = h.do("POST", "/api/logout", c.Value, "")
 	expect(t, r, 204, "")
@@ -326,7 +330,7 @@ func TestLoginLogoutMe(t *testing.T) {
 	expect(t, h.do("GET", "/api/me", c.Value, ""), 401, "")
 
 	v := h.login("viewer", viewerPW)
-	expect(t, h.do("GET", "/api/me", v, ""), 200, `{"username":"viewer","role":"viewer"}`)
+	expect(t, h.do("GET", "/api/me", v, ""), 200, `{"username":"viewer","role":"viewer","managed":true}`)
 }
 
 func TestESLContextIgnoresRequestCancel(t *testing.T) {
@@ -385,11 +389,16 @@ func TestViewerDisabled(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := srv.checkLogin("viewer", ""); ok {
+	if _, ok, _ := srv.checkLogin("viewer", ""); ok {
 		t.Fatal("viewer with empty password accepted")
 	}
-	if _, err := New(Config{Store: st, Dial: srv.cfg.Dial, Static: fstest.MapFS{}}); err == nil {
-		t.Fatal("missing admin password accepted")
+	// Without any environment password the server runs on file accounts.
+	srv, err = New(Config{Store: st, Dial: srv.cfg.Dial, Static: fstest.MapFS{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, _ := srv.checkLogin("admin", ""); ok {
+		t.Fatal("admin accepted without any account")
 	}
 }
 
@@ -746,6 +755,9 @@ func TestHeadersStaticAndUnknownAPI(t *testing.T) {
 	check(r, false)
 	r = h.do("GET", "/missing.js", "", "")
 	expect(t, r, 404, "")
+	// Since Go 1.23 the file server drops Cache-Control from its error
+	// responses; there is nothing to keep stale there.
+	r.header.Set("Cache-Control", "no-cache")
 	check(r, false)
 
 	r = h.do("GET", "/api/me", admin, "")
@@ -890,6 +902,9 @@ func TestStreamAdmin(t *testing.T) {
 	if ev.name != "state" || ev.data != `{"connected":true,"since":"2026-01-02T03:04:05Z","lastError":""}` {
 		t.Fatalf("first event %+v", ev)
 	}
+	if ev := next(t, ch); ev.name != "backlog" || ev.data != `{"lines":0}` {
+		t.Fatalf("second event %+v", ev)
+	}
 	f.publish(logMsg("7", "debug line"))
 	f.publish(logMsg("x", "bad level"))
 	f.publish(logMsg("3", "error line\nsecond line"))
@@ -900,7 +915,7 @@ func TestStreamAdmin(t *testing.T) {
 	})
 	f.publish(esl.Message{Kind: esl.KindState, Headers: map[string]string{"connected": "false", "error": "EOF"}})
 
-	if ev := next(t, ch); ev.name != "log" || ev.data != `{"level":3,"text":"error line\nsecond line","file":"switch_core.c","func":"fn","line":123}` {
+	if ev := next(t, ch); ev.name != "log" || ev.data != `{"level":3,"text":"error line\nsecond line","file":"switch_core.c","func":"fn","line":123,"seq":0}` {
 		t.Fatalf("log event %+v", ev)
 	}
 	ev = next(t, ch)
@@ -956,11 +971,14 @@ func TestStreamSharedLogLevel(t *testing.T) {
 
 	a, cancelA := h.openStream(admin, "?loglevel=5")
 	next(t, a)
+	next(t, a)
 	expectLevels(5)
 	b, cancelB := h.openStream(admin, "?loglevel=7")
 	next(t, b)
+	next(t, b)
 	expectLevels(5, 7)
 	c, cancelC := h.openStream(admin, "?loglevel=5")
+	next(t, c)
 	next(t, c)
 	expectLevels(5, 7)
 
@@ -992,6 +1010,9 @@ func TestStreamPingAndEnd(t *testing.T) {
 	ch, cancel := h.openStream(admin, "?loglevel=7")
 	defer cancel()
 	next(t, ch)
+	if ev := next(t, ch); ev.name != "backlog" {
+		t.Fatalf("got %+v", ev)
+	}
 	if ev := next(t, ch); ev.name != "comment" || ev.data != "ping" {
 		t.Fatalf("got %+v", ev)
 	}
@@ -1277,7 +1298,7 @@ func TestHistory(t *testing.T) {
 }
 
 func TestHistoryRing(t *testing.T) {
-	inst := newInstance(newFake("a", "b"))
+	inst := newInstance(newFake("a", "b"), 0, 0)
 	defer inst.close()
 	for i := 0; i < 3; i++ {
 		inst.addSample(sample{T: int64(i)})
@@ -1393,4 +1414,36 @@ func TestDialplanDirectoryRoutes(t *testing.T) {
 	expect(t, h.do("GET", p+"/directory", admin, ""), 200, `{"rows":[]}`)
 	expect(t, h.do("GET", p+"/dialplan/a%20b", admin, ""), 400, `{"error":"invalid argument: invalid context name"}`)
 	expect(t, h.do("GET", p+"/directory/a%20b", admin, ""), 400, `{"error":"invalid argument: invalid domain name"}`)
+}
+
+func TestHealthzAndVersion(t *testing.T) {
+	h := newHarness(t)
+	r := h.do("GET", "/healthz", "", "")
+	expect(t, r, 200, `{"status":"ok"}`)
+	if r.header.Get("Content-Type") != "application/json" || r.header.Get("X-Frame-Options") != "DENY" {
+		t.Fatalf("headers %v", r.header)
+	}
+	expect(t, h.do("GET", "/api/version", "", ""), 401, "")
+	expect(t, h.do("GET", "/api/version", h.login("viewer", viewerPW), ""), 200, `{"version":"dev"}`)
+	h.srv.cfg.Version = "1.2.3"
+	expect(t, h.do("GET", "/api/version", h.login("admin", adminPW), ""), 200, `{"version":"1.2.3"}`)
+}
+
+func TestHSTSOnlyOverTLS(t *testing.T) {
+	h := newHarness(t)
+	if got := h.do("GET", "/healthz", "", "").header.Get("Strict-Transport-Security"); got != "" {
+		t.Fatalf("plain HTTP sends HSTS %q", got)
+	}
+	ts := httptest.NewTLSServer(h.srv.Handler())
+	defer ts.Close()
+	for _, path := range []string{"/healthz", "/", "/api/me"} {
+		resp, err := ts.Client().Get(ts.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if got := resp.Header.Get("Strict-Transport-Security"); got != "max-age=31536000" {
+			t.Errorf("%s: HSTS %q", path, got)
+		}
+	}
 }

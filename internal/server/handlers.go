@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 
+	"fsdeck/internal/audit"
 	"fsdeck/internal/esl"
 	"fsdeck/internal/fsapi"
 	"fsdeck/internal/store"
@@ -58,7 +60,29 @@ func (s *Server) handleListInstances(w http.ResponseWriter, _ *http.Request, _ u
 	writeJSON(w, http.StatusOK, views)
 }
 
-func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request, _ user) {
+// instanceEntry starts the audit entry of an instance change; id is empty
+// when a create failed.
+func instanceEntry(u user, action, id string, req instanceRequest) audit.Entry {
+	detail := fmt.Sprintf("host=%s port=%d", truncate(req.Host, 256), req.Port)
+	if id != "" {
+		detail = "id=" + id + " " + detail
+	}
+	if req.Password != "" {
+		detail += " password=changed"
+	}
+	return audit.Entry{User: u.Username, Action: action, Target: truncate(req.Name, 64), Detail: detail}
+}
+
+// record completes e with the outcome err and writes it to the audit log.
+func (s *Server) record(r *http.Request, e audit.Entry, err error) {
+	e.Result = audit.OK
+	if err != nil {
+		e.Result, e.Error = audit.Error, err.Error()
+	}
+	s.audit(r, e)
+}
+
+func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request, u user) {
 	var req instanceRequest
 	if !decodeJSON(w, r, &req) {
 		return
@@ -67,44 +91,51 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request, _ 
 	in, err := s.cfg.Store.Add(store.Instance{Name: req.Name, Host: req.Host, Port: req.Port, Password: req.Password})
 	if err != nil {
 		s.mu.Unlock()
+		s.record(r, instanceEntry(u, "instance.create", "", req), err)
 		writeStoreError(w, err)
 		return
 	}
-	inst := newInstance(s.dial(in))
+	inst := s.newInstance(in)
 	s.insts[in.ID] = inst
 	s.mu.Unlock()
+	s.record(r, instanceEntry(u, "instance.create", in.ID, req), nil)
 	writeJSON(w, http.StatusCreated, view(in, inst))
 }
 
-func (s *Server) handleUpdateInstance(w http.ResponseWriter, r *http.Request, _ user) {
+func (s *Server) handleUpdateInstance(w http.ResponseWriter, r *http.Request, u user) {
 	var req instanceRequest
 	if !decodeJSON(w, r, &req) {
 		return
 	}
 	id := r.PathValue("id")
+	entry := instanceEntry(u, "instance.update", id, req)
 	s.mu.Lock()
 	err := s.cfg.Store.Update(store.Instance{ID: id, Name: req.Name, Host: req.Host, Port: req.Port, Password: req.Password})
 	if err != nil {
 		s.mu.Unlock()
+		s.record(r, entry, err)
 		writeStoreError(w, err)
 		return
 	}
 	in, _ := s.cfg.Store.Get(id)
 	old := s.insts[id]
-	inst := newInstance(s.dial(in))
+	inst := s.newInstance(in)
 	s.insts[id] = inst
 	s.mu.Unlock()
 	if old != nil {
 		old.close()
 	}
+	s.record(r, entry, nil)
 	writeJSON(w, http.StatusOK, view(in, inst))
 }
 
-func (s *Server) handleDeleteInstance(w http.ResponseWriter, r *http.Request, _ user) {
+func (s *Server) handleDeleteInstance(w http.ResponseWriter, r *http.Request, u user) {
 	id := r.PathValue("id")
+	entry := audit.Entry{User: u.Username, Action: "instance.delete", Target: s.instanceName(id), Detail: "id=" + truncate(id, 64)}
 	s.mu.Lock()
 	if err := s.cfg.Store.Delete(id); err != nil {
 		s.mu.Unlock()
+		s.record(r, entry, err)
 		writeStoreError(w, err)
 		return
 	}
@@ -114,7 +145,13 @@ func (s *Server) handleDeleteInstance(w http.ResponseWriter, r *http.Request, _ 
 	if old != nil {
 		old.close()
 	}
+	s.record(r, entry, nil)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) instanceName(id string) string {
+	in, _ := s.cfg.Store.Get(id)
+	return in.Name
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request, _ user) {
@@ -158,17 +195,25 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request, _ user) {
 	writeJSON(w, http.StatusOK, map[string]string{"name": name, "xml": doc})
 }
 
-func (s *Server) handleHangup(w http.ResponseWriter, r *http.Request, _ user) {
-	inst := s.connected(w, r)
+func (s *Server) handleHangup(w http.ResponseWriter, r *http.Request, u user) {
+	inst := s.lookup(w, r)
 	if inst == nil {
+		return
+	}
+	uuid := r.PathValue("uuid")
+	entry := audit.Entry{User: u.Username, Action: "channel.hangup", Target: s.instanceName(r.PathValue("id")), Detail: "uuid=" + truncate(uuid, 128)}
+	if !ready(w, inst) {
+		s.record(r, entry, esl.ErrNotConnected)
 		return
 	}
 	ctx, cancel := eslContext(r, eslTimeout)
 	defer cancel()
-	writeOutput(w)(fsapi.HangupChannel(ctx, inst.sw, r.PathValue("uuid")))
+	out, err := fsapi.HangupChannel(ctx, inst.sw, uuid)
+	s.record(r, entry, err)
+	writeOutput(w)(out, err)
 }
 
-func (s *Server) handleAction(w http.ResponseWriter, r *http.Request, _ user) {
+func (s *Server) handleAction(w http.ResponseWriter, r *http.Request, u user) {
 	inst := s.lookup(w, r)
 	if inst == nil {
 		return
@@ -181,12 +226,14 @@ func (s *Server) handleAction(w http.ResponseWriter, r *http.Request, _ user) {
 		return
 	}
 	var run func(context.Context, fsapi.Commander) (string, error)
+	entry := audit.Entry{User: u.Username, Action: "action." + req.Action, Target: s.instanceName(r.PathValue("id"))}
 	switch req.Action {
 	case "reloadxml":
 		run = fsapi.ReloadXML
 	case "reloadacl":
 		run = fsapi.ReloadACL
 	case "sofia_rescan":
+		entry.Detail = "profile=" + truncate(req.Profile, 128)
 		run = func(ctx context.Context, c fsapi.Commander) (string, error) {
 			return fsapi.SofiaRescan(ctx, c, req.Profile)
 		}
@@ -195,15 +242,19 @@ func (s *Server) handleAction(w http.ResponseWriter, r *http.Request, _ user) {
 		return
 	}
 	if !ready(w, inst) {
+		s.record(r, entry, esl.ErrNotConnected)
 		return
 	}
 	ctx, cancel := eslContext(r, eslTimeout)
 	defer cancel()
-	writeOutput(w)(run(ctx, inst.sw))
+	out, err := run(ctx, inst.sw)
+	s.record(r, entry, err)
+	writeOutput(w)(out, err)
 }
 
-// handleConsole returns the raw reply, "-ERR" included.
-func (s *Server) handleConsole(w http.ResponseWriter, r *http.Request, _ user) {
+// handleConsole returns the raw reply, "-ERR" included. The audit entry
+// carries the command text; the audit log is admin-only, like the console.
+func (s *Server) handleConsole(w http.ResponseWriter, r *http.Request, u user) {
 	inst := s.lookup(w, r)
 	if inst == nil {
 		return
@@ -223,16 +274,24 @@ func (s *Server) handleConsole(w http.ResponseWriter, r *http.Request, _ user) {
 		writeError(w, http.StatusBadRequest, "command must be a single line")
 		return
 	}
+	entry := audit.Entry{User: u.Username, Action: "console.run", Target: s.instanceName(r.PathValue("id")), Detail: cmd}
 	if !ready(w, inst) {
+		s.record(r, entry, esl.ErrNotConnected)
 		return
 	}
 	ctx, cancel := eslContext(r, consoleTimeout)
 	defer cancel()
 	out, err := inst.sw.API(ctx, cmd)
 	if err != nil {
+		s.record(r, entry, err)
 		writeError(w, http.StatusServiceUnavailable, err.Error())
 		return
 	}
+	if strings.HasPrefix(out, "-ERR") {
+		first, _, _ := strings.Cut(out, "\n")
+		err = errors.New(truncate(strings.TrimSpace(first), 200))
+	}
+	s.record(r, entry, err)
 	writeJSON(w, http.StatusOK, map[string]string{"output": out})
 }
 

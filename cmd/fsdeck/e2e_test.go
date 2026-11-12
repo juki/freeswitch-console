@@ -10,12 +10,14 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"fsdeck/internal/audit"
 	"fsdeck/internal/server"
 	"fsdeck/internal/store"
 	"fsdeck/web"
@@ -197,16 +199,27 @@ func (c *testClient) get(path string, want int, into any) []byte {
 func TestEndToEnd(t *testing.T) {
 	host, port := fakeFreeSWITCH(t)
 
-	st, err := store.Open(filepath.Join(t.TempDir(), "fsdeck.json"))
+	dir := t.TempDir()
+	st, err := store.Open(filepath.Join(dir, "fsdeck.json"), store.WithSecretKey("an-e2e-secret-key-value"))
 	if err != nil {
 		t.Fatal(err)
 	}
+	auditLog, err := audit.Open(filepath.Join(dir, "fsdeck-audit.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer auditLog.Close()
+	// The fake logs at level 7 only; keep those lines in the backlog.
 	app, err := server.New(server.Config{
-		AdminPassword:  "admin-pw",
-		ViewerPassword: "viewer-pw",
-		Store:          st,
-		Dial:           dial,
-		Static:         web.Static(),
+		AdminPassword:   "admin-pw",
+		ViewerPassword:  "viewer-pw",
+		Store:           st,
+		Dial:            dial,
+		Static:          web.Static(),
+		Version:         "1.2.3-test",
+		LogBacklog:      100,
+		LogBacklogLevel: 7,
+		Audit:           auditLog,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -220,11 +233,19 @@ func TestEndToEnd(t *testing.T) {
 	jar, _ := cookiejar.New(nil)
 	c := &testClient{t: t, base: ts.URL, http: &http.Client{Jar: jar}}
 
+	if body := c.get("/healthz", http.StatusOK, nil); strings.TrimSpace(string(body)) != `{"status":"ok"}` {
+		t.Fatalf("healthz: %s", body)
+	}
+	c.get("/api/version", http.StatusUnauthorized, nil)
 	if code, body := c.do("GET", "/api/instances", nil); code != http.StatusUnauthorized {
 		t.Fatalf("unauthenticated list: status %d: %s", code, body)
 	}
 	if code, body := c.do("POST", "/api/login", map[string]string{"username": "admin", "password": "admin-pw"}); code != http.StatusOK {
 		t.Fatalf("login: status %d: %s", code, body)
+	}
+
+	if body := c.get("/api/version", http.StatusOK, nil); strings.TrimSpace(string(body)) != `{"version":"1.2.3-test"}` {
+		t.Fatalf("version: %s", body)
 	}
 
 	code, body := c.do("POST", "/api/instances", map[string]any{"name": "test", "host": host, "port": port, "password": eslPassword})
@@ -233,6 +254,9 @@ func TestEndToEnd(t *testing.T) {
 	}
 	if bytes.Contains(body, []byte(eslPassword)) {
 		t.Fatalf("create response leaks the ESL password: %s", body)
+	}
+	if data, _ := os.ReadFile(filepath.Join(dir, "fsdeck.json")); bytes.Contains(data, []byte(eslPassword)) || !bytes.Contains(data, []byte(`"password": "enc:v1:`)) {
+		t.Fatalf("ESL password not encrypted at rest: %s", data)
 	}
 	var inst struct{ ID string }
 	if err := json.Unmarshal(body, &inst); err != nil || inst.ID == "" {
@@ -294,6 +318,10 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatalf("hangup: status %d: %s", code, body)
 	}
 
+	// The backlog level is applied when the instance is created, so the
+	// fake has been logging since it connected: the stream replays those
+	// lines, marks the hand-over, then goes live.
+	time.Sleep(200 * time.Millisecond)
 	resp, err := c.http.Get(ts.URL + p + "/stream?loglevel=7")
 	if err != nil {
 		t.Fatal(err)
@@ -302,30 +330,112 @@ func TestEndToEnd(t *testing.T) {
 	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/event-stream") {
 		t.Fatalf("stream content type = %q", ct)
 	}
-	seen := map[string]bool{}
-	got := make(chan string)
+	type event struct{ name, data string }
+	got := make(chan event)
 	go func() {
 		defer close(got)
 		sc := bufio.NewScanner(resp.Body)
+		var ev event
 		for sc.Scan() {
-			if name, ok := strings.CutPrefix(sc.Text(), "event: "); ok {
-				got <- name
+			line := sc.Text()
+			if name, ok := strings.CutPrefix(line, "event: "); ok {
+				ev.name = name
+			} else if data, ok := strings.CutPrefix(line, "data: "); ok {
+				ev.data = data
+			} else if line == "" && ev.name != "" {
+				got <- ev
+				ev = event{}
 			}
 		}
 	}()
-	timeout := time.After(5 * time.Second)
-	for !(seen["state"] && seen["heartbeat"] && seen["log"]) {
+	nextEvent := func() event {
+		t.Helper()
 		select {
-		case name, ok := <-got:
+		case ev, ok := <-got:
 			if !ok {
-				t.Fatalf("stream ended early, saw %v", seen)
+				t.Fatal("stream ended early")
 			}
-			seen[name] = true
-		case <-timeout:
-			t.Fatalf("stream timeout, saw %v", seen)
+			return ev
+		case <-time.After(5 * time.Second):
+			t.Fatal("stream timeout")
+		}
+		return event{}
+	}
+	var logLine struct {
+		Seq  uint64
+		Text string
+	}
+	if ev := nextEvent(); ev.name != "state" {
+		t.Fatalf("first event %+v", ev)
+	}
+	var replayed int
+	var lastSeq uint64
+	for {
+		ev := nextEvent()
+		if ev.name == "backlog" {
+			if ev.data != fmt.Sprintf(`{"lines":%d}`, replayed) || replayed == 0 {
+				t.Fatalf("backlog event %s after %d replayed lines", ev.data, replayed)
+			}
+			break
+		}
+		if ev.name != "log" || json.Unmarshal([]byte(ev.data), &logLine) != nil || logLine.Seq != lastSeq+1 && lastSeq != 0 || logLine.Seq == 0 {
+			t.Fatalf("replayed %+v after seq %d", ev, lastSeq)
+		}
+		lastSeq = logLine.Seq
+		replayed++
+	}
+	for seenLive, seenHeartbeat := false, false; !seenLive || !seenHeartbeat; {
+		switch ev := nextEvent(); ev.name {
+		case "heartbeat":
+			seenHeartbeat = true
+		case "log":
+			json.Unmarshal([]byte(ev.data), &logLine)
+			if logLine.Seq != lastSeq+1 || !strings.Contains(logLine.Text, "debug line") {
+				t.Fatalf("live line %s after seq %d", ev.data, lastSeq)
+			}
+			lastSeq = logLine.Seq
+			seenLive = true
 		}
 	}
 	resp.Body.Close()
+
+	// The console command is in the audit log, newest first.
+	var auditRows struct {
+		Enabled bool
+		Rows    []struct{ User, Action, Target, Detail, Result string }
+	}
+	c.get("/api/audit?q=console.run&limit=1", http.StatusOK, &auditRows)
+	if !auditRows.Enabled || len(auditRows.Rows) != 1 || auditRows.Rows[0].User != "admin" || auditRows.Rows[0].Target != "test" || auditRows.Rows[0].Detail != "status" || auditRows.Rows[0].Result != "ok" {
+		t.Fatalf("audit rows %+v", auditRows)
+	}
+
+	// An operator hangs up calls but has no console and no user management.
+	code, body = c.do("POST", "/api/users", map[string]string{"username": "op1", "role": "operator", "password": "operator-password"})
+	if code != http.StatusCreated || bytes.Contains(body, []byte("operator-password")) {
+		t.Fatalf("create operator: status %d: %s", code, body)
+	}
+	ojar, _ := cookiejar.New(nil)
+	o := &testClient{t: t, base: ts.URL, http: &http.Client{Jar: ojar}}
+	if code, body := o.do("POST", "/api/login", map[string]string{"username": "op1", "password": "operator-password"}); code != http.StatusOK || !strings.Contains(string(body), `"role":"operator"`) {
+		t.Fatalf("operator login: status %d: %s", code, body)
+	}
+	if code, body := o.do("DELETE", p+"/channels/abc-123", nil); code != http.StatusOK {
+		t.Fatalf("operator hangup: status %d: %s", code, body)
+	}
+	for _, rq := range []struct {
+		method, path string
+		body         any
+	}{
+		{"POST", p + "/console", map[string]string{"command": "status"}},
+		{"GET", "/api/users", nil},
+		{"POST", "/api/users", map[string]string{"username": "op2", "role": "admin", "password": "operator-password"}},
+		{"GET", "/api/audit", nil},
+		{"POST", "/api/instances", map[string]any{"name": "x", "host": "h", "port": 1, "password": "p"}},
+	} {
+		if code, body := o.do(rq.method, rq.path, rq.body); code != http.StatusForbidden {
+			t.Fatalf("operator %s %s: status %d: %s", rq.method, rq.path, code, body)
+		}
+	}
 
 	// The viewer account reads but cannot act.
 	vjar, _ := cookiejar.New(nil)

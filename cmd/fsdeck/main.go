@@ -3,52 +3,103 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
+	"crypto/tls"
 	"errors"
 	"flag"
+	"fmt"
 	"io/fs"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strconv"
 	"syscall"
 	"time"
 
+	"fsdeck/internal/audit"
 	"fsdeck/internal/esl"
 	"fsdeck/internal/server"
 	"fsdeck/internal/store"
 	"fsdeck/web"
 )
 
+// version is set at build time with -ldflags "-X main.version=...".
+var version = "dev"
+
 func main() {
 	listen := flag.String("listen", envOr("FSDECK_LISTEN", "127.0.0.1:8080"), "HTTP listen address")
-	data := flag.String("data", envOr("FSDECK_DATA", "fsdeck.json"), "path of the instance list file")
+	data := flag.String("data", envOr("FSDECK_DATA", "fsdeck.json"), "data file: instances and accounts")
 	static := flag.String("static", "", "serve the frontend from this directory instead of the embedded copy (frontend development)")
+	tlsCert := flag.String("tls-cert", os.Getenv("FSDECK_TLS_CERT"), "TLS certificate file (PEM); with -tls-key the console serves HTTPS")
+	tlsKey := flag.String("tls-key", os.Getenv("FSDECK_TLS_KEY"), "TLS private key file (PEM)")
+	backlog := flag.Int("log-backlog", envInt("FSDECK_LOG_BACKLOG", 2000), "log lines kept per instance and replayed when the Logs view opens; 0 disables")
+	backlogLevel := flag.Int("log-backlog-level", envInt("FSDECK_LOG_BACKLOG_LEVEL", 6), "highest log level kept in the backlog, 0 (console) to 7 (debug)")
+	auditPath := flag.String("audit", "", "audit log file (default fsdeck-audit.log beside the data file; empty disables)")
+	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println(version)
+		return
+	}
+	if !flagSet("audit") {
+		// An empty FSDECK_AUDIT disables the log, so unset and empty differ.
+		if v, ok := os.LookupEnv("FSDECK_AUDIT"); ok {
+			*auditPath = v
+		} else {
+			*auditPath = filepath.Join(filepath.Dir(*data), "fsdeck-audit.log")
+		}
+	}
+
+	tlsConfig, err := loadTLS(*tlsCert, *tlsKey)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	var assets fs.FS = web.Static()
 	if *static != "" {
 		assets = os.DirFS(*static)
 	}
 
-	adminPassword := os.Getenv("FSDECK_ADMIN_PASSWORD")
-	if adminPassword == "" {
-		adminPassword = randomPassword()
-		log.Printf("FSDECK_ADMIN_PASSWORD is not set; admin password for this run: %s", adminPassword)
+	var opts []store.Option
+	if key := os.Getenv("FSDECK_SECRET_KEY"); key != "" {
+		opts = append(opts, store.WithSecretKey(key))
+	} else {
+		log.Printf("warning: FSDECK_SECRET_KEY is not set; ESL passwords are stored in clear in %s", *data)
 	}
-
-	st, err := store.Open(*data)
+	st, err := store.Open(*data, opts...)
 	if err != nil {
 		log.Fatalf("open %s: %v", *data, err)
 	}
 
+	adminPassword := os.Getenv("FSDECK_ADMIN_PASSWORD")
+	password, err := server.Bootstrap(st, adminPassword != "")
+	if err != nil {
+		log.Fatalf("create the admin account: %v", err)
+	}
+	if password != "" {
+		log.Printf("created the account admin with password %s (shown only now; change it after signing in)", password)
+	}
+
+	var auditLog *audit.Log
+	if *auditPath != "" {
+		if auditLog, err = audit.Open(*auditPath); err != nil {
+			log.Fatalf("audit log: %v", err)
+		}
+		defer auditLog.Close()
+	}
+
 	app, err := server.New(server.Config{
-		AdminPassword:  adminPassword,
-		ViewerPassword: os.Getenv("FSDECK_VIEWER_PASSWORD"),
-		Store:          st,
-		Dial:           dial,
-		Static:         assets,
+		AdminPassword:   adminPassword,
+		ViewerPassword:  os.Getenv("FSDECK_VIEWER_PASSWORD"),
+		Store:           st,
+		Dial:            dial,
+		Static:          assets,
+		Version:         version,
+		LogBacklog:      *backlog,
+		LogBacklogLevel: *backlogLevel,
+		Audit:           auditLog,
 	})
 	if err != nil {
 		log.Fatal(err)
@@ -59,6 +110,7 @@ func main() {
 		Addr:              *listen,
 		Handler:           app.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
+		TLSConfig:         tlsConfig,
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -75,10 +127,32 @@ func main() {
 		}
 	}()
 
-	log.Printf("fsdeck listening on http://%s", *listen)
-	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+	if tlsConfig != nil {
+		log.Printf("fsdeck %s listening on https://%s", version, *listen)
+		err = srv.ListenAndServeTLS("", "")
+	} else {
+		log.Printf("fsdeck %s listening on http://%s", version, *listen)
+		err = srv.ListenAndServe()
+	}
+	if !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
+}
+
+// loadTLS returns nil when neither file is given. The pair is loaded at start
+// so a bad path or key fails before the console is up.
+func loadTLS(certFile, keyFile string) (*tls.Config, error) {
+	switch {
+	case certFile == "" && keyFile == "":
+		return nil, nil
+	case certFile == "" || keyFile == "":
+		return nil, errors.New("-tls-cert and -tls-key (FSDECK_TLS_CERT, FSDECK_TLS_KEY) must be given together")
+	}
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return nil, fmt.Errorf("load TLS certificate: %w", err)
+	}
+	return &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{cert}}, nil
 }
 
 func dial(addr, password string) server.Switch {
@@ -94,10 +168,22 @@ func envOr(name, fallback string) string {
 	return fallback
 }
 
-func randomPassword() string {
-	b := make([]byte, 12)
-	if _, err := rand.Read(b); err != nil {
-		log.Fatal(err)
+// envInt reads an integer from the environment; a value that is not one
+// stops the start.
+func envInt(name string, fallback int) int {
+	v := os.Getenv(name)
+	if v == "" {
+		return fallback
 	}
-	return hex.EncodeToString(b)
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		log.Fatalf("%s: %q is not a number", name, v)
+	}
+	return n
+}
+
+func flagSet(name string) bool {
+	set := false
+	flag.Visit(func(f *flag.Flag) { set = set || f.Name == name })
+	return set
 }

@@ -20,8 +20,9 @@ type sample struct {
 	Idle     float64 `json:"idle"`
 }
 
-// collect records a sample per HEARTBEAT until the switch is closed. It has
-// its own subscription and never touches the log-level bookkeeping.
+// collect is the only subscriber of the switch. It records a sample per
+// HEARTBEAT, keeps the log backlog and forwards state changes, heartbeats and
+// log lines to the open streams, until the switch is closed.
 func (i *instance) collect(msgs <-chan esl.Message, cancel func()) {
 	defer close(i.collected)
 	defer cancel()
@@ -33,8 +34,16 @@ func (i *instance) collect(msgs <-chan esl.Message, cancel func()) {
 			if !ok {
 				return
 			}
-			if m.Kind == esl.KindEvent && m.Headers["Event-Name"] == "HEARTBEAT" {
-				i.addSample(heartbeatSample(m.Headers, time.Now()))
+			switch m.Kind {
+			case esl.KindEvent:
+				if m.Headers["Event-Name"] == "HEARTBEAT" {
+					i.addSample(heartbeatSample(m.Headers, time.Now()))
+					i.forward(streamItem{kind: "heartbeat", headers: m.Headers})
+				}
+			case esl.KindState:
+				i.forward(streamItem{kind: "state"})
+			case esl.KindLog:
+				i.addLog(m)
 			}
 		}
 	}

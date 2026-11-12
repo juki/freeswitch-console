@@ -17,17 +17,118 @@ type logEvent struct {
 	File  string `json:"file"`
 	Func  string `json:"func"`
 	Line  int    `json:"line"`
+	Seq   uint64 `json:"seq"` // 0 for a line that is not kept in the backlog
 }
 
-// trackLogLevel adds delta streams at level and keeps the shared ESL log
-// level at the highest level any open stream asks for.
-func (i *instance) trackLogLevel(level, delta int) {
+// streamItem is one message for an open stream.
+type streamItem struct {
+	kind    string            // "state", "heartbeat" or "log"
+	headers map[string]string // heartbeat
+	log     logEvent
+}
+
+// streamBuffer is how far a stream may fall behind before it loses messages.
+const streamBuffer = 1024
+
+// stream is one open event stream; level is -1 when it gets no log lines.
+type stream struct {
+	level int
+	ch    chan streamItem
+}
+
+// addLog keeps a line in the backlog when its level is at most the backlog
+// level, and forwards it to every stream that asked for its level.
+func (i *instance) addLog(m esl.Message) {
+	level, err := strconv.Atoi(m.Headers["Log-Level"])
+	if err != nil {
+		return
+	}
+	line, _ := strconv.Atoi(m.Headers["Log-Line"])
+	ev := logEvent{
+		Level: level,
+		Text:  strings.TrimRight(m.Body, "\r\n"),
+		File:  m.Headers["Log-File"],
+		Func:  m.Headers["Log-Func"],
+		Line:  line,
+	}
 	i.logMu.Lock()
 	defer i.logMu.Unlock()
-	if i.levels[level] += delta; i.levels[level] <= 0 {
-		delete(i.levels, level)
+	if i.backlogSize > 0 && level <= i.floor {
+		i.seq++
+		ev.Seq = i.seq
+		if len(i.backlog) < i.backlogSize {
+			i.backlog = append(i.backlog, ev)
+		} else {
+			i.backlog[i.backlogNext] = ev
+			i.backlogNext = (i.backlogNext + 1) % i.backlogSize
+		}
 	}
-	want := -1
+	for st := range i.streams {
+		if level <= st.level {
+			st.send(streamItem{kind: "log", log: ev})
+		}
+	}
+}
+
+// forward passes a state change or heartbeat to every stream.
+func (i *instance) forward(item streamItem) {
+	i.logMu.Lock()
+	defer i.logMu.Unlock()
+	for st := range i.streams {
+		st.send(item)
+	}
+}
+
+// send never blocks the collector: a stream that does not keep up loses
+// messages, as an ESL subscriber does.
+func (st *stream) send(item streamItem) {
+	select {
+	case st.ch <- item:
+	default:
+	}
+}
+
+// openStream registers a stream and, when replay is set, returns the backlog
+// lines with a level of at most level, oldest first. Copying the backlog and
+// registering happen under one lock, so no line is both replayed and
+// forwarded, and none falls between the two.
+func (i *instance) openStream(level int, replay bool) ([]logEvent, *stream) {
+	i.logMu.Lock()
+	defer i.logMu.Unlock()
+	var lines []logEvent
+	if replay && level >= 0 {
+		n := len(i.backlog)
+		for k := 0; k < n; k++ {
+			if ev := i.backlog[(i.backlogNext+k)%n]; ev.Level <= level {
+				lines = append(lines, ev)
+			}
+		}
+	}
+	st := &stream{level: level, ch: make(chan streamItem, streamBuffer)}
+	i.streams[st] = struct{}{}
+	if level >= 0 {
+		i.levels[level]++
+		i.applyLogLevel()
+	}
+	return lines, st
+}
+
+func (i *instance) closeStream(st *stream) {
+	i.logMu.Lock()
+	defer i.logMu.Unlock()
+	delete(i.streams, st)
+	if st.level >= 0 {
+		if i.levels[st.level]--; i.levels[st.level] <= 0 {
+			delete(i.levels, st.level)
+		}
+		i.applyLogLevel()
+	}
+}
+
+// applyLogLevel keeps the shared ESL log level at the highest level any open
+// stream asks for, and never below the backlog level. logMu must be held.
+func (i *instance) applyLogLevel() {
+	want := i.floor
 	for l := range i.levels {
 		want = max(want, l)
 	}
@@ -44,40 +145,65 @@ func (i *instance) trackLogLevel(level, delta int) {
 
 func (s *Server) handleStream(w http.ResponseWriter, r *http.Request, u user) {
 	level := -1 // no log events
-	if q := r.URL.Query().Get("loglevel"); q != "" && u.Role == roleAdmin {
-		n, err := strconv.Atoi(q)
+	q := r.URL.Query()
+	if v := q.Get("loglevel"); v != "" && allowed(u.Role, capLogs) {
+		n, err := strconv.Atoi(v)
 		if err != nil || n < 0 || n > 7 {
 			writeError(w, http.StatusBadRequest, "loglevel must be 0 to 7")
 			return
 		}
 		level = n
 	}
+	replay := true
+	switch q.Get("backlog") {
+	case "", "1":
+	case "0":
+		replay = false
+	default:
+		writeError(w, http.StatusBadRequest, "backlog must be 0 or 1")
+		return
+	}
 	inst := s.lookup(w, r)
 	if inst == nil {
 		return
 	}
-	msgs, cancel := inst.sw.Subscribe(256)
-	defer cancel()
-	if level >= 0 {
-		inst.trackLogLevel(level, 1)
-		defer inst.trackLogLevel(level, -1)
-	}
+	lines, st := inst.openStream(level, replay)
+	defer inst.closeStream(st)
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	rc := http.NewResponseController(w)
 	_ = rc.SetWriteDeadline(time.Time{}) // a server WriteTimeout would cut the stream
 	w.WriteHeader(http.StatusOK)
-	send := func(event string, v any) error {
+	write := func(event string, v any) error {
 		data, err := json.Marshal(v) // single line: newlines in strings are escaped
 		if err != nil {
 			return err
 		}
-		if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, data); err != nil {
+		_, err = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, data)
+		return err
+	}
+	send := func(event string, v any) error {
+		if err := write(event, v); err != nil {
 			return err
 		}
 		return rc.Flush()
 	}
-	if send("state", inst.sw.State()) != nil {
+	if write("state", inst.sw.State()) != nil {
+		return
+	}
+	var last uint64 // sequence number of the last replayed line
+	if level >= 0 {
+		for _, ev := range lines {
+			if write("log", ev) != nil {
+				return
+			}
+			last = ev.Seq
+		}
+		if write("backlog", map[string]int{"lines": len(lines)}) != nil {
+			return
+		}
+	}
+	if rc.Flush() != nil {
 		return
 	}
 
@@ -90,34 +216,25 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request, u user) {
 			return
 		case <-inst.done:
 			return
+		case <-inst.collected: // the switch was closed
+			return
 		case <-ping.C:
 			if _, err = fmt.Fprint(w, ": ping\n\n"); err == nil {
 				err = rc.Flush()
 			}
-		case m, ok := <-msgs:
-			if !ok {
-				return
-			}
-			switch m.Kind {
-			case esl.KindState:
+		case item := <-st.ch:
+			switch item.kind {
+			case "state":
 				err = send("state", inst.sw.State())
-			case esl.KindEvent:
-				if m.Headers["Event-Name"] == "HEARTBEAT" {
-					err = send("heartbeat", m.Headers)
-				}
-			case esl.KindLog:
-				l, perr := strconv.Atoi(m.Headers["Log-Level"])
-				if level < 0 || perr != nil || l > level {
+			case "heartbeat":
+				err = send("heartbeat", item.headers)
+			case "log":
+				// Registration under the collector's lock already rules
+				// out a repeat; the check keeps the guarantee local.
+				if item.log.Seq != 0 && item.log.Seq <= last {
 					continue
 				}
-				line, _ := strconv.Atoi(m.Headers["Log-Line"])
-				err = send("log", logEvent{
-					Level: l,
-					Text:  strings.TrimRight(m.Body, "\r\n"),
-					File:  m.Headers["Log-File"],
-					Func:  m.Headers["Log-Func"],
-					Line:  line,
-				})
+				err = send("log", item.log)
 			}
 		}
 		if err != nil {
