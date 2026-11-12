@@ -2,6 +2,7 @@
 // skeletons, sparklines and meters. The time-series chart is in chart.js.
 
 import { h, s, cellText, DASH } from './dom.js';
+import { LANGS, lang, setLang, t } from './i18n.js';
 import { icon } from './icons.js';
 
 function cx(...names) {
@@ -18,7 +19,7 @@ export function toast(message, kind = 'ok', title) {
   const item = h('div', { class: 'toast ' + kind, role: kind === 'error' ? 'alert' : undefined },
     h('span', { class: 'toast-icon' }, icon(TOAST_ICONS[kind] || 'info')),
     h('div', { class: 'toast-body' }, title ? h('div', { class: 'toast-title', text: title }) : null, message),
-    h('button', { type: 'button', class: 'btn btn-ghost btn-icon btn-sm', 'aria-label': 'Dismiss', on: { click: () => item.remove() } }, icon('x')));
+    h('button', { type: 'button', class: 'btn btn-ghost btn-icon btn-sm', 'aria-label': t('common.dismiss'), on: { click: () => item.remove() } }, icon('x')));
   host.append(item);
   // A burst of toasts keeps only the newest few on screen.
   while (host.childElementCount > TOAST_MAX) host.firstElementChild.remove();
@@ -29,7 +30,7 @@ export function toast(message, kind = 'ok', title) {
 export function toastError(err, title) {
   if (err && err.name === 'AbortError') return;
   const msg = err && err.message ? err.message : String(err);
-  toast(err && err.status === 503 ? 'FreeSWITCH is not connected: ' + msg : msg, 'error', title);
+  toast(err && err.status === 503 ? t('error.notConnectedMsg', { msg }) : msg, 'error', title);
 }
 
 // openModal shows a modal dialog and returns {dialog, close}. The dialog is
@@ -51,11 +52,11 @@ export function openModal({ title, body, footer, onClose }) {
 }
 
 // confirmDialog resolves to true when the user confirms.
-export function confirmDialog({ title, message, confirmLabel = 'Confirm', danger = false }) {
+export function confirmDialog({ title, message, confirmLabel, danger = false }) {
   return new Promise((resolve) => {
     let result = false;
-    const cancel = h('button', { type: 'button', class: 'btn', text: 'Cancel' });
-    const ok = h('button', { type: 'button', class: danger ? 'btn btn-danger-solid' : 'btn btn-primary', text: confirmLabel });
+    const cancel = h('button', { type: 'button', class: 'btn', text: t('common.cancel') });
+    const ok = h('button', { type: 'button', class: danger ? 'btn btn-danger-solid' : 'btn btn-primary', text: confirmLabel || t('common.confirm') });
     const m = openModal({
       title,
       body: h('p', { class: 'modal-text', text: message }),
@@ -95,7 +96,7 @@ export function openDrawer({ title, subtitle, kicker, onClose }) {
   const titleEl = h('div', { class: 'drawer-title', text: title });
   const subEl = h('div', { class: 'drawer-sub', text: subtitle || '' });
   const body = h('div', { class: 'drawer-body' });
-  const closeBtn = h('button', { type: 'button', class: 'btn btn-ghost btn-icon', 'aria-label': 'Close', title: 'Close (Esc)', on: { click: closeDrawer } }, icon('x'));
+  const closeBtn = h('button', { type: 'button', class: 'btn btn-ghost btn-icon', 'aria-label': t('common.close'), title: t('drawer.closeEsc'), on: { click: closeDrawer } }, icon('x'));
   const el = h('aside', { class: 'drawer', role: 'dialog', 'aria-label': title },
     h('div', { class: 'drawer-head' },
       h('div', { class: 'spacer' }, kicker ? h('div', { class: 'drawer-kicker', text: kicker }) : null, titleEl, subEl),
@@ -123,7 +124,7 @@ export function openDrawer({ title, subtitle, kicker, onClose }) {
 function copyList(pairs) {
   return h('dl', { class: 'kv' }, pairs.map(([k, v]) => {
     const glyph = h('span', { class: 'copy-glyph' }, icon('copy'));
-    const btn = h('button', { type: 'button', class: 'copy-val', title: 'Copy value', 'aria-label': 'Copy ' + k }, h('span', { class: 'copy-text', text: v }), glyph);
+    const btn = h('button', { type: 'button', class: 'copy-val', title: t('drawer.copyValue'), 'aria-label': t('drawer.copyKey', { key: k }) }, h('span', { class: 'copy-text', text: v }), glyph);
     const reset = () => {
       if (!btn.classList.contains('copied')) return;
       btn.classList.remove('copied');
@@ -134,7 +135,7 @@ function copyList(pairs) {
         btn.classList.add('copied');
         glyph.replaceChildren(icon('check'));
       } else {
-        toast('The browser did not allow copying.', 'error');
+        toast(t('copy.denied'), 'error');
       }
     });
     btn.addEventListener('mouseleave', reset);
@@ -159,11 +160,11 @@ export function detailBody(row, primary = []) {
     dl: copyList(list.map((k) => [k, cellText(row[k])])),
   });
   const parts = [
-    top.length ? section('Summary', top) : null,
-    rest.length ? section((top.length ? 'All other fields' : 'Fields') + ' · ' + rest.length, rest) : null,
+    top.length ? section(t('drawer.summary'), top) : null,
+    rest.length ? section(top.length ? t('drawer.otherFields', { n: rest.length }) : t('drawer.fields', { n: rest.length }), rest) : null,
   ].filter(Boolean);
-  const none = h('p', { class: 'note-empty', text: 'No field matches the filter.', hidden: true });
-  const filter = searchBox('Filter ' + filled.length + ' fields', (q) => {
+  const none = h('p', { class: 'note-empty', text: t('drawer.noFieldMatch'), hidden: true });
+  const filter = searchBox(t('drawer.filterFields', { n: filled.length }), (q) => {
     let any = false;
     for (const p of parts) {
       let shown = 0;
@@ -182,7 +183,7 @@ export function detailBody(row, primary = []) {
     ...parts.flatMap((p) => [p.head, p.dl]),
     none,
     blank.length ? h('details', null,
-      h('summary', { text: 'Empty fields · ' + blank.length }),
+      h('summary', { text: t('drawer.emptyFields', { n: blank.length }) }),
       h('p', { class: 'mono faint', text: blank.join(', ') })) : null,
   ];
 }
@@ -218,6 +219,51 @@ export function clip(text, cls) {
   return h('span', { class: cx('clip', cls), text: t, title: t.length > 28 ? t : undefined });
 }
 
+// langMenu is the language picker: a globe button (with the language name
+// when label is set) that opens a small menu; up opens it upwards.
+export function langMenu({ label = false, up = false } = {}) {
+  const active = LANGS.find((l) => l.code === lang()) || LANGS[0];
+  const btn = h('button', {
+    type: 'button', class: label ? 'btn btn-ghost btn-sm lang-btn' : 'btn btn-ghost btn-icon btn-sm',
+    'aria-haspopup': 'menu', 'aria-expanded': 'false', 'aria-label': t('lang.choose'), title: t('lang.choose'),
+  }, icon('globe'), label ? h('span', { text: active.label }) : null);
+  const items = LANGS.map((l) => h('button', {
+    type: 'button', class: 'lang-item', role: 'menuitemradio', lang: l.code, 'aria-checked': String(l.code === active.code),
+    on: { click: () => { close(); setLang(l.code); } },
+  }, h('span', { class: 'lang-code', text: l.short }), h('span', { text: l.label }), l.code === active.code ? icon('check') : null));
+  const menu = h('div', { class: cx('lang-menu', up && 'up'), role: 'menu', 'aria-label': t('lang.choose'), hidden: true }, items);
+  const el = h('div', { class: 'lang' }, btn, menu);
+  const onDown = (ev) => {
+    if (!el.contains(ev.target)) close();
+  };
+  const onKey = (ev) => {
+    if (ev.key === 'Escape') {
+      ev.stopPropagation();
+      close();
+      btn.focus();
+    } else if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
+      ev.preventDefault();
+      const i = items.indexOf(document.activeElement);
+      items[(i + (ev.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length].focus();
+    }
+  };
+  function open() {
+    menu.hidden = false;
+    btn.setAttribute('aria-expanded', 'true');
+    document.addEventListener('pointerdown', onDown);
+    el.addEventListener('keydown', onKey);
+    items[LANGS.indexOf(active)].focus();
+  }
+  function close() {
+    menu.hidden = true;
+    btn.setAttribute('aria-expanded', 'false');
+    document.removeEventListener('pointerdown', onDown);
+    el.removeEventListener('keydown', onKey);
+  }
+  btn.addEventListener('click', () => (menu.hidden ? open() : close()));
+  return el;
+}
+
 export function iconButton(name, label, onClick, cls) {
   return h('button', { type: 'button', class: cx('btn btn-icon btn-sm', cls || 'btn-ghost'), 'aria-label': label, title: label, on: { click: onClick } }, icon(name));
 }
@@ -234,22 +280,22 @@ export function emptyState({ icon: name = 'box', title, text, action, tone }) {
 // state, everything else an error.
 export function errorState(err) {
   if (err && err.status === 503) {
-    return emptyState({ icon: 'plug', tone: 'calm', title: 'Not connected', text: 'fsdeck has no Event Socket connection to this FreeSWITCH right now. Data comes back when the connection does.' });
+    return emptyState({ icon: 'plug', tone: 'calm', title: t('error.notConnected'), text: t('error.notConnectedText') });
   }
   const msg = err && err.message ? err.message : String(err);
-  return emptyState({ icon: 'alert', tone: 'error', title: err && err.status === 403 ? 'Not allowed' : 'Could not load', text: msg });
+  return emptyState({ icon: 'alert', tone: 'error', title: err && err.status === 403 ? t('error.forbidden') : t('error.loadFailed'), text: msg });
 }
 
 // connectionHint turns an ESL connection error into advice; "" when the
 // error is not one it recognises.
 export function connectionHint(error) {
   const e = String(error || '').toLowerCase();
-  if (e.includes('authentication failed')) return 'FreeSWITCH rejected the Event Socket password.';
-  if (e.includes('access denied')) return 'FreeSWITCH refused this host: its Event Socket ACL (apply-inbound-acl in event_socket.conf.xml) does not allow the address fsdeck connects from.';
-  if (e.includes('connection refused')) return 'Nothing is listening on that address. Check the host and port, and that mod_event_socket is loaded.';
-  if (e.includes('no such host')) return 'The host name does not resolve.';
-  if (e.includes('timeout') || e.includes('timed out') || e.includes('no route') || e.includes('unreachable')) return 'The host did not answer. Check the address and any firewall in between.';
-  if (e.includes('eof') || e.includes('reset by peer')) return 'The connection was closed before FreeSWITCH answered. Something other than the Event Socket may be listening on that port.';
+  if (e.includes('authentication failed')) return t('hint.auth');
+  if (e.includes('access denied')) return t('hint.acl');
+  if (e.includes('connection refused')) return t('hint.refused');
+  if (e.includes('no such host')) return t('hint.dns');
+  if (e.includes('timeout') || e.includes('timed out') || e.includes('no route') || e.includes('unreachable')) return t('hint.timeout');
+  if (e.includes('eof') || e.includes('reset by peer')) return t('hint.eof');
   return '';
 }
 
@@ -258,7 +304,7 @@ const WIDTHS = ['w-75', 'w-90', 'w-45', 'w-60', 'w-30'];
 // skeleton is a placeholder shaped like the content it stands for: table
 // rows (cols > 1) or a list of lines (cols = 1).
 export function skeleton({ rows = 6, cols = 4 } = {}) {
-  return h('div', { class: 'skel', 'aria-busy': 'true', 'aria-label': 'Loading' },
+  return h('div', { class: 'skel', 'aria-busy': 'true', 'aria-label': t('common.loading') },
     Array.from({ length: rows }, (_, i) => (cols > 1
       ? h('div', { class: 'skel-row' }, Array.from({ length: cols }, (_, j) => h('span', { class: 'skel-bar ' + WIDTHS[(i + j) % WIDTHS.length] })))
       : h('span', { class: 'skel-bar ' + WIDTHS[i % WIDTHS.length] }))));
@@ -342,7 +388,7 @@ export function sortState(onChange) {
 // onRow makes rows clickable; sort (a sortState) makes columns with sortBy
 // sortable: a click cycles ascending, descending, original order.
 export function dataTable({ columns, rows, onRow, keyOf, selected, empty, sort }) {
-  if (!rows.length) return empty instanceof Node ? empty : emptyState({ title: empty || 'Nothing to show' });
+  if (!rows.length) return empty instanceof Node ? empty : emptyState({ title: empty || t('common.nothing') });
   const sortCol = sort && sort.col >= 0 ? columns[sort.col] : null;
   if (sortCol && sortCol.sortBy) {
     rows = [...rows].sort((a, b) => compare(sortCol.sortBy(a), sortCol.sortBy(b)) * sort.dir);

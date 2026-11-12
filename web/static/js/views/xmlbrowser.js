@@ -4,34 +4,47 @@
 // view (extensions, users) with the raw XML one click away.
 
 import { api, instPath, isAbort, rowsOf } from '../api.js';
-import { h, cellText } from '../dom.js';
+import { h, cellText, fmtInt } from '../dom.js';
+import { plural, t } from '../i18n.js';
 import { icon } from '../icons.js';
 import { copyText, emptyState, errorState, searchBox, segmented, skeleton, toast } from '../ui.js';
 import { renderXML } from '../xml.js';
 import { readDialplan, readDirectory } from './readers.js';
 
-function count(n, one, many) {
+// count renders "12 extensions" with the singular/plural pair picked for n.
+function count(n, one, other) {
   const v = Number(n);
-  return Number.isFinite(v) ? v.toLocaleString('en-US') + ' ' + (v === 1 ? one : many) : '';
+  return Number.isFinite(v) ? plural(v, one(fmtInt(v)), other(fmtInt(v))) : '';
 }
 
 const KINDS = {
   configuration: {
-    list: 'config', item: 'config/', listFilter: 'Filter configurations', prefer: 'sofia.conf', noun: 'configuration',
+    list: 'config', item: 'config/', prefer: 'sofia.conf',
     sub: (r) => cellText(r.description),
-    empty: 'Pick a file on the left to see it as FreeSWITCH parsed it.',
+    text: () => ({
+      listFilter: t('xb.cfg.filter'), select: t('xb.cfg.select'), empty: t('xb.cfg.empty'), noMatch: t('xb.cfg.noMatch'),
+      none: t('xb.cfg.none'), noneText: t('xb.cfg.noneText'), unreadable: '',
+    }),
   },
   dialplan: {
-    list: 'dialplan', item: 'dialplan/', listFilter: 'Filter contexts', prefer: 'default', noun: 'context',
-    sub: (r) => count(r.count, 'extension', 'extensions'),
-    empty: 'Pick a dialplan context on the left.',
-    reader: readDialplan, readerLabel: 'Extensions', readerFind: 'Filter extensions',
+    list: 'dialplan', item: 'dialplan/', prefer: 'default',
+    sub: (r) => count(r.count, (n) => t('xb.dp.count.one', { n }), (n) => t('xb.dp.count.other', { n })),
+    reader: readDialplan,
+    text: () => ({
+      listFilter: t('xb.dp.filter'), select: t('xb.dp.select'), empty: t('xb.dp.empty'), noMatch: t('xb.dp.noMatch'),
+      none: t('xb.dp.none'), noneText: t('xb.dp.noneText'), unreadable: t('xb.dp.unreadable'),
+      readerLabel: t('xb.dp.reader'), readerFind: t('xb.dp.readerFind'),
+    }),
   },
   directory: {
-    list: 'directory', item: 'directory/', listFilter: 'Filter domains', prefer: '', noun: 'domain',
-    sub: (r) => count(r.count, 'user entry', 'user entries'),
-    empty: 'Pick a directory domain on the left.',
-    reader: readDirectory, readerLabel: 'Users', readerFind: 'Filter users',
+    list: 'directory', item: 'directory/', prefer: '',
+    sub: (r) => count(r.count, (n) => t('xb.dir.count.one', { n }), (n) => t('xb.dir.count.other', { n })),
+    reader: readDirectory,
+    text: () => ({
+      listFilter: t('xb.dir.filter'), select: t('xb.dir.select'), empty: t('xb.dir.empty'), noMatch: t('xb.dir.noMatch'),
+      none: t('xb.dir.none'), noneText: t('xb.dir.noneText'), unreadable: t('xb.dir.unreadable'),
+      readerLabel: t('xb.dir.reader'), readerFind: t('xb.dir.readerFind'),
+    }),
   },
 };
 
@@ -67,14 +80,15 @@ function rangesIn(el, q) {
 
 export function mountXmlBrowser({ id, scope, root, kind }) {
   const K = KINDS[kind];
+  const T = K.text();
   const list = h('div', { class: 'conf-list' });
-  const title = h('div', { class: 'conf-title', text: 'Select a ' + K.noun });
+  const title = h('div', { class: 'conf-title', text: T.select });
   const desc = h('div', { class: 'faint' });
-  const copyBtn = h('button', { type: 'button', class: 'btn btn-sm', disabled: true, title: 'Copy the XML' }, icon('copy'), 'Copy');
-  const wrapBtn = h('button', { type: 'button', class: 'btn btn-sm btn-icon', 'aria-pressed': 'false', 'aria-label': 'Wrap long lines', title: 'Wrap long lines' }, icon('wrap'));
+  const copyBtn = h('button', { type: 'button', class: 'btn btn-sm', disabled: true, title: t('xb.copyTitle') }, icon('copy'), t('xb.copy'));
+  const wrapBtn = h('button', { type: 'button', class: 'btn btn-sm btn-icon', 'aria-pressed': 'false', 'aria-label': t('xb.wrap'), title: t('xb.wrap') }, icon('wrap'));
   const findCount = h('span', { class: 'find-count', 'aria-live': 'polite' });
-  const prevBtn = h('button', { type: 'button', class: 'btn btn-ghost btn-sm btn-icon', 'aria-label': 'Previous match', title: 'Previous match (Shift+Enter)', disabled: true }, icon('chevronUp'));
-  const nextBtn = h('button', { type: 'button', class: 'btn btn-ghost btn-sm btn-icon', 'aria-label': 'Next match', title: 'Next match (Enter)', disabled: true }, icon('chevronDown'));
+  const prevBtn = h('button', { type: 'button', class: 'btn btn-ghost btn-sm btn-icon', 'aria-label': t('xb.prev'), title: t('xb.prevTitle'), disabled: true }, icon('chevronUp'));
+  const nextBtn = h('button', { type: 'button', class: 'btn btn-ghost btn-sm btn-icon', 'aria-label': t('xb.next'), title: t('xb.nextTitle'), disabled: true }, icon('chevronDown'));
   const notice = h('div', { class: 'reader-fallback', hidden: true });
   const view = h('div', { class: 'conf-view' });
   let items = [];
@@ -88,7 +102,7 @@ export function mountXmlBrowser({ id, scope, root, kind }) {
   let hits = []; // matching .xl lines
   let current = -1;
 
-  const search = searchBox(K.listFilter, (q) => {
+  const search = searchBox(T.listFilter, (q) => {
     let shown = 0;
     for (const it of items) {
       it.btn.hidden = Boolean(q) && !it.key.includes(q);
@@ -96,13 +110,13 @@ export function mountXmlBrowser({ id, scope, root, kind }) {
     }
     noMatch.hidden = !items.length || shown > 0;
   });
-  const noMatch = h('div', { class: 'note-empty', text: 'No ' + K.noun + ' matches.', hidden: true });
-  const find = searchBox('Find in file', (q) => {
+  const noMatch = h('div', { class: 'note-empty', text: T.noMatch, hidden: true });
+  const find = searchBox(t('xb.find'), (q) => {
     needle = q;
     runFind();
   }, 'sm');
   find.input.disabled = true;
-  const modeSeg = K.reader ? segmented([{ key: 'read', label: K.readerLabel }, { key: 'xml', label: 'XML' }], mode, (k) => {
+  const modeSeg = K.reader ? segmented([{ key: 'read', label: T.readerLabel }, { key: 'xml', label: t('xb.xml') }], mode, (k) => {
     mode = k;
     showMode();
   }, 'sm') : null;
@@ -130,7 +144,7 @@ export function mountXmlBrowser({ id, scope, root, kind }) {
   function showCurrent() {
     if (structured()) return;
     hits.forEach((el, i) => el.classList.toggle('hit-current', i === current));
-    findCount.textContent = !needle ? '' : hits.length ? current + 1 + ' of ' + hits.length : 'No match';
+    findCount.textContent = !needle ? '' : hits.length ? t('common.nOfM', { n: fmtInt(current + 1), m: fmtInt(hits.length) }) : t('common.noMatch');
     prevBtn.disabled = nextBtn.disabled = hits.length < 2;
     if (HL) {
       CSS.highlights.delete('fsdeck-find-current');
@@ -147,7 +161,7 @@ export function mountXmlBrowser({ id, scope, root, kind }) {
     current = -1;
     if (structured()) {
       const [shown, total] = reading.filter(needle);
-      findCount.textContent = needle ? shown + ' of ' + total : '';
+      findCount.textContent = needle ? t('common.nOfM', { n: fmtInt(shown), m: fmtInt(total) }) : '';
       return;
     }
     if (pre && needle) {
@@ -163,7 +177,7 @@ export function mountXmlBrowser({ id, scope, root, kind }) {
   function showMode() {
     const read = structured();
     prevBtn.hidden = nextBtn.hidden = wrapBtn.hidden = Boolean(read);
-    find.input.placeholder = read ? K.readerFind : 'Find in file';
+    find.input.placeholder = read ? T.readerFind : t('xb.find');
     find.input.setAttribute('aria-label', find.input.placeholder);
     if (!pre && !read) return;
     view.replaceChildren(read ? reading.el : pre);
@@ -213,7 +227,7 @@ export function mountXmlBrowser({ id, scope, root, kind }) {
       if (K.reader) {
         reading = K.reader(raw);
         if (!reading) {
-          notice.replaceChildren(icon('alert'), 'This XML could not be read as a ' + K.noun + ', so it is shown as is.');
+          notice.replaceChildren(icon('alert'), T.unreadable);
           notice.hidden = false;
         }
       }
@@ -227,8 +241,8 @@ export function mountXmlBrowser({ id, scope, root, kind }) {
   }
 
   copyBtn.addEventListener('click', async () => {
-    if (await copyText(raw)) toast('Copied ' + title.textContent + ' to the clipboard.');
-    else toast('The browser did not allow copying.', 'error');
+    if (await copyText(raw)) toast(t('xb.copied', { name: title.textContent }));
+    else toast(t('copy.denied'), 'error');
   });
 
   api('GET', instPath(id, K.list), { signal: scope.signal }).then((data) => {
@@ -242,8 +256,8 @@ export function mountXmlBrowser({ id, scope, root, kind }) {
     });
     list.replaceChildren(...items.map((it) => it.btn), noMatch);
     if (!items.length) {
-      list.replaceChildren(h('div', { class: 'note-empty', text: 'Nothing here.' }));
-      view.replaceChildren(emptyState({ icon: 'sliders', title: 'No ' + K.noun + 's', text: 'FreeSWITCH reports no ' + K.noun + 's in this section.' }));
+      list.replaceChildren(h('div', { class: 'note-empty', text: t('xb.nothing') }));
+      view.replaceChildren(emptyState({ icon: 'sliders', title: T.none, text: T.noneText }));
       return;
     }
     open(items.find((it) => it.name === K.prefer) || items[0]);
@@ -252,5 +266,5 @@ export function mountXmlBrowser({ id, scope, root, kind }) {
     list.replaceChildren();
     view.replaceChildren(errorState(err));
   });
-  view.append(emptyState({ icon: 'sliders', title: 'Select a ' + K.noun, text: K.empty }));
+  view.append(emptyState({ icon: 'sliders', title: T.select, text: T.empty }));
 }

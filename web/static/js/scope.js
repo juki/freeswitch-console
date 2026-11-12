@@ -101,13 +101,21 @@ export class Scope {
   // stream opens an EventSource on url and dispatches JSON-decoded events to
   // handlers by event name. When the browser gives up (a non-200 answer), the
   // session is checked (a 401 leads to the login view) and the stream is
-  // reopened after 5s.
-  stream(url, handlers) {
+  // reopened after 5s. onStatus, if given, hears 'connecting' (first
+  // attempt), 'live' (the stream is open) and 'reconnecting'.
+  stream(url, handlers, { onStatus } = {}) {
     let es = null;
     let retry = null;
+    let status = '';
+    const report = (s) => {
+      if (s === status || this.disposed) return;
+      status = s;
+      if (onStatus) onStatus(s);
+    };
     const connect = () => {
       retry = null;
       if (this.disposed) return;
+      report(status ? 'reconnecting' : 'connecting');
       const source = new EventSource(url);
       es = source;
       for (const [name, fn] of Object.entries(handlers)) {
@@ -122,8 +130,12 @@ export class Scope {
           fn(data);
         });
       }
+      source.addEventListener('open', () => report('live'));
       source.addEventListener('error', () => {
-        if (this.disposed || source.readyState !== EventSource.CLOSED) return;
+        if (this.disposed) return;
+        // CONNECTING: the browser retries by itself; CLOSED: we retry below
+        report('reconnecting');
+        if (source.readyState !== EventSource.CLOSED) return;
         es = null;
         api('GET', 'me', { signal: this.signal })
           .catch(() => {})

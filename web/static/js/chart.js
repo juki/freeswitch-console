@@ -7,21 +7,15 @@
 //   c.setSeries({ label: 'Active sessions', format: (v) => v + ' sessions', integer: true, yMin: 0 });
 //   c.setData(points, { from, to });   // points: [[epochMs, value], ...] sorted by time
 
-import { h, s } from './dom.js';
+import { h, s, fmtClock } from './dom.js';
+import { t } from './i18n.js';
 
 const M = { l: 46, r: 16, t: 14, b: 28 };
 const TIME_STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400].map((x) => x * 1000);
 let uid = 0;
 
-function pad2(n) {
-  return String(n).padStart(2, '0');
-}
-
-// clock formats a timestamp as local 24-hour time.
-export function clock(t, seconds) {
-  const d = new Date(t);
-  return pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + (seconds ? ':' + pad2(d.getSeconds()) : '');
-}
+// clock formats a timestamp as local 24-hour time in the active language.
+export const clock = fmtClock;
 
 // niceStep returns a 1/2/2.5/5 x 10^n step that cuts span into about count parts.
 function niceStep(span, count) {
@@ -72,7 +66,7 @@ function nearest(points, t) {
   return Math.abs(points[lo][0] - t) <= Math.abs(points[hi][0] - t) ? lo : hi;
 }
 
-export function timeChart({ scope, height = 240, gapMs = 45000, emptyText = 'Collecting samples…' }) {
+export function timeChart({ scope, height = 240, gapMs = 45000, emptyText }) {
   const id = 'tc' + (++uid);
   const clipRect = s('rect');
   const svg = s('svg', { height, role: 'img' },
@@ -175,11 +169,11 @@ export function timeChart({ scope, height = 240, gapMs = 45000, emptyText = 'Col
     const target = Math.max(2, Math.floor(pw / 96));
     const tStep = TIME_STEPS.find((x) => span / x <= target) || TIME_STEPS[TIME_STEPS.length - 1];
     const off = new Date(from).getTimezoneOffset() * 60000;
-    for (let t = Math.ceil((from - off) / tStep) * tStep + off; t <= to; t += tStep) {
-      const x = sx(t);
+    for (let tick = Math.ceil((from - off) / tStep) * tStep + off; tick <= to; tick += tStep) {
+      const x = sx(tick);
       if (x < M.l + 18 || x > W - M.r - 18) continue;
       grid.push(s('line', { class: 'chart-grid', x1: Math.round(x) + 0.5, x2: Math.round(x) + 0.5, y1: H - M.b, y2: H - M.b + 4 }));
-      grid.push(s('text', { class: 'chart-tick x', x, y: H - 8 }, clock(t, tStep < 60000)));
+      grid.push(s('text', { class: 'chart-tick x', x, y: H - 8 }, clock(tick, tStep < 60000)));
     }
     gGrid.replaceChildren(...grid);
 
@@ -187,8 +181,8 @@ export function timeChart({ scope, height = 240, gapMs = 45000, emptyText = 'Col
     gPlot.replaceChildren();
     gNow.replaceChildren();
     if (visible.length < 2) {
-      gPlot.append(s('text', { class: 'chart-empty', x: M.l + pw / 2, y: M.t + ph / 2 + 4 }, data.length ? 'No samples in this range yet' : emptyText));
-      svg.setAttribute('aria-label', series.label + ': no data yet');
+      gPlot.append(s('text', { class: 'chart-empty', x: M.l + pw / 2, y: M.t + ph / 2 + 4 }, data.length ? t('chart.noneInRange') : emptyText || t('chart.collecting')));
+      svg.setAttribute('aria-label', t('chart.ariaEmpty', { series: series.label }));
       gHover.setAttribute('visibility', 'hidden');
       return;
     }
@@ -219,7 +213,7 @@ export function timeChart({ scope, height = 240, gapMs = 45000, emptyText = 'Col
     }
     const last = visible[visible.length - 1];
     if (last[0] >= from) gNow.append(s('circle', { class: 'chart-now', cx: sx(last[0]), cy: sy(last[1]), r: 3 }));
-    svg.setAttribute('aria-label', series.label + ': ' + series.format(last[1]) + ' at ' + clock(last[0], true));
+    svg.setAttribute('aria-label', t('chart.aria', { series: series.label, value: series.format(last[1]), time: clock(last[0], true) }));
     paintHover();
   }
 
@@ -229,8 +223,8 @@ export function timeChart({ scope, height = 240, gapMs = 45000, emptyText = 'Col
       gHover.setAttribute('visibility', 'hidden');
       return;
     }
-    const t = from + ((pointerX - M.l) / Math.max(1, width - M.l - M.r)) * (to - from);
-    const p = inWindow[nearest(inWindow, t)];
+    const at = from + ((pointerX - M.l) / Math.max(1, width - M.l - M.r)) * (to - from);
+    const p = inWindow[nearest(inWindow, at)];
     const x = sx(p[0]);
     const y = sy(p[1]);
     cross.setAttribute('x1', x);

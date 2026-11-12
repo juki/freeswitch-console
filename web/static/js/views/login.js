@@ -3,13 +3,11 @@
 import { api } from '../api.js';
 import { h } from '../dom.js';
 import { brandMark, icon } from '../icons.js';
+import { num, plural, t } from '../i18n.js';
 import { Scope } from '../scope.js';
+import { langMenu } from '../ui.js';
 
 let viewScope = null; // owns the lockout countdown of the mounted form
-
-function seconds(n) {
-  return n === 1 ? '1 second' : n + ' seconds';
-}
 
 export function mountLogin({ root, onLogin }) {
   if (viewScope) viewScope.dispose();
@@ -18,7 +16,7 @@ export function mountLogin({ root, onLogin }) {
   const user = h('input', { id: 'login-user', class: 'input', type: 'text', value: 'admin', required: true, autocomplete: 'username', spellcheck: false });
   const pass = h('input', { id: 'login-pass', class: 'input', type: 'password', required: true, autocomplete: 'current-password' });
   const error = h('div', { class: 'form-error', role: 'alert', hidden: true });
-  const submit = h('button', { type: 'submit', class: 'btn btn-primary', text: 'Sign in' });
+  const submit = h('button', { type: 'submit', class: 'btn btn-primary', text: t('login.submit') });
   let busy = false;
   // After too many failures the server refuses this username from this
   // address for a while (429). Signing in as that user is pointless until then;
@@ -34,9 +32,9 @@ export function mountLogin({ root, onLogin }) {
     }
     const blocked = Boolean(lock) && user.value.trim() === lock.user;
     submit.disabled = busy || blocked;
-    submit.textContent = blocked ? 'Try again in ' + left + 's' : 'Sign in';
+    submit.textContent = blocked ? t('login.retryIn', { s: num(left) }) : t('login.submit');
     if (lock && showing) {
-      error.replaceChildren(icon('clock'), h('span', { text: 'Too many failed sign-in attempts for “' + lock.user + '”. Wait ' + seconds(left) + ', then try again.' }));
+      error.replaceChildren(icon('clock'), h('span', { text: plural(left, t('login.locked.one', { user: lock.user, n: num(left) }), t('login.locked.other', { user: lock.user, n: num(left) })) }));
     }
   }
 
@@ -47,9 +45,9 @@ export function mountLogin({ root, onLogin }) {
   user.addEventListener('input', paint);
 
   const form = h('form', { class: 'login-form' },
-    h('div', { class: 'field' }, h('label', { for: 'login-user', text: 'Username' }), user,
-      h('span', { class: 'hint', text: 'admin, or viewer for read-only access' })),
-    h('div', { class: 'field' }, h('label', { for: 'login-pass', text: 'Password' }), pass),
+    h('div', { class: 'field' }, h('label', { for: 'login-user', text: t('login.username') }), user,
+      h('span', { class: 'hint', text: t('login.userHint') })),
+    h('div', { class: 'field' }, h('label', { for: 'login-pass', text: t('login.password') }), pass),
     error,
     submit);
 
@@ -62,7 +60,7 @@ export function mountLogin({ root, onLogin }) {
     error.hidden = true;
     try {
       const u = await api('POST', 'login', { body: { username: name, password: pass.value } });
-      if (!u || !u.role) throw new Error('Unexpected answer from the server.');
+      if (!u || !u.role) throw new Error(t('login.unexpected'));
       scope.dispose();
       onLogin(u);
       return;
@@ -78,7 +76,7 @@ export function mountLogin({ root, onLogin }) {
         if (!wasLocked) tick();
       } else {
         error.className = 'form-error';
-        error.textContent = err.status === 401 ? 'Wrong username or password.' : err.message;
+        error.textContent = err.status === 401 ? t('login.wrong') : err.message;
         error.hidden = false;
       }
       pass.select();
@@ -94,20 +92,21 @@ export function mountLogin({ root, onLogin }) {
     h('section', { class: 'login-hero', 'aria-hidden': 'true' },
       h('div', { class: 'login-brand' }, brandMark(), 'fsdeck'),
       h('div', { class: 'login-pitch' },
-        h('span', { class: 'login-kicker', text: 'Web console for FreeSWITCH' }),
-        h('p', { class: 'login-headline', text: 'Operate FreeSWITCH from your browser.' }),
-        h('p', { class: 'login-lede', text: 'One place for the live state of every switch: load, SIP, calls, configuration and logs.' }),
+        h('span', { class: 'login-kicker', text: t('login.kicker') }),
+        h('p', { class: 'login-headline', text: t('login.headline') }),
+        h('p', { class: 'login-lede', text: t('login.lede') }),
         h('div', { class: 'login-features' },
-          feature('activity', 'Live load', 'Sessions, call rate and CPU, streamed from the Event Socket.'),
-          feature('radio', 'SIP at a glance', 'Profiles, gateways and registrations with their state.'),
-          feature('terminal', 'Hands on', 'Hang up channels, tail logs and run API commands.'))),
-      h('p', { class: 'login-legal', text: 'Open source · ships as a single binary' })),
+          feature('activity', t('login.f1.title'), t('login.f1.text')),
+          feature('radio', t('login.f2.title'), t('login.f2.text')),
+          feature('terminal', t('login.f3.title'), t('login.f3.text')))),
+      h('p', { class: 'login-legal', text: t('login.legal') })),
     h('main', { class: 'login-main' },
+      h('div', { class: 'login-lang' }, langMenu({ label: true })),
       h('div', { class: 'login-card' },
         h('div', { class: 'login-brand' }, brandMark(), 'fsdeck'),
-        h('h1', { class: 'login-title', text: 'Sign in' }),
-        h('p', { class: 'login-sub', text: 'Use your fsdeck account to continue.' }),
+        h('h1', { class: 'login-title', text: t('login.title') }),
+        h('p', { class: 'login-sub', text: t('login.sub') }),
         form,
-        h('p', { class: 'login-foot', text: 'Connects over the Event Socket. Nothing to install on FreeSWITCH.' })))));
+        h('p', { class: 'login-foot', text: t('login.foot') })))));
   pass.focus();
 }

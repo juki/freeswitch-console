@@ -15,7 +15,8 @@
 //   - if /history fails the chart is live-only.
 
 import { api, instPath, isAbort, rowsOf } from '../api.js';
-import { h, DASH, fmtDuration, fmtInt, fmtPct, fmtUptime } from '../dom.js';
+import { h, DASH, fmtInt, fmtPct, fmtSpan, fmtUptime } from '../dom.js';
+import { plural, t, tx } from '../i18n.js';
 import { icon } from '../icons.js';
 import { clock, timeChart } from '../chart.js';
 import { connectionHint, errorState, emptyState, kv, meter, panel, pill, segmented, skeleton, sparkline, stateTone } from '../ui.js';
@@ -45,29 +46,30 @@ function combine(server, live, now) {
   return kept.concat(live).sort((a, b) => a.t - b.t);
 }
 
+// Labels are functions so they follow the language at the time of use.
 const METRICS = {
   sessions: {
-    label: 'Active sessions', icon: 'activity', unit: '', integer: true, yMin: 0,
-    format: (v) => fmtInt(v) + (v === 1 ? ' session' : ' sessions'), tick: (v) => fmtInt(v),
+    label: () => t('ov.m.sessions'), icon: 'activity', unit: () => '', integer: true, yMin: 0,
+    format: (v) => plural(v, t('ov.fmt.sessions.one', { n: fmtInt(v) }), t('ov.fmt.sessions.other', { n: fmtInt(v) })), tick: (v) => fmtInt(v),
   },
   rate: {
-    label: 'Session rate', icon: 'gauge', unit: '/s', integer: true, yMin: 0,
-    format: (v) => fmtInt(v) + ' new / s', tick: (v) => fmtInt(v),
+    label: () => t('ov.m.rate'), icon: 'gauge', unit: () => t('ov.unit.perSec'), integer: true, yMin: 0,
+    format: (v) => t('ov.fmt.rate', { n: fmtInt(v) }), tick: (v) => fmtInt(v),
   },
   idle: {
-    label: 'Idle CPU', icon: 'cpu', unit: '%', yMin: 0, yMax: 100,
-    format: (v) => fmtPct(v) + '% idle', tick: (v) => v + '%',
+    label: () => t('ov.m.idle'), icon: 'cpu', unit: () => '%', yMin: 0, yMax: 100,
+    format: (v) => t('ov.fmt.idle', { n: fmtPct(v) }), tick: (v) => fmtInt(v) + '%',
   },
   capacity: {
-    label: 'Capacity used', icon: 'server', unit: '%', yMin: 0,
-    format: (v) => fmtPct(v, v < 10 ? 1 : 0) + '% of the session limit', tick: (v) => v + '%',
+    label: () => t('ov.m.capacity'), icon: 'server', unit: () => '%', yMin: 0,
+    format: (v) => t('ov.fmt.capacity', { n: fmtPct(v, v < 10 ? 1 : 0) }), tick: (v) => fmtPct(v, v % 1 ? 1 : 0) + '%',
   },
 };
 
 const RANGES = [
-  { key: '5', label: '5m', title: 'Up to the last 5 minutes', ms: 5 * 60e3 },
-  { key: '30', label: '30m', title: 'Up to the last 30 minutes', ms: 30 * 60e3 },
-  { key: '120', label: '2h', title: 'Up to the last 2 hours (all the history fsdeck keeps)', ms: 120 * 60e3 },
+  { key: '5', label: () => t('ov.range.5'), title: () => t('ov.range.5.title'), ms: 5 * 60e3 },
+  { key: '30', label: () => t('ov.range.30'), title: () => t('ov.range.30.title'), ms: 30 * 60e3 },
+  { key: '120', label: () => t('ov.range.120'), title: () => t('ov.range.120.title'), ms: 120 * 60e3 },
 ];
 
 function tileSkeleton() {
@@ -95,9 +97,9 @@ export function mountOverview({ id, scope, root, setState }) {
     const m = METRICS[key];
     const value = h('span', { class: 'stat-value', text: DASH });
     const foot = h('span', { class: 'stat-foot', text: ' ' });
-    const el = h('button', { type: 'button', class: 'stat', title: 'Show ' + m.label.toLowerCase() + ' in the chart', on: { click: () => pick(key) } },
-      h('span', { class: 'stat-label' }, icon(m.icon), m.label),
-      h('span', { class: 'stat-main' }, value, m.unit ? h('span', { class: 'stat-unit', text: m.unit }) : null),
+    const el = h('button', { type: 'button', class: 'stat', title: t('ov.tile.show', { metric: m.label() }), on: { click: () => pick(key) } },
+      h('span', { class: 'stat-label' }, icon(m.icon), m.label()),
+      h('span', { class: 'stat-main' }, value, m.unit() ? h('span', { class: 'stat-unit', text: m.unit() }) : null),
       foot,
       graph);
     tiles[key] = { el, value, foot };
@@ -114,37 +116,37 @@ export function mountOverview({ id, scope, root, setState }) {
   // ---- load chart ----
   const chart = timeChart({ scope, height: 260 });
   const since = h('span', { class: 'panel-note' });
-  const rangeSeg = segmented(RANGES.map((r) => ({ key: r.key, label: r.label, title: r.title })), range.key, (k) => {
+  const rangeSeg = segmented(RANGES.map((r) => ({ key: r.key, label: r.label(), title: r.title() })), range.key, (k) => {
     range = RANGES.find((r) => r.key === k);
     draw();
   }, 'sm');
-  const chartPanel = panel({ title: METRICS[metric].label, actions: rangeSeg.el });
+  const chartPanel = panel({ title: METRICS[metric].label(), actions: rangeSeg.el });
   chartPanel.el.classList.add('chart-panel');
   chartPanel.el.querySelector('.panel-count').after(since);
   chartPanel.body.append(chart.el);
 
   // ---- system and glance panels ----
-  const system = panel({ title: 'System' });
-  const glance = panel({ title: 'SIP and calls', flush: true });
+  const system = panel({ title: t('ov.system') });
+  const glance = panel({ title: t('ov.glance'), flush: true });
   function glanceItem(label, iconName, tab) {
     const value = h('div', { class: 'glance-value', text: DASH });
     const note = h('div', { class: 'glance-note' });
     const el = h('a', { class: 'glance-item', href: base + tab }, h('div', { class: 'glance-label' }, icon(iconName), label, icon('chevron', 'go')), value, note);
     return { el, value, note };
   }
-  const gProfiles = glanceItem('SIP profiles', 'radio', 'sip');
-  const gGateways = glanceItem('Gateways', 'plug', 'sip');
-  const gRegs = glanceItem('Registrations', 'user', 'sip');
-  const gCalls = glanceItem('Calls', 'calls', 'calls');
+  const gProfiles = glanceItem(t('ov.g.profiles'), 'radio', 'sip');
+  const gGateways = glanceItem(t('ov.g.gateways'), 'plug', 'sip');
+  const gRegs = glanceItem(t('ov.g.regs'), 'user', 'sip');
+  const gCalls = glanceItem(t('ov.g.calls'), 'calls', 'calls');
   glance.body.append(h('div', { class: 'glance' }, gProfiles.el, gGateways.el, gRegs.el, gCalls.el));
 
   content.append(grid, chartPanel.el, h('div', { class: 'grid-2' }, system.el, glance.el));
 
   function pick(key) {
     metric = key;
-    for (const [k, t] of Object.entries(tiles)) t.el.setAttribute('aria-pressed', String(k === key));
-    chartPanel.setTitle(METRICS[key].label);
-    chart.setSeries(METRICS[key]);
+    for (const [k, tl] of Object.entries(tiles)) tl.el.setAttribute('aria-pressed', String(k === key));
+    chartPanel.setTitle(METRICS[key].label());
+    chart.setSeries({ ...METRICS[key], label: METRICS[key].label() });
     draw();
   }
 
@@ -170,12 +172,12 @@ export function mountOverview({ id, scope, root, setState }) {
 
   // caption says what the chart shows: the span, and where history and live data start.
   function caption(from, now) {
-    const parts = ['Last ' + fmtDuration((now - from) / 1000).replace(/ 00[ms]$/, '')];
+    const parts = [t('ov.cap.last', { span: fmtSpan((now - from) / 1000) })];
     const firstLive = live.find((x) => x.t >= from);
     const firstServer = series.find((x) => x.t >= from && x.src === 'history');
-    if (firstServer) parts.push('heartbeat history from ' + clock(firstServer.t));
-    if (firstLive) parts.push('live since ' + clock(firstLive.t, true));
-    if (historyState === 'failed') parts.push('history unavailable');
+    if (firstServer) parts.push(t('ov.cap.history', { time: clock(firstServer.t) }));
+    if (firstLive) parts.push(t('ov.cap.live', { time: clock(firstLive.t, true) }));
+    if (historyState === 'failed') parts.push(t('ov.cap.noHistory'));
     return parts.join(' · ');
   }
 
@@ -185,13 +187,13 @@ export function mountOverview({ id, scope, root, setState }) {
 
   // record stores one live sample (any field may be missing) and redraws.
   function record(sample) {
-    const t = Date.now();
-    const x = { t, ...sample };
+    const now = Date.now();
+    const x = { t: now, ...sample };
     live.push(x);
-    trim(live, t);
+    trim(live, now);
     const last = series[series.length - 1];
-    if (!last || t >= last.t) series.push(x);
-    trim(series, t);
+    if (!last || now >= last.t) series.push(x);
+    trim(series, now);
     draw();
   }
 
@@ -213,7 +215,7 @@ export function mountOverview({ id, scope, root, setState }) {
     draw();
   });
 
-  const foot = (el, parts) => el.replaceChildren(...parts.flatMap(([label, value], i) => [i ? ' · ' : '', label + ' ', h('b', { text: value })]));
+  const b = (text) => h('b', { text });
 
   let limit = null;
   let connected = null; // null until the first answer
@@ -233,7 +235,7 @@ export function mountOverview({ id, scope, root, setState }) {
         const f = sessions / limit;
         tiles.capacity.value.textContent = fmtPct(f * 100, f < 0.1 ? 1 : 0);
         capMeter.set(f, f > 0.9 ? 'bad' : f > 0.7 ? 'warn' : '');
-        tiles.capacity.foot.replaceChildren(h('b', { text: fmtInt(sessions) }), ' of ', h('b', { text: fmtInt(limit) }), ' sessions');
+        tiles.capacity.foot.replaceChildren(...tx('ov.foot.capacity', { n: b(fmtInt(sessions)), limit: b(fmtInt(limit)) }));
       }
     }
     if (rate !== undefined) {
@@ -252,8 +254,9 @@ export function mountOverview({ id, scope, root, setState }) {
   function showDisconnected(st) {
     content.hidden = true;
     notice.replaceChildren(h('div', { class: 'panel' }, emptyState({
-      icon: 'plug', tone: 'calm', title: 'Not connected',
-      text: (connectionHint(st && st.lastError) || 'fsdeck has no Event Socket connection to this FreeSWITCH.') + (st && st.lastError ? ' (' + st.lastError + ')' : ''),
+      icon: 'plug', tone: 'calm', title: t('error.notConnected'),
+      text: connectionHint(st && st.lastError) || t('ov.disc.text'),
+      action: st && st.lastError ? h('code', { class: 'raw-error', text: st.lastError }) : null,
     })));
   }
 
@@ -273,18 +276,18 @@ export function mountOverview({ id, scope, root, setState }) {
     // idleCPU.allowed is the current idle percentage; idleCPU.used is the
     // configured minimum.
     update({ sessions: num(count.active), rate: num(r.current), idle: st.idleCPU ? num(st.idleCPU.allowed) : undefined });
-    foot(tiles.sessions.foot, [['Peak', fmtInt(count.peak)], ['5 min peak', fmtInt(count.peak5Min)]]);
-    foot(tiles.rate.foot, [['Limit', fmtInt(r.max) + '/s'], ['Peak', fmtInt(r.peak) + '/s']]);
-    foot(tiles.idle.foot, [['Minimum allowed', fmtPct(st.idleCPU ? st.idleCPU.used : null, 0) + '%']]);
-    if (!limit) tiles.capacity.foot.textContent = 'No session limit reported';
+    tiles.sessions.foot.replaceChildren(...tx('ov.foot.sessions', { peak: b(fmtInt(count.peak)), peak5: b(fmtInt(count.peak5Min)) }));
+    tiles.rate.foot.replaceChildren(...tx('ov.foot.rate', { max: b(fmtInt(r.max)), peak: b(fmtInt(r.peak)) }));
+    tiles.idle.foot.replaceChildren(...tx('ov.foot.idle', { min: b(fmtPct(st.idleCPU ? st.idleCPU.used : null, 0)) }));
+    if (!limit) tiles.capacity.foot.textContent = t('ov.foot.noLimit');
     const status = String(st.systemStatus || '');
     system.body.replaceChildren(kv([
-      ['Status', status ? pill(status, stateTone(status) || (status === 'ready' ? 'ok' : 'warn')) : DASH],
-      ['Hostname', data.hostname || DASH],
-      ['Version', h('span', { class: 'mono', text: st.version || DASH })],
-      ['Uptime', fmtUptime(st.uptime)],
-      ['Sessions since start', h('span', { class: 'num', text: fmtInt(count.total) })],
-      ['Session limit', h('span', { class: 'num', text: fmtInt(count.limit) })],
+      [t('ov.sys.status'), status ? pill(status, stateTone(status) || (status === 'ready' ? 'ok' : 'warn')) : DASH],
+      [t('ov.sys.hostname'), data.hostname || DASH],
+      [t('ov.sys.version'), h('span', { class: 'mono', text: st.version || DASH })],
+      [t('ov.sys.uptime'), fmtUptime(st.uptime)],
+      [t('ov.sys.total'), h('span', { class: 'num', text: fmtInt(count.total) })],
+      [t('ov.sys.limit'), h('span', { class: 'num', text: fmtInt(count.limit) })],
     ]));
   }
 
@@ -307,7 +310,7 @@ export function mountOverview({ id, scope, root, setState }) {
   }
   function fail(item, err) {
     item.value.textContent = DASH;
-    item.note.replaceChildren(h('span', { class: 'bad', text: err.status === 503 ? 'not connected' : err.message }));
+    item.note.replaceChildren(h('span', { class: 'bad', text: err.status === 503 ? t('ov.g.notConnected') : err.message }));
   }
 
   scope.poll(async (signal) => {
@@ -316,11 +319,11 @@ export function mountOverview({ id, scope, root, setState }) {
         const profiles = list.filter((r) => r.type === 'profile');
         const running = profiles.filter((r) => /^RUNNING/i.test(r.state || '')).length;
         gProfiles.value.textContent = fmtInt(profiles.length);
-        gProfiles.note.replaceChildren(running === profiles.length ? 'all running' : h('span', { class: 'bad', text: profiles.length - running + ' not running' }));
+        gProfiles.note.replaceChildren(running === profiles.length ? t('ov.g.allRunning') : h('span', { class: 'bad', text: t('ov.g.notRunning', { n: fmtInt(profiles.length - running) }) }));
         const gws = list.filter((r) => r.type === 'gateway');
         const down = gws.filter((r) => GW_DOWN.test(r.state || '')).length;
         gGateways.value.textContent = fmtInt(gws.length);
-        gGateways.note.replaceChildren(!gws.length ? 'none configured' : down ? h('span', { class: 'bad', text: down + ' down' }) : 'all up');
+        gGateways.note.replaceChildren(!gws.length ? t('ov.g.noGateways') : down ? h('span', { class: 'bad', text: t('ov.g.gwDown', { n: fmtInt(down) }) }) : t('ov.g.allUp'));
       }, (err) => {
         if (isAbort(err)) throw err;
         fail(gProfiles, err);
@@ -328,14 +331,14 @@ export function mountOverview({ id, scope, root, setState }) {
       }),
       rows('registrations', signal).then((list) => {
         gRegs.value.textContent = fmtInt(list.length);
-        gRegs.note.textContent = list.length === 1 ? 'endpoint registered' : 'endpoints registered';
+        gRegs.note.textContent = plural(list.length, t('ov.g.regsNote.one'), t('ov.g.regsNote.other'));
       }, (err) => {
         if (isAbort(err)) throw err;
         fail(gRegs, err);
       }),
       Promise.all([rows('channels', signal), rows('calls', signal)]).then(([channels, calls]) => {
         gCalls.value.textContent = fmtInt(calls.filter((c) => c.b_uuid).length);
-        gCalls.note.textContent = 'bridged · ' + channels.length + (channels.length === 1 ? ' channel' : ' channels');
+        gCalls.note.textContent = plural(channels.length, t('ov.g.callsNote.one', { n: fmtInt(channels.length) }), t('ov.g.callsNote.other', { n: fmtInt(channels.length) }));
       }, (err) => {
         if (isAbort(err)) throw err;
         fail(gCalls, err);

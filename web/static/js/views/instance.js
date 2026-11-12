@@ -2,6 +2,7 @@
 
 import { h, sinceText } from '../dom.js';
 import { icon } from '../icons.js';
+import { t } from '../i18n.js';
 import { emptyState, pill } from '../ui.js';
 import { address } from './fleet.js';
 import { mountOverview } from './overview.js';
@@ -12,18 +13,18 @@ import { mountLogs } from './logs.js';
 import { mountConsole } from './console.js';
 
 const TABS = [
-  { key: 'overview', label: 'Overview', icon: 'activity', mount: mountOverview },
-  { key: 'sip', label: 'SIP', icon: 'radio', mount: mountSip },
-  { key: 'calls', label: 'Calls', icon: 'calls', mount: mountCalls },
-  { key: 'config', label: 'Configuration', icon: 'sliders', mount: mountConfig },
-  { key: 'logs', label: 'Logs', icon: 'logs', admin: true, mount: mountLogs },
-  { key: 'console', label: 'Console', icon: 'terminal', admin: true, mount: mountConsole },
+  { key: 'overview', label: () => t('tab.overview'), icon: 'activity', mount: mountOverview },
+  { key: 'sip', label: () => t('tab.sip'), icon: 'radio', mount: mountSip },
+  { key: 'calls', label: () => t('tab.calls'), icon: 'calls', mount: mountCalls },
+  { key: 'config', label: () => t('tab.config'), icon: 'sliders', mount: mountConfig },
+  { key: 'logs', label: () => t('tab.logs'), icon: 'logs', admin: true, mount: mountLogs },
+  { key: 'console', label: () => t('tab.console'), icon: 'terminal', admin: true, mount: mountConsole },
 ];
 
 // normalizeTab maps an unknown or not-permitted tab to "overview".
 export function normalizeTab(tab, isAdmin) {
-  const t = TABS.find((x) => x.key === tab);
-  return t && (isAdmin || !t.admin) ? tab : 'overview';
+  const found = TABS.find((x) => x.key === tab);
+  return found && (isAdmin || !found.admin) ? tab : 'overview';
 }
 
 export function mountInstance({ scope, root, id, ctx }) {
@@ -33,23 +34,23 @@ export function mountInstance({ scope, root, id, ctx }) {
   const glyphDot = h('span', { class: 'dot' });
   const meta = h('div', { class: 'title-meta' });
   const links = new Map();
-  const tabs = TABS.filter((t) => ctx.isAdmin || !t.admin);
+  const tabs = TABS.filter((tab) => ctx.isAdmin || !tab.admin);
   let tabScope = null;
   let currentTab = null;
   let missing = false;
   let addr = '';
   let lastState = null;
 
-  const nav = h('nav', { class: 'tabs', 'aria-label': 'Instance sections' }, tabs.map((t) => {
-    const a = h('a', { class: 'tab', href: base + t.key }, icon(t.icon), t.label);
+  const nav = h('nav', { class: 'tabs', 'aria-label': t('tab.aria') }, tabs.map((tab) => {
+    const a = h('a', { class: 'tab', href: base + tab.key }, icon(tab.icon), tab.label());
     // Clicking the current tab remounts it (reloads its data).
     a.addEventListener('click', (ev) => {
-      if (location.hash === base + t.key) {
+      if (location.hash === base + tab.key) {
         ev.preventDefault();
-        showTab(t.key);
+        showTab(tab.key);
       }
     });
-    links.set(t.key, a);
+    links.set(tab.key, a);
     return a;
   }));
   const body = h('div', { class: 'page-body' });
@@ -57,7 +58,7 @@ export function mountInstance({ scope, root, id, ctx }) {
   root.replaceChildren(
     h('header', { class: 'masthead' },
       h('div', { class: 'masthead-in' },
-        h('div', { class: 'crumbs' }, h('a', { href: '#/', text: 'Instances' }), icon('chevron'), crumb),
+        h('div', { class: 'crumbs' }, h('a', { href: '#/', text: t('fleet.title') }), icon('chevron'), crumb),
         h('div', { class: 'title-block' },
           h('span', { class: 'inst-glyph', 'aria-hidden': 'true' }, icon('server'), glyphDot),
           h('div', { class: 'spacer' }, title, meta)),
@@ -73,8 +74,8 @@ export function mountInstance({ scope, root, id, ctx }) {
     meta.replaceChildren(...[
       addr ? h('span', { class: 'mono', text: addr }) : null,
       st ? sep() : null,
-      st ? pill(ok ? 'Connected' : 'Disconnected', ok ? 'ok' : 'bad') : null,
-      since ? h('span', { text: 'for ' + since }) : null,
+      st ? pill(ok ? t('state.connected') : t('state.disconnected'), ok ? 'ok' : 'bad') : null,
+      since ? h('span', { text: t('inst.for', { d: since }) }) : null,
       !ok && st && st.lastError ? sep() : null,
       !ok && st && st.lastError ? h('span', { class: 'err mono', text: st.lastError }) : null,
     ].filter(Boolean));
@@ -99,11 +100,11 @@ export function mountInstance({ scope, root, id, ctx }) {
       if (missing) return;
       missing = true;
       if (tabScope) tabScope.dispose();
-      document.title = 'Not found – fsdeck';
+      document.title = t('inst.notFoundDoc');
       root.replaceChildren(h('div', { class: 'page-body' }, h('div', { class: 'panel' }, emptyState({
-        icon: 'server', title: 'Instance not found',
-        text: 'There is no instance with this id. It may have been deleted.',
-        action: h('a', { class: 'btn', href: '#/', text: 'Back to instances' }),
+        icon: 'server', title: t('inst.notFound'),
+        text: t('inst.notFoundText'),
+        action: h('a', { class: 'btn', href: '#/', text: t('inst.back') }),
       }))));
       return;
     }
@@ -111,7 +112,7 @@ export function mountInstance({ scope, root, id, ctx }) {
     title.textContent = inst.name;
     addr = address(inst);
     paintMeta();
-    document.title = inst.name + ' – fsdeck';
+    document.title = t('inst.docTitle', { name: inst.name });
     paintState(inst.state);
   }
 
@@ -131,7 +132,7 @@ export function mountInstance({ scope, root, id, ctx }) {
     if (tabScope) tabScope.dispose();
     tabScope = scope.child();
     body.replaceChildren();
-    TABS.find((t) => t.key === key).mount({ id, ctx, isAdmin: ctx.isAdmin, scope: tabScope, root: body, setState });
+    TABS.find((tab) => tab.key === key).mount({ id, ctx, isAdmin: ctx.isAdmin, scope: tabScope, root: body, setState });
   }
 
   return { showTab, get tab() { return currentTab; } };

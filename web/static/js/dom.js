@@ -1,5 +1,8 @@
 // DOM helpers and formatters. Text always goes in through textContent or
-// text nodes; server data never reaches an HTML parser.
+// text nodes; server data never reaches an HTML parser. Formatters follow the
+// active language (i18n.js).
+
+import { num, t } from './i18n.js';
 
 // h creates an element. props: "class", "text", "on" ({event: fn}), "for",
 // "role" and names containing "-" (set as attributes); anything else is
@@ -58,34 +61,64 @@ function blank(v) {
 
 export function fmtInt(v) {
   const n = Number(v);
-  return blank(v) || !Number.isFinite(n) ? DASH : Math.round(n).toLocaleString('en-US');
+  return blank(v) || !Number.isFinite(n) ? DASH : num(Math.round(n));
 }
 
 export function fmtPct(v, digits = 1) {
   const n = Number(v);
-  return blank(v) || !Number.isFinite(n) ? DASH : n.toFixed(digits);
+  return blank(v) || !Number.isFinite(n) ? DASH : num(n, digits);
 }
 
-// fmtUptime formats the status "uptime" object, e.g. "12d 4h 37m".
+// fmtUptime formats the status "uptime" object: the three largest units from
+// the first non-zero one, e.g. "12d 4h 37m" or "12天4小时37分".
 export function fmtUptime(u) {
   if (!u || typeof u !== 'object') return DASH;
-  const units = [['years', 'y'], ['days', 'd'], ['hours', 'h'], ['minutes', 'm']];
-  const out = [];
-  for (const [k, suffix] of units) {
-    const n = Number(u[k]) || 0;
-    if (n || out.length) out.push(n + suffix);
-  }
-  return out.length ? out.slice(0, 3).join(' ') : (Number(u.seconds) || 0) + 's';
+  const v = (k) => Number(u[k]) || 0;
+  const y = v('years');
+  const d = v('days');
+  const h = v('hours');
+  const m = v('minutes');
+  if (y) return t('uptime.ydh', { y, d, h });
+  if (d) return t('uptime.dhm', { d, h, m });
+  if (h) return t('uptime.hm', { h, m });
+  if (m) return t('uptime.m', { m });
+  return t('uptime.s', { s: v('seconds') });
 }
 
-// fmtDuration formats seconds as "42s", "5m 12s", "1h 02m" or "3d 4h".
+const pad2 = (n) => String(n).padStart(2, '0');
+
+// fmtDuration formats seconds as "42s", "5m 12s", "1h 02m" or "3d 4h"
+// (Chinese: "42秒", "5分12秒", "1小时02分", "3天4小时").
 export function fmtDuration(sec) {
   const n = Math.max(0, Math.floor(Number(sec)));
   if (!Number.isFinite(n)) return DASH;
-  if (n < 60) return n + 's';
-  if (n < 3600) return Math.floor(n / 60) + 'm ' + String(n % 60).padStart(2, '0') + 's';
-  if (n < 86400) return Math.floor(n / 3600) + 'h ' + String(Math.floor((n % 3600) / 60)).padStart(2, '0') + 'm';
-  return Math.floor(n / 86400) + 'd ' + Math.floor((n % 86400) / 3600) + 'h';
+  if (n < 60) return t('dur.s', { s: n });
+  if (n < 3600) return t('dur.ms', { m: Math.floor(n / 60), s: pad2(n % 60) });
+  if (n < 86400) return t('dur.hm', { h: Math.floor(n / 3600), m: pad2(Math.floor((n % 3600) / 60)) });
+  return t('dur.dh', { d: Math.floor(n / 86400), h: Math.floor((n % 86400) / 3600) });
+}
+
+// fmtSpan is fmtDuration without trailing zero units: "5m", "2h", "1h 30m".
+export function fmtSpan(sec) {
+  const n = Math.max(0, Math.round(Number(sec)));
+  if (n >= 3600 && n % 3600 === 0) return t('span.h', { h: n / 3600 });
+  if (n >= 60 && n < 3600 && n % 60 === 0) return t('span.m', { m: n / 60 });
+  return fmtDuration(n);
+}
+
+let clockFormats = null;
+
+// fmtClock formats a timestamp as local 24-hour time, with seconds if asked.
+export function fmtClock(ms, seconds) {
+  if (!clockFormats || clockFormats.lang !== document.documentElement.lang) {
+    const opts = { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' };
+    clockFormats = {
+      lang: document.documentElement.lang,
+      hm: new Intl.DateTimeFormat(document.documentElement.lang, opts),
+      hms: new Intl.DateTimeFormat(document.documentElement.lang, { ...opts, second: '2-digit' }),
+    };
+  }
+  return (seconds ? clockFormats.hms : clockFormats.hm).format(new Date(ms));
 }
 
 // validTime parses a timestamp and rejects the zero time.

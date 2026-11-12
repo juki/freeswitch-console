@@ -3,6 +3,7 @@
 import { api, instPath, isAbort } from '../api.js';
 import { h, DASH, fmtInt, fmtPct, fmtUptime, sinceText } from '../dom.js';
 import { icon } from '../icons.js';
+import { plural, t } from '../i18n.js';
 import { confirmDialog, connectionHint, emptyState, iconButton, openModal, pill, skeleton, tag, toast, toastError } from '../ui.js';
 
 export function address(inst) {
@@ -16,18 +17,18 @@ export function shortVersion(v) {
 }
 
 export function mountFleet({ scope, root, ctx }) {
-  document.title = 'Instances – fsdeck';
+  document.title = t('fleet.docTitle');
   const sub = h('p', { class: 'page-sub' });
-  const summary = h('section', { class: 'panel summary', 'aria-label': 'Fleet summary' });
+  const summary = h('section', { class: 'panel summary', 'aria-label': t('fleet.summary') });
   const grid = h('div', { class: 'fleet' },
     [0, 1, 2].map(() => h('div', { class: 'inst-card' }, skeleton({ rows: 5, cols: 1 }))));
   const addBtn = ctx.isAdmin
-    ? h('button', { type: 'button', class: 'btn btn-primary', on: { click: () => instanceDialog(null) } }, icon('plus'), 'Add instance')
+    ? h('button', { type: 'button', class: 'btn btn-primary', on: { click: () => instanceDialog(null) } }, icon('plus'), t('fleet.add'))
     : null;
   root.replaceChildren(
     h('header', { class: 'masthead' },
       h('div', { class: 'masthead-in solo' },
-        h('div', { class: 'page-head' }, h('div', { class: 'spacer' }, h('h1', { class: 'page-title', text: 'Instances' }), sub), addBtn))),
+        h('div', { class: 'page-head' }, h('div', { class: 'spacer' }, h('h1', { class: 'page-title', text: t('fleet.title') }), sub), addBtn))),
     h('div', { class: 'page-body' }, summary, grid));
   summary.hidden = true;
 
@@ -58,22 +59,22 @@ export function mountFleet({ scope, root, ctx }) {
         h('span', { class: m.ok ? 'dot ok' : 'dot bad' }),
         h('a', { class: 'inst-name', href: '#/i/' + encodeURIComponent(inst.id) + '/overview', text: inst.name }),
         ctx.isAdmin ? h('div', { class: 'inst-actions' },
-          iconButton('edit', 'Edit ' + inst.name, () => instanceDialog(inst)),
-          iconButton('trash', 'Delete ' + inst.name, () => remove(inst))) : null),
+          iconButton('edit', t('fleet.editNamed', { name: inst.name }), () => instanceDialog(inst)),
+          iconButton('trash', t('fleet.deleteNamed', { name: inst.name }), () => remove(inst))) : null),
       h('div', { class: 'inst-addr' },
         h('span', { class: 'mono', text: address(inst) }),
         h('span', { class: 'spacer' }),
-        pill(m.ok ? 'Connected' : 'Disconnected', m.ok ? 'ok' : 'bad')),
+        pill(m.ok ? t('state.connected') : t('state.disconnected'), m.ok ? 'ok' : 'bad')),
       m.ok
-        ? h('div', { class: 'inst-stats' }, stat('Sessions', m.sessions), stat('Idle CPU', m.idle), stat('Uptime', m.uptime))
+        ? h('div', { class: 'inst-stats' }, stat(t('fleet.card.sessions'), m.sessions), stat(t('fleet.card.idle'), m.idle), stat(t('fleet.card.uptime'), m.uptime))
         : h('div', { class: 'inst-error', title: m.error || undefined }, icon('alert'), h('span', { class: 'spacer' },
-          h('span', { class: 'inst-error-text', text: connectionHint(m.error) || m.error || 'Connecting…' }),
+          h('span', { class: 'inst-error-text', text: connectionHint(m.error) || m.error || t('state.connecting') }),
           connectionHint(m.error) ? h('span', { class: 'raw', text: m.error }) : null)),
       h('div', { class: 'inst-foot' },
         m.version ? tag(m.version) : null,
         m.hostname ? h('span', { text: m.hostname }) : null,
         h('span', { class: 'spacer' }),
-        m.since ? h('span', { text: (m.ok ? 'connected ' : 'down ') + m.since }) : null));
+        m.since ? h('span', { text: m.ok ? t('fleet.card.upFor', { d: m.since }) : t('fleet.card.downFor', { d: m.since }) }) : null));
   }
 
   function cell(iconName, label, value, note, tone) {
@@ -99,34 +100,35 @@ export function mountFleet({ scope, root, ctx }) {
     }
     summary.hidden = !list.length;
     summary.replaceChildren(
-      cell('server', 'Instances', fmtInt(list.length), list.length === 1 ? 'configured' : 'configured in fsdeck'),
-      cell('plug', 'Connected', [fmtInt(up.length), h('span', { class: 'of', text: ' / ' + fmtInt(list.length) })], up.length === list.length ? 'all Event Sockets up' : 'Event Socket connections', up.length === list.length ? 'ok' : ''),
-      cell('alert', 'Down', fmtInt(down), down ? 'not reachable right now' : 'nothing down', down ? 'bad' : ''),
-      cell('activity', 'Active sessions', known ? fmtInt(sessions) : DASH,
-        known ? (limit ? fmtPct((sessions / limit) * 100, 1) + '% of ' + fmtInt(limit) + ' allowed' : 'across connected instances') : 'waiting for status'));
+      cell('server', t('fleet.sum.instances'), fmtInt(list.length), t('fleet.sum.instancesNote')),
+      cell('plug', t('fleet.sum.connected'), [fmtInt(up.length), h('span', { class: 'of', text: ' / ' + fmtInt(list.length) })], up.length === list.length ? t('fleet.sum.allUp') : t('fleet.sum.connectedNote'), up.length === list.length ? 'ok' : ''),
+      cell('alert', t('fleet.sum.down'), fmtInt(down), down ? t('fleet.sum.downNote') : t('fleet.sum.noneDown'), down ? 'bad' : ''),
+      cell('activity', t('fleet.sum.sessions'), known ? fmtInt(sessions) : DASH,
+        known ? (limit ? t('fleet.sum.ofLimit', { pct: fmtPct((sessions / limit) * 100, 1), limit: fmtInt(limit) }) : t('fleet.sum.acrossUp')) : t('fleet.sum.waiting')));
   }
 
   function stat(label, value) {
-    return h('div', null, h('div', { class: 'inst-stat-label', text: label }), h('div', { class: 'inst-stat-value', text: value }));
+    return h('div', null, h('div', { class: 'inst-stat-label', text: label }), h('div', { class: 'inst-stat-value', text: value, title: value }));
   }
 
   function render() {
     if (!ctx.loaded()) return;
     const list = ctx.instances();
     const up = list.filter((i) => i.state && i.state.connected).length;
-    sub.textContent = list.length
-      ? list.length + (list.length === 1 ? ' instance' : ' instances') + ' · ' + up + ' connected' + (up < list.length ? ' · ' + (list.length - up) + ' down' : '')
-      : 'No FreeSWITCH connected yet';
+    const vars = { n: fmtInt(list.length), up: fmtInt(up), down: fmtInt(list.length - up) };
+    sub.textContent = !list.length
+      ? t('fleet.sub.empty')
+      : up < list.length
+        ? plural(list.length, t('fleet.sub.someDown.one', vars), t('fleet.sub.someDown.other', vars))
+        : plural(list.length, t('fleet.sub.allUp.one', vars), t('fleet.sub.allUp.other', vars));
     renderSummary(list);
     if (!list.length) {
       signature = '';
       grid.replaceChildren(h('div', { class: 'panel fleet-empty' }, emptyState({
         icon: 'server',
-        title: 'Add your first FreeSWITCH',
-        text: ctx.isAdmin
-          ? 'fsdeck connects to mod_event_socket. You need the host, the Event Socket port (8021 by default) and its password.'
-          : 'No instances are configured. An administrator can add one.',
-        action: ctx.isAdmin ? h('button', { type: 'button', class: 'btn btn-primary', on: { click: () => instanceDialog(null) } }, icon('plus'), 'Add instance') : null,
+        title: t('fleet.empty.title'),
+        text: ctx.isAdmin ? t('fleet.empty.admin') : t('fleet.empty.viewer'),
+        action: ctx.isAdmin ? h('button', { type: 'button', class: 'btn btn-primary', on: { click: () => instanceDialog(null) } }, icon('plus'), t('fleet.add')) : null,
       })));
       return;
     }
@@ -158,17 +160,17 @@ export function mountFleet({ scope, root, ctx }) {
 
   async function remove(inst) {
     const yes = await confirmDialog({
-      title: 'Delete ' + inst.name + '?',
-      message: 'fsdeck will disconnect from ' + address(inst) + ' and forget its Event Socket password. FreeSWITCH itself is not touched.',
-      confirmLabel: 'Delete', danger: true,
+      title: t('fleet.del.title', { name: inst.name }),
+      message: t('fleet.del.text', { addr: address(inst) }),
+      confirmLabel: t('common.delete'), danger: true,
     });
     if (!yes || scope.disposed) return;
     try {
       await api('DELETE', instPath(inst.id), { signal: scope.signal });
-      toast('Deleted ' + inst.name + '.');
+      toast(t('fleet.del.done', { name: inst.name }));
       ctx.refreshInstances();
     } catch (err) {
-      toastError(err, 'Delete failed');
+      toastError(err, t('fleet.del.failed'));
     }
   }
 
@@ -177,18 +179,18 @@ export function mountFleet({ scope, root, ctx }) {
     const name = h('input', { id: 'f-name', class: 'input', type: 'text', required: true, maxLength: 64, autocomplete: 'off', value: editing ? inst.name : '', placeholder: 'fs-prod-01' });
     const host = h('input', { id: 'f-host', class: 'input mono', type: 'text', required: true, autocomplete: 'off', spellcheck: false, value: editing ? inst.host : '', placeholder: '10.0.4.21' });
     const port = h('input', { id: 'f-port', class: 'input mono', type: 'number', required: true, min: '1', max: '65535', value: editing ? String(inst.port) : '8021' });
-    const pass = h('input', { id: 'f-pass', class: 'input', type: 'password', autocomplete: 'new-password', placeholder: editing ? 'Leave empty to keep the current one' : '' });
+    const pass = h('input', { id: 'f-pass', class: 'input', type: 'password', autocomplete: 'new-password', placeholder: editing ? t('fleet.form.keepPass') : '' });
     const error = h('div', { class: 'form-error', role: 'alert', hidden: true });
-    const cancel = h('button', { type: 'button', class: 'btn', text: 'Cancel' });
-    const submit = h('button', { type: 'submit', class: 'btn btn-primary', text: editing ? 'Save changes' : 'Add instance' });
+    const cancel = h('button', { type: 'button', class: 'btn', text: t('common.cancel') });
+    const submit = h('button', { type: 'submit', class: 'btn btn-primary', text: editing ? t('fleet.form.save') : t('fleet.add') });
     submit.setAttribute('form', 'inst-form');
     const field = (id, label, input, hint) => h('div', { class: 'field' }, h('label', { for: id, text: label }), input, hint ? h('span', { class: 'hint', text: hint }) : null);
     const form = h('form', { id: 'inst-form', class: 'modal-form' },
-      field('f-name', 'Name', name),
-      h('div', { class: 'form-row' }, field('f-host', 'Host', host), field('f-port', 'ESL port', port)),
-      field('f-pass', 'Event Socket password', pass, editing ? null : 'The FreeSWITCH default is ClueCon. Change it before exposing the port.'),
+      field('f-name', t('fleet.form.name'), name),
+      h('div', { class: 'form-row' }, field('f-host', t('fleet.form.host'), host), field('f-port', t('fleet.form.port'), port)),
+      field('f-pass', t('fleet.form.pass'), pass, editing ? null : t('fleet.form.passHint')),
       error);
-    const m = openModal({ title: editing ? 'Edit ' + inst.name : 'Add instance', body: form, footer: [cancel, submit] });
+    const m = openModal({ title: editing ? t('fleet.form.editTitle', { name: inst.name }) : t('fleet.add'), body: form, footer: [cancel, submit] });
     cancel.addEventListener('click', m.close);
     form.addEventListener('submit', async (ev) => {
       ev.preventDefault();
@@ -199,7 +201,7 @@ export function mountFleet({ scope, root, ctx }) {
         if (editing) await api('PUT', instPath(inst.id), { body });
         else await api('POST', 'instances', { body });
         m.close();
-        toast(editing ? 'Saved ' + body.name + '.' : 'Added ' + body.name + '. Connecting…');
+        toast(editing ? t('fleet.form.saved', { name: body.name }) : t('fleet.form.added', { name: body.name }));
         ctx.refreshInstances();
       } catch (err) {
         error.textContent = err.message;

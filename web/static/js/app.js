@@ -5,7 +5,8 @@ import { api, onUnauthorized, isAbort } from './api.js';
 import { h } from './dom.js';
 import { icon, brandMark } from './icons.js';
 import { Scope } from './scope.js';
-import { closeDrawer, emptyState, iconButton, toastError } from './ui.js';
+import { closeDrawer, emptyState, iconButton, langMenu, toastError } from './ui.js';
+import { onLangChange, t } from './i18n.js';
 import { mountLogin } from './views/login.js';
 import { mountFleet } from './views/fleet.js';
 import { mountInstance, normalizeTab } from './views/instance.js';
@@ -53,13 +54,15 @@ function publish() {
 
 // ---------- shell ----------
 
-const THEMES = { auto: ['contrast', 'Theme: follow system'], light: ['sun', 'Theme: light'], dark: ['moon', 'Theme: dark'] };
+const THEME_ICONS = { auto: 'contrast', light: 'sun', dark: 'moon' };
+const themeLabel = (mode) => ({ auto: t('theme.auto'), light: t('theme.light'), dark: t('theme.dark') })[mode] || t('theme.auto');
 
 function themeButton() {
   const btn = h('button', { type: 'button', class: 'btn btn-ghost btn-icon btn-sm' });
   const paint = () => {
-    const [name, label] = THEMES[window.fsdeckTheme.get()] || THEMES.auto;
-    btn.replaceChildren(icon(name));
+    const mode = window.fsdeckTheme.get();
+    const label = themeLabel(mode);
+    btn.replaceChildren(icon(THEME_ICONS[mode] || THEME_ICONS.auto));
     btn.title = label;
     btn.setAttribute('aria-label', label);
   };
@@ -75,20 +78,21 @@ function themeButton() {
 function buildShell() {
   const list = h('div', { class: 'side-list' });
   const count = h('span', { class: 'count' });
-  const fleetLink = h('a', { class: 'side-link', href: '#/', title: 'All instances' }, icon('grid'), h('span', { class: 'name', text: 'All instances' }));
+  const fleetLink = h('a', { class: 'side-link', href: '#/', title: t('nav.all') }, icon('grid'), h('span', { class: 'name', text: t('nav.all') }));
   const main = h('main', { class: 'main' });
   const side = h('aside', { class: 'side' },
-    h('a', { class: 'brand', href: '#/' }, brandMark(), h('span', { text: 'fsdeck' }), h('span', { class: 'brand-tag', text: 'Console' })),
-    h('nav', { class: 'side-scroll', 'aria-label': 'Instances' },
+    h('a', { class: 'brand', href: '#/' }, brandMark(), h('span', { text: 'fsdeck' }), h('span', { class: 'brand-tag', text: t('brand.tag') })),
+    h('nav', { class: 'side-scroll', 'aria-label': t('nav.instances') },
       fleetLink,
-      h('div', { class: 'side-label' }, 'Instances', count),
+      h('div', { class: 'side-label' }, t('nav.instances'), count),
       list),
     h('div', { class: 'side-foot' },
       h('div', { class: 'avatar', text: me.username.slice(0, 1) }),
-      h('div', { class: 'who' }, h('div', { class: 'who-name', text: me.username }), h('div', { class: 'who-role', text: me.role === 'admin' ? 'Administrator' : 'Read only' })),
+      h('div', { class: 'who' }, h('div', { class: 'who-name', text: me.username }), h('div', { class: 'who-role', text: me.role === 'admin' ? t('role.admin') : t('role.viewer') })),
       h('span', { class: 'spacer' }),
+      langMenu({ up: true }),
       themeButton(),
-      iconButton('logout', 'Sign out', logout)));
+      iconButton('logout', t('nav.signOut'), logout)));
   app.replaceChildren(h('div', { class: 'shell' }, side, main));
   shell = { main, list, count, fleetLink };
 }
@@ -101,7 +105,7 @@ function renderSide() {
   else shell.fleetLink.removeAttribute('aria-current');
   shell.count.textContent = instances.length ? String(instances.length) : '';
   if (!instances.length) {
-    shell.list.replaceChildren(h('div', { class: 'side-empty', text: loaded ? 'No instances yet' : 'Loading…' }));
+    shell.list.replaceChildren(h('div', { class: 'side-empty', text: loaded ? t('nav.none') : t('common.loadingDots') }));
     return;
   }
   shell.list.replaceChildren(...instances.map((inst) => {
@@ -109,9 +113,9 @@ function renderSide() {
     return h('a', {
       class: 'side-link',
       href: '#/i/' + encodeURIComponent(inst.id) + '/' + tab,
-      title: inst.name + (ok ? '' : ' (disconnected)'),
+      title: ok ? inst.name : t('nav.instDown', { name: inst.name }),
       'aria-current': inst.id === activeId ? 'page' : undefined,
-    }, h('span', { class: ok ? 'dot ok' : 'dot bad' }), h('span', { class: 'name', text: inst.name }), ok ? null : h('span', { class: 'side-meta', text: 'down' }));
+    }, h('span', { class: ok ? 'dot ok' : 'dot bad' }), h('span', { class: 'name', text: inst.name }), ok ? null : h('span', { class: 'side-meta', text: t('nav.down') }));
   }));
 }
 
@@ -187,7 +191,7 @@ function showLogin() {
   instances = [];
   loaded = false;
   current = { kind: 'login' };
-  document.title = 'Sign in – fsdeck';
+  document.title = t('login.docTitle');
   mountLogin({
     root: app,
     onLogin(user) {
@@ -203,7 +207,7 @@ async function logout() {
     await api('POST', 'logout');
     showLogin();
   } catch (err) {
-    if (err.status !== 401) toastError(err, 'Sign out failed');
+    if (err.status !== 401) toastError(err, t('nav.signOutFailed'));
   }
 }
 
@@ -232,8 +236,8 @@ async function boot() {
   } catch (err) {
     if (err.status === 401) return; // onUnauthorized already showed the login view
     app.replaceChildren(h('div', { class: 'boot' }, emptyState({
-      icon: 'alert', tone: 'error', title: 'Could not reach fsdeck', text: err.message,
-      action: h('button', { type: 'button', class: 'btn', text: 'Retry', on: { click: boot } }),
+      icon: 'alert', tone: 'error', title: t('boot.unreachable'), text: err.message,
+      action: h('button', { type: 'button', class: 'btn', text: t('common.retry'), on: { click: boot } }),
     })));
     return;
   }
@@ -242,4 +246,16 @@ async function boot() {
 
 onUnauthorized(showLogin);
 window.addEventListener('hashchange', route);
+// A language change re-renders the current screen in place, on the same route.
+onLangChange(() => {
+  if (!me) {
+    current = null;
+    showLogin();
+    return;
+  }
+  if (!shell) return;
+  teardown();
+  buildShell();
+  route();
+});
 boot();

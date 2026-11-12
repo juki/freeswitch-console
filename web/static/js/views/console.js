@@ -3,26 +3,27 @@
 import { api, instPath, isAbort } from '../api.js';
 import { h } from '../dom.js';
 import { icon } from '../icons.js';
+import { t } from '../i18n.js';
 
 const HISTORY_MAX = 50;
 const history = []; // kept in memory for the page lifetime
 const QUICK = ['status', 'version', 'sofia status', 'show channels', 'show calls', 'show registrations', 'reloadxml', 'reloadacl'];
 
 export function mountConsole({ id, scope, root }) {
-  const hint = h('div', { class: 'term-empty' }, icon('terminal'), h('span', { text: 'Type a FreeSWITCH API command, the same ones fs_cli accepts. ↑ and ↓ recall earlier commands.' }));
+  const hint = h('div', { class: 'term-empty' }, icon('terminal'), h('span', { text: t('con.hint') }));
   const out = h('div', { class: 'term-body', role: 'log', tabIndex: 0 }, hint);
   const input = h('input', {
     class: 'con-input', type: 'text', autocomplete: 'off', spellcheck: false,
-    'aria-label': 'Command', placeholder: 'status',
+    'aria-label': t('con.command'), placeholder: 'status',
   });
-  const runBtn = h('button', { type: 'submit', class: 'btn btn-sm', text: 'Run' });
+  const runBtn = h('button', { type: 'submit', class: 'btn btn-sm', text: t('con.run') });
   const chips = QUICK.map((cmd) => h('button', { type: 'button', class: 'chip', text: cmd, on: { click: () => run(cmd) } }));
-  const clearBtn = h('button', { type: 'button', class: 'btn btn-sm' }, icon('eraser'), 'Clear');
+  const clearBtn = h('button', { type: 'button', class: 'btn btn-sm' }, icon('eraser'), t('common.clear'));
   const form = h('form', { class: 'con-form' }, h('span', { class: 'con-prompt', text: 'fs>' }), input, runBtn);
 
   root.append(h('div', { class: 'term console' },
     h('div', { class: 'term-bar' },
-      h('span', { class: 'term-title' }, icon('terminal'), 'API console'),
+      h('span', { class: 'term-title' }, icon('terminal'), t('con.title')),
       h('span', { class: 'term-sep' }),
       h('div', { class: 'chips' }, chips),
       h('span', { class: 'spacer' }), clearBtn),
@@ -59,10 +60,10 @@ export function mountConsole({ id, scope, root }) {
     try {
       const data = await api('POST', instPath(id, 'console'), { body: { command: cmd }, signal: scope.signal });
       const text = data && typeof data.output === 'string' ? data.output.replace(/\s+$/, '') : '';
-      print(/^-ERR/.test(text) ? 'con-err' : 'con-out', text || '(no output)');
+      print(/^-ERR/.test(text) ? 'con-err' : 'con-out', text || t('con.noOutput'));
     } catch (err) {
       if (isAbort(err)) return;
-      print('con-err', err.status === 503 ? 'Not connected: ' + err.message : 'Error: ' + err.message);
+      print('con-err', err.status === 503 ? t('con.notConnected', { msg: err.message }) : t('con.error', { msg: err.message }));
     } finally {
       if (!scope.disposed) setBusy(false);
     }

@@ -1,6 +1,8 @@
 // HTTP client for the fsdeck API. Paths are relative ("api/..."), so the
 // console also works when served below a path prefix.
 
+import { t } from './i18n.js';
+
 export class ApiError extends Error {
   constructor(status, message) {
     super(message);
@@ -38,11 +40,11 @@ export async function api(method, path, { body, signal } = {}) {
     res = await fetch('api/' + path, init);
   } catch (err) {
     if (isAbort(err)) throw err;
-    throw new ApiError(0, 'Network error: the fsdeck server could not be reached.');
+    throw new ApiError(0, t('error.network'));
   }
   if (res.status === 401 && path !== 'login') {
     unauthorized();
-    throw new ApiError(401, 'Your session has ended. Please sign in again.');
+    throw new ApiError(401, t('error.session'));
   }
   if (res.status === 204) return null;
   const text = await res.text();
