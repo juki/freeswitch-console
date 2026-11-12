@@ -1,0 +1,983 @@
+package server
+
+import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"sync"
+	"testing"
+	"testing/fstest"
+	"time"
+
+	"fsdeck/internal/esl"
+	"fsdeck/internal/store"
+)
+
+const (
+	adminPW  = "admin-pw"
+	viewerPW = "viewer-pw"
+	eslPW    = "esl-S3cret-pw"
+)
+
+// fakeSwitch is a connected FreeSWITCH answering from a reply table.
+type fakeSwitch struct {
+	addr, password string
+
+	mu        sync.Mutex
+	state     esl.State
+	replies   map[string]string
+	apiErr    error
+	sent      []string
+	logLevels []int
+	subs      map[int]chan esl.Message
+	nextSub   int
+	closed    bool
+}
+
+const statusJSON = `{"command":"status","data":"","status":"success","response":{"systemStatus":"ready","uptime":{"days":1},"version":"1.10.12","sessions":{"count":{"total":5,"active":1,"peak":2,"peak5Min":1,"limit":1000},"rate":{"current":0,"max":30,"peak":1,"peak5Min":0}},"idleCPU":{"used":0,"allowed":99.1},"stackSizeKB":{"current":240,"max":8192}}}`
+
+func newFake(addr, password string) *fakeSwitch {
+	return &fakeSwitch{
+		addr:     addr,
+		password: password,
+		state:    esl.State{Connected: true, Since: time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)},
+		subs:     map[int]chan esl.Message{},
+		replies: map[string]string{
+			"hostname":                            "fs01\n",
+			`json {"command":"status","data":""}`: statusJSON + "\n",
+			"sofia xmlstatus": `<?xml version="1.0" encoding="ISO-8859-1"?>
+<profiles>
+<profile>
+<name>internal</name>
+<type>profile</type>
+<data>sip:mod_sofia@10.0.0.5:5060</data>
+<state>RUNNING (0)</state>
+</profile>
+</profiles>
+`,
+			"sofia xmlstatus gateway":    "<gateways>\n  <gateway>\n    <name>gw1</name>\n    <state>REGED</state>\n  </gateway>\n</gateways>\n",
+			"show registrations as json": `{"row_count":0}`,
+			"show channels as json":      `{"row_count":1,"rows":[{"uuid":"abc-123","direction":"inbound"}]}`,
+			"show calls as json":         `{"row_count":1,"rows":[{"uuid":"abc-123","b_uuid":"def-456"}]}`,
+			"show modules as json":       `{"row_count":1,"rows":[{"type":"api","name":"status","ikey":"mod_commands"}]}`,
+			"global_getvar":              "hostname=fs01\ndefault_password=1234\n",
+			"xml_locate configuration":   `<section name="configuration"><configuration name="sofia.conf" description="sofia Endpoint"/></section>`,
+			"xml_locate configuration configuration name sofia.conf": `<configuration name="sofia.conf"><param name="password" value="gwsecret"/></configuration>`,
+			"xml_locate configuration configuration name nope.conf":  "can't find anything\n",
+			"uuid_kill abc-123":             "+OK\n",
+			"reloadxml":                     "+OK [Success]\n",
+			"reloadacl":                     "+OK acl reloaded\n",
+			"sofia profile internal rescan": "+OK scan complete\n",
+			"show calls count":              "\n0 total.\n\n",
+			"bogus":                         "-ERR bogus Command not found!\n",
+		},
+	}
+}
+
+func (f *fakeSwitch) State() esl.State {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.state
+}
+
+func (f *fakeSwitch) API(_ context.Context, cmd string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sent = append(f.sent, cmd)
+	switch {
+	case !f.state.Connected:
+		return "", esl.ErrNotConnected
+	case f.apiErr != nil:
+		return "", f.apiErr
+	}
+	if r, ok := f.replies[cmd]; ok {
+		return r, nil
+	}
+	return "+OK\n", nil
+}
+
+func (f *fakeSwitch) SetLogLevel(level int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.logLevels = append(f.logLevels, level)
+}
+
+func (f *fakeSwitch) Subscribe(buffer int) (<-chan esl.Message, func()) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	ch := make(chan esl.Message, buffer)
+	if f.closed {
+		close(ch)
+		return ch, func() {}
+	}
+	id := f.nextSub
+	f.nextSub++
+	f.subs[id] = ch
+	return ch, func() {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if c, ok := f.subs[id]; ok {
+			close(c)
+			delete(f.subs, id)
+		}
+	}
+}
+
+func (f *fakeSwitch) Close() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.closed = true
+	f.state.Connected = false
+	for id, c := range f.subs {
+		close(c)
+		delete(f.subs, id)
+	}
+}
+
+func (f *fakeSwitch) publish(m esl.Message) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, c := range f.subs {
+		select {
+		case c <- m:
+		default:
+		}
+	}
+}
+
+func (f *fakeSwitch) set(fn func(f *fakeSwitch)) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	fn(f)
+}
+
+func (f *fakeSwitch) snapshot() (sent []string, levels []int, subs int, closed bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.sent...), append([]int(nil), f.logLevels...), len(f.subs), f.closed
+}
+
+type harness struct {
+	t   *testing.T
+	srv *Server
+	ts  *httptest.Server
+	st  *store.Store
+	id  string // preloaded instance
+
+	mu     sync.Mutex
+	dialed []*fakeSwitch
+}
+
+func newHarness(t *testing.T) *harness {
+	t.Helper()
+	st, err := store.Open(filepath.Join(t.TempDir(), "instances.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	in, err := st.Add(store.Instance{Name: "fs01", Host: "10.0.0.5", Port: 8021, Password: eslPW})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := &harness{t: t, st: st, id: in.ID}
+	h.srv, err = New(Config{
+		AdminPassword:  adminPW,
+		ViewerPassword: viewerPW,
+		Store:          st,
+		Dial:           h.dial,
+		Static:         fstest.MapFS{"index.html": {Data: []byte("<!doctype html><title>fsdeck</title>")}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.srv.loginDelay = 0
+	h.ts = httptest.NewServer(h.srv.Handler())
+	t.Cleanup(func() {
+		h.srv.Close()
+		h.ts.Close()
+	})
+	return h
+}
+
+func (h *harness) dial(addr, password string) Switch {
+	f := newFake(addr, password)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.dialed = append(h.dialed, f)
+	return f
+}
+
+func (h *harness) fake(i int) *fakeSwitch {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.dialed[i]
+}
+
+type response struct {
+	code   int
+	body   string
+	header http.Header
+	resp   *http.Response
+}
+
+func (r response) json(t *testing.T, v any) {
+	t.Helper()
+	if err := json.Unmarshal([]byte(r.body), v); err != nil {
+		t.Fatalf("decode %q: %v", r.body, err)
+	}
+}
+
+// do sends body (a JSON string) with an application/json content type when
+// body is non-empty.
+func (h *harness) do(method, path, token, body string) response {
+	h.t.Helper()
+	var rd io.Reader
+	if body != "" {
+		rd = strings.NewReader(body)
+	}
+	req, err := http.NewRequest(method, h.ts.URL+path, rd)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if token != "" {
+		req.AddCookie(&http.Cookie{Name: cookieName, Value: token})
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if strings.Contains(string(b), eslPW) || strings.Contains(string(b), adminPW) {
+		h.t.Fatalf("%s %s: response leaks a password: %s", method, path, b)
+	}
+	return response{code: resp.StatusCode, body: string(b), header: resp.Header, resp: resp}
+}
+
+func (h *harness) login(username, password string) string {
+	h.t.Helper()
+	r := h.do("POST", "/api/login", "", `{"username":"`+username+`","password":"`+password+`"}`)
+	if r.code != 200 {
+		h.t.Fatalf("login %s: %d %s", username, r.code, r.body)
+	}
+	for _, c := range r.resp.Cookies() {
+		if c.Name == cookieName {
+			return c.Value
+		}
+	}
+	h.t.Fatal("no session cookie")
+	return ""
+}
+
+func expect(t *testing.T, r response, code int, want string) {
+	t.Helper()
+	if r.code != code {
+		t.Fatalf("status %d, want %d (body %s)", r.code, code, r.body)
+	}
+	if want != "" && strings.TrimSpace(r.body) != want {
+		t.Fatalf("body\n got %s\nwant %s", strings.TrimSpace(r.body), want)
+	}
+}
+
+func TestLoginLogoutMe(t *testing.T) {
+	h := newHarness(t)
+	expect(t, h.do("GET", "/api/me", "", ""), 401, `{"error":"not logged in"}`)
+	expect(t, h.do("POST", "/api/login", "", `{"username":"admin","password":"wrong"}`), 401, `{"error":"invalid username or password"}`)
+	expect(t, h.do("POST", "/api/login", "", `{"username":"root","password":"`+adminPW+`"}`), 401, "")
+	expect(t, h.do("POST", "/api/login", "", `{"username":"viewer","password":"`+adminPW+`"}`), 401, "")
+	expect(t, h.do("POST", "/api/login", "", `{"username":"admin"`), 400, "")
+	expect(t, h.do("POST", "/api/login", "", `{"username":"admin","password":"x","extra":1}`), 400, "")
+	expect(t, h.do("POST", "/api/login", "", `{"username":"admin","password":"x"} {}`), 400, "")
+
+	r := h.do("POST", "/api/login", "", `{"username":"admin","password":"`+adminPW+`"}`)
+	expect(t, r, 200, `{"username":"admin","role":"admin"}`)
+	cookies := r.resp.Cookies()
+	if len(cookies) != 1 {
+		t.Fatalf("cookies %v", cookies)
+	}
+	c := cookies[0]
+	if c.Name != "fsdeck_session" || len(c.Value) != 64 || !c.HttpOnly || c.SameSite != http.SameSiteStrictMode || c.Path != "/" || c.Secure || c.MaxAge != 12*3600 {
+		t.Fatalf("cookie %+v", c)
+	}
+	expect(t, h.do("GET", "/api/me", c.Value, ""), 200, `{"username":"admin","role":"admin"}`)
+
+	r = h.do("POST", "/api/logout", c.Value, "")
+	expect(t, r, 204, "")
+	if cs := r.resp.Cookies(); len(cs) != 1 || cs[0].MaxAge >= 0 || cs[0].Value != "" {
+		t.Fatalf("logout cookie %+v", cs)
+	}
+	expect(t, h.do("GET", "/api/me", c.Value, ""), 401, "")
+
+	v := h.login("viewer", viewerPW)
+	expect(t, h.do("GET", "/api/me", v, ""), 200, `{"username":"viewer","role":"viewer"}`)
+}
+
+func TestSessionCookieSecure(t *testing.T) {
+	plain := httptest.NewRequest("GET", "/", nil)
+	if sessionCookie(plain, "v", 1).Secure {
+		t.Fatal("cookie is Secure on a plain HTTP request")
+	}
+	proxied := httptest.NewRequest("GET", "/", nil)
+	proxied.Header.Set("X-Forwarded-Proto", "https")
+	if !sessionCookie(proxied, "v", 1).Secure {
+		t.Fatal("cookie is not Secure behind a TLS-terminating proxy")
+	}
+}
+
+func TestLoginWrongContentType(t *testing.T) {
+	h := newHarness(t)
+	req, _ := http.NewRequest("POST", h.ts.URL+"/api/login", strings.NewReader(`{"username":"admin","password":"`+adminPW+`"}`))
+	req.Header.Set("Content-Type", "text/plain")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 415 || len(resp.Cookies()) != 0 {
+		t.Fatalf("status %d", resp.StatusCode)
+	}
+}
+
+func TestLoginDelay(t *testing.T) {
+	h := newHarness(t)
+	h.srv.loginDelay = 100 * time.Millisecond
+	start := time.Now()
+	expect(t, h.do("POST", "/api/login", "", `{"username":"admin","password":"nope"}`), 401, "")
+	if d := time.Since(start); d < 100*time.Millisecond {
+		t.Fatalf("failed login answered after %v", d)
+	}
+}
+
+func TestViewerDisabled(t *testing.T) {
+	st, _ := store.Open(filepath.Join(t.TempDir(), "i.json"))
+	srv, err := New(Config{AdminPassword: "a", Store: st, Dial: func(string, string) Switch { return nil }, Static: fstest.MapFS{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := srv.checkLogin("viewer", ""); ok {
+		t.Fatal("viewer with empty password accepted")
+	}
+	if _, err := New(Config{Store: st, Dial: srv.cfg.Dial, Static: fstest.MapFS{}}); err == nil {
+		t.Fatal("missing admin password accepted")
+	}
+}
+
+func TestSessionExpiry(t *testing.T) {
+	h := newHarness(t)
+	tok := h.login("admin", adminPW)
+	h.srv.sessMu.Lock()
+	s := h.srv.sessions[tok]
+	s.expires = time.Now().Add(-time.Second)
+	h.srv.sessions[tok] = s
+	h.srv.sessMu.Unlock()
+	expect(t, h.do("GET", "/api/me", tok, ""), 401, "")
+	h.srv.sessMu.Lock()
+	_, ok := h.srv.sessions[tok]
+	h.srv.sessMu.Unlock()
+	if ok {
+		t.Fatal("expired session kept")
+	}
+}
+
+type route struct {
+	method, path, body string
+	admin              bool
+}
+
+func routes(id string) []route {
+	p := "/api/instances/" + id
+	return []route{
+		{"GET", "/api/me", "", false},
+		{"GET", "/api/instances", "", false},
+		{"POST", "/api/instances", `{"name":"x","host":"h","port":1,"password":"p"}`, true},
+		{"PUT", p, `{"name":"x","host":"h","port":1,"password":""}`, true},
+		{"DELETE", p, "", true},
+		{"GET", p + "/status", "", false},
+		{"GET", p + "/sofia", "", false},
+		{"GET", p + "/gateways", "", false},
+		{"GET", p + "/registrations", "", false},
+		{"GET", p + "/channels", "", false},
+		{"GET", p + "/calls", "", false},
+		{"DELETE", p + "/channels/abc-123", "", true},
+		{"GET", p + "/modules", "", false},
+		{"GET", p + "/vars", "", false},
+		{"GET", p + "/config", "", false},
+		{"GET", p + "/config/sofia.conf", "", false},
+		{"POST", p + "/actions", `{"action":"reloadxml"}`, true},
+		{"POST", p + "/console", `{"command":"status"}`, true},
+		{"GET", "/api/nope", "", false},
+		{"POST", "/api/logout", "", false},
+	}
+}
+
+func TestAuthMatrix(t *testing.T) {
+	h := newHarness(t)
+	for _, rt := range append(routes(h.id), route{"GET", "/api/instances/" + h.id + "/stream", "", false}) {
+		if r := h.do(rt.method, rt.path, "", rt.body); r.code != 401 {
+			t.Errorf("%s %s without session: %d", rt.method, rt.path, r.code)
+		}
+		if r := h.do(rt.method, rt.path, "deadbeef", rt.body); r.code != 401 {
+			t.Errorf("%s %s with bogus session: %d", rt.method, rt.path, r.code)
+		}
+	}
+
+	viewer := h.login("viewer", viewerPW)
+	for _, rt := range routes(h.id) {
+		if rt.path == "/api/logout" {
+			continue
+		}
+		r := h.do(rt.method, rt.path, viewer, rt.body)
+		switch {
+		case rt.admin && r.code != 403:
+			t.Errorf("viewer %s %s: %d, want 403", rt.method, rt.path, r.code)
+		case !rt.admin && (r.code == 401 || r.code == 403):
+			t.Errorf("viewer %s %s: %d", rt.method, rt.path, r.code)
+		}
+	}
+	for _, cmd := range func() []string { s, _, _, _ := h.fake(0).snapshot(); return s }() {
+		switch cmd {
+		case "uuid_kill abc-123", "reloadxml", "status":
+			t.Errorf("viewer caused %q", cmd)
+		}
+	}
+	if list := h.st.List(); len(list) != 1 || list[0].Name != "fs01" {
+		t.Errorf("viewer changed the store: %+v", list)
+	}
+
+	admin := h.login("admin", adminPW)
+	for _, rt := range routes(h.id) {
+		if rt.method == "DELETE" && rt.path == "/api/instances/"+h.id || rt.path == "/api/logout" {
+			continue
+		}
+		if r := h.do(rt.method, rt.path, admin, rt.body); r.code == 401 || r.code == 403 {
+			t.Errorf("admin %s %s: %d", rt.method, rt.path, r.code)
+		}
+	}
+}
+
+func TestInstanceCRUD(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login("admin", adminPW)
+	if f := h.fake(0); f.addr != "10.0.0.5:8021" || f.password != eslPW {
+		t.Fatalf("preloaded dial %s %s", f.addr, f.password)
+	}
+
+	r := h.do("POST", "/api/instances", admin, `{"name":"v6","host":"::1","port":8022,"password":"`+eslPW+`"}`)
+	expect(t, r, 201, "")
+	var created instanceView
+	r.json(t, &created)
+	if created.Name != "v6" || created.Host != "::1" || created.Port != 8022 || len(created.ID) != 16 || !created.State.Connected {
+		t.Fatalf("created %+v", created)
+	}
+	if strings.Contains(r.body, "password") {
+		t.Fatalf("view has a password field: %s", r.body)
+	}
+	if f := h.fake(1); f.addr != "[::1]:8022" || f.password != eslPW {
+		t.Fatalf("dial %s %s", f.addr, f.password)
+	}
+
+	for _, bad := range []string{
+		`{"name":"","host":"h","port":1}`,
+		`{"name":"a","host":"h h","port":1}`,
+		`{"name":"a","host":"h","port":70000}`,
+		`{"name":"a","host":"h","port":"1"}`,
+		`{"id":"x","name":"a","host":"h","port":1}`,
+		`not json`,
+	} {
+		expect(t, h.do("POST", "/api/instances", admin, bad), 400, "")
+	}
+
+	r = h.do("GET", "/api/instances", admin, "")
+	var list []instanceView
+	r.json(t, &list)
+	if len(list) != 2 || list[0].ID != h.id || list[1].ID != created.ID || !list[0].State.Connected {
+		t.Fatalf("list %+v", list)
+	}
+
+	// Update with an empty password keeps the stored one and reconnects.
+	r = h.do("PUT", "/api/instances/"+created.ID, admin, `{"name":"v6b","host":"fs.example.com","port":9000,"password":""}`)
+	expect(t, r, 200, "")
+	var updated instanceView
+	r.json(t, &updated)
+	if updated.ID != created.ID || updated.Name != "v6b" || updated.Host != "fs.example.com" || updated.Port != 9000 {
+		t.Fatalf("updated %+v", updated)
+	}
+	if _, _, _, closed := h.fake(1).snapshot(); !closed {
+		t.Fatal("old switch not closed on update")
+	}
+	if f := h.fake(2); f.addr != "fs.example.com:9000" || f.password != eslPW {
+		t.Fatalf("redial %s %s", f.addr, f.password)
+	}
+	expect(t, h.do("PUT", "/api/instances/"+created.ID, admin, `{"name":"v6b","host":"fs.example.com","port":9000,"password":"new-pw"}`), 200, "")
+	if f := h.fake(3); f.password != "new-pw" {
+		t.Fatalf("redial password %q", f.password)
+	}
+	expect(t, h.do("PUT", "/api/instances/0000000000000000", admin, `{"name":"a","host":"h","port":1}`), 404, "")
+	expect(t, h.do("PUT", "/api/instances/"+created.ID, admin, `{"name":"a","host":"","port":1}`), 400, "")
+
+	expect(t, h.do("DELETE", "/api/instances/"+created.ID, admin, ""), 204, "")
+	if _, _, _, closed := h.fake(3).snapshot(); !closed {
+		t.Fatal("switch not closed on delete")
+	}
+	expect(t, h.do("GET", "/api/instances/"+created.ID+"/status", admin, ""), 404, `{"error":"instance not found"}`)
+	expect(t, h.do("DELETE", "/api/instances/"+created.ID, admin, ""), 404, "")
+	expect(t, h.do("DELETE", "/api/instances/"+h.id, admin, ""), 204, "")
+	expect(t, h.do("GET", "/api/instances", admin, ""), 200, `[]`)
+}
+
+func TestDataRoutes(t *testing.T) {
+	h := newHarness(t)
+	p := "/api/instances/" + h.id
+	for _, who := range []string{"admin", "viewer"} {
+		pw := map[string]string{"admin": adminPW, "viewer": viewerPW}[who]
+		tok := h.login(who, pw)
+
+		r := h.do("GET", p+"/status", tok, "")
+		expect(t, r, 200, "")
+		var st struct {
+			State    esl.State `json:"state"`
+			Hostname string    `json:"hostname"`
+			Status   struct {
+				SystemStatus string `json:"systemStatus"`
+			} `json:"status"`
+		}
+		r.json(t, &st)
+		if !st.State.Connected || st.Hostname != "fs01" || st.Status.SystemStatus != "ready" {
+			t.Fatalf("status %s", r.body)
+		}
+
+		expect(t, h.do("GET", p+"/sofia", tok, ""), 200, `{"rows":[{"data":"sip:mod_sofia@10.0.0.5:5060","name":"internal","state":"RUNNING (0)","type":"profile"}]}`)
+		expect(t, h.do("GET", p+"/gateways", tok, ""), 200, `{"rows":[{"name":"gw1","state":"REGED"}]}`)
+		expect(t, h.do("GET", p+"/registrations", tok, ""), 200, `{"rows":[]}`)
+		expect(t, h.do("GET", p+"/channels", tok, ""), 200, `{"rows":[{"direction":"inbound","uuid":"abc-123"}]}`)
+		expect(t, h.do("GET", p+"/calls", tok, ""), 200, `{"rows":[{"b_uuid":"def-456","uuid":"abc-123"}]}`)
+		expect(t, h.do("GET", p+"/modules", tok, ""), 200, `{"rows":[{"ikey":"mod_commands","name":"status","type":"api"}]}`)
+		expect(t, h.do("GET", p+"/vars", tok, ""), 200, `{"rows":[{"name":"default_password","value":"********"},{"name":"hostname","value":"fs01"}]}`)
+		expect(t, h.do("GET", p+"/config", tok, ""), 200, `{"rows":[{"name":"sofia.conf","description":"sofia Endpoint"}]}`)
+		r = h.do("GET", p+"/config/sofia.conf", tok, "")
+		expect(t, r, 200, "")
+		var cfg struct{ Name, XML string }
+		r.json(t, &cfg)
+		if cfg.Name != "sofia.conf" || strings.Contains(cfg.XML, "gwsecret") || !strings.Contains(cfg.XML, `value="********"`) {
+			t.Fatalf("config %s", r.body)
+		}
+		expect(t, h.do("GET", p+"/config/nope.conf", tok, ""), 404, "")
+	}
+
+	admin := h.login("admin", adminPW)
+	f := h.fake(0)
+	f.set(func(f *fakeSwitch) { f.sent = nil })
+	expect(t, h.do("DELETE", p+"/channels/abc-123", admin, ""), 200, `{"output":"+OK"}`)
+	expect(t, h.do("POST", p+"/actions", admin, `{"action":"reloadxml"}`), 200, `{"output":"+OK [Success]"}`)
+	expect(t, h.do("POST", p+"/actions", admin, `{"action":"reloadacl"}`), 200, `{"output":"+OK acl reloaded"}`)
+	expect(t, h.do("POST", p+"/actions", admin, `{"action":"sofia_rescan","profile":"internal"}`), 200, `{"output":"+OK scan complete"}`)
+	expect(t, h.do("POST", p+"/console", admin, `{"command":"show calls count"}`), 200, `{"output":"\n0 total.\n\n"}`)
+	sent, _, _, _ := f.snapshot()
+	want := []string{"uuid_kill abc-123", "reloadxml", "reloadacl", "sofia profile internal rescan", "show calls count"}
+	if !reflect.DeepEqual(sent, want) {
+		t.Fatalf("sent %q", sent)
+	}
+}
+
+func TestBadInputSendsNothing(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login("admin", adminPW)
+	p := "/api/instances/" + h.id
+	f := h.fake(0)
+	f.set(func(f *fakeSwitch) { f.sent = nil })
+
+	for _, path := range []string{
+		p + "/channels/abc%20def",
+		p + "/channels/a;b",
+		p + "/channels/a.b",
+		p + "/channels/a%0Ab",
+	} {
+		expect(t, h.do("DELETE", path, admin, ""), 400, "")
+	}
+	for _, path := range []string{p + "/config/a%20b", p + "/config/x%3Breloadxml", p + "/config/a%0Ab"} {
+		expect(t, h.do("GET", path, admin, ""), 400, "")
+	}
+	for _, body := range []string{
+		`{"action":"sofia_rescan"}`,
+		`{"action":"sofia_rescan","profile":"internal rescan"}`,
+		`{"action":"sofia_rescan","profile":"a\nb"}`,
+		`{"action":"shutdown"}`,
+		`{"action":"reloadxml","extra":true}`,
+		`{}`,
+	} {
+		expect(t, h.do("POST", p+"/actions", admin, body), 400, "")
+	}
+	for _, body := range []string{`{"command":""}`, `{"command":"status\nshutdown"}`, `{"command":"a\rb"}`, `{"cmd":"x"}`} {
+		expect(t, h.do("POST", p+"/console", admin, body), 400, "")
+	}
+	expect(t, h.do("GET", p+"/stream?loglevel=8", admin, ""), 400, "")
+	expect(t, h.do("GET", p+"/stream?loglevel=x", admin, ""), 400, "")
+	if sent, _, _, _ := f.snapshot(); len(sent) != 0 {
+		t.Fatalf("sent %q", sent)
+	}
+}
+
+func TestDisconnected(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login("admin", adminPW)
+	f := h.fake(0)
+	f.set(func(f *fakeSwitch) {
+		f.state = esl.State{Connected: false, Since: time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC), LastError: "dial tcp: connection refused"}
+		f.sent = nil
+	})
+	r := h.do("GET", "/api/instances/"+h.id+"/status", admin, "")
+	expect(t, r, 200, `{"state":{"connected":false,"since":"2026-01-02T03:04:05Z","lastError":"dial tcp: connection refused"},"hostname":"","status":null}`)
+
+	for _, rt := range routes(h.id) {
+		if !strings.HasPrefix(rt.path, "/api/instances/"+h.id+"/") || strings.HasSuffix(rt.path, "/status") {
+			continue
+		}
+		expect(t, h.do(rt.method, rt.path, admin, rt.body), 503, `{"error":"instance not connected"}`)
+	}
+	if sent, _, _, _ := f.snapshot(); len(sent) != 0 {
+		t.Fatalf("sent %q", sent)
+	}
+}
+
+func TestTransportError(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login("admin", adminPW)
+	p := "/api/instances/" + h.id
+	h.fake(0).set(func(f *fakeSwitch) { f.apiErr = errors.New("esl: read tcp: connection reset by peer") })
+	want := `{"error":"esl: read tcp: connection reset by peer"}`
+	expect(t, h.do("GET", p+"/status", admin, ""), 503, want)
+	expect(t, h.do("GET", p+"/channels", admin, ""), 503, want)
+	expect(t, h.do("POST", p+"/console", admin, `{"command":"status"}`), 503, want)
+	expect(t, h.do("POST", p+"/actions", admin, `{"action":"reloadxml"}`), 503, want)
+}
+
+func TestErrReply(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login("admin", adminPW)
+	p := "/api/instances/" + h.id
+	h.fake(0).set(func(f *fakeSwitch) {
+		f.replies["sofia xmlstatus"] = "-ERR sofia Command not found!\n"
+		f.replies["show channels as json"] = "-ERR SQL error\n"
+		f.replies["uuid_kill abc-123"] = "-ERR No such channel!\n"
+		f.replies["reloadxml"] = "-ERR [file.xml:3 error]\n"
+		f.replies["hostname"] = "-ERR no\n"
+		f.replies["xml_locate configuration"] = "<section><configuration"
+	})
+	expect(t, h.do("GET", p+"/sofia", admin, ""), 502, `{"error":"-ERR sofia Command not found!"}`)
+	expect(t, h.do("GET", p+"/channels", admin, ""), 502, `{"error":"-ERR SQL error"}`)
+	expect(t, h.do("DELETE", p+"/channels/abc-123", admin, ""), 502, `{"error":"-ERR No such channel!"}`)
+	expect(t, h.do("POST", p+"/actions", admin, `{"action":"reloadxml"}`), 502, `{"error":"-ERR [file.xml:3 error]"}`)
+	expect(t, h.do("GET", p+"/status", admin, ""), 502, `{"error":"-ERR no"}`)
+	expect(t, h.do("GET", p+"/config", admin, ""), 502, "")
+	expect(t, h.do("POST", p+"/console", admin, `{"command":"bogus"}`), 200, `{"output":"-ERR bogus Command not found!\n"}`)
+}
+
+func TestHeadersStaticAndUnknownAPI(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login("admin", adminPW)
+	security := map[string]string{
+		"Content-Security-Policy": "default-src 'self'",
+		"X-Content-Type-Options":  "nosniff",
+		"X-Frame-Options":         "DENY",
+		"Referrer-Policy":         "no-referrer",
+	}
+	check := func(r response, api bool) {
+		t.Helper()
+		for k, v := range security {
+			if got := r.header.Get(k); got != v {
+				t.Errorf("%s = %q", k, got)
+			}
+		}
+		if got := r.header.Get("Cache-Control"); (got == "no-store") != api {
+			t.Errorf("Cache-Control = %q (api %v)", got, api)
+		}
+	}
+
+	r := h.do("GET", "/", "", "")
+	expect(t, r, 200, "<!doctype html><title>fsdeck</title>")
+	check(r, false)
+	r = h.do("GET", "/missing.js", "", "")
+	expect(t, r, 404, "")
+	check(r, false)
+
+	r = h.do("GET", "/api/me", admin, "")
+	check(r, true)
+	r = h.do("GET", "/api/me", "", "")
+	check(r, true)
+	r = h.do("GET", "/api/nope", admin, "")
+	expect(t, r, 404, `{"error":"not found"}`)
+	check(r, true)
+	if ct := r.header.Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type %q", ct)
+	}
+	expect(t, h.do("POST", "/api/me", admin, `{}`), 404, `{"error":"not found"}`)
+	expect(t, h.do("GET", "/api/instances/"+h.id+"/nope", admin, ""), 404, `{"error":"not found"}`)
+	expect(t, h.do("GET", "/api/instances/0000000000000000/channels", admin, ""), 404, `{"error":"instance not found"}`)
+}
+
+func TestBodyRules(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login("admin", adminPW)
+	send := func(method, path, ctype, body string) int {
+		req, _ := http.NewRequest(method, h.ts.URL+path, strings.NewReader(body))
+		if ctype != "" {
+			req.Header.Set("Content-Type", ctype)
+		}
+		req.AddCookie(&http.Cookie{Name: cookieName, Value: admin})
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	body := `{"name":"a","host":"h","port":1,"password":"p"}`
+	if c := send("POST", "/api/instances", "text/plain", body); c != 415 {
+		t.Errorf("text/plain: %d", c)
+	}
+	if c := send("POST", "/api/instances", "", body); c != 415 {
+		t.Errorf("no content type: %d", c)
+	}
+	if c := send("DELETE", "/api/instances/"+h.id, "text/plain", "x"); c != 415 {
+		t.Errorf("delete with body: %d", c)
+	}
+	if c := send("POST", "/api/instances", "application/json; charset=utf-8", body); c != 201 {
+		t.Errorf("json with charset: %d", c)
+	}
+	big := `{"name":"` + strings.Repeat("a", 1<<20) + `","host":"h","port":1}`
+	if c := send("POST", "/api/instances", "application/json", big); c != 413 {
+		t.Errorf("large body: %d", c)
+	}
+	if c := send("POST", "/api/instances", "application/json", ""); c != 400 {
+		t.Errorf("empty body: %d", c)
+	}
+}
+
+type sseEvent struct {
+	name, data string // name "comment" for ": ..." lines
+}
+
+// openStream returns the events of an SSE response; the channel closes when
+// the stream ends.
+func (h *harness) openStream(token, query string) (<-chan sseEvent, context.CancelFunc) {
+	h.t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	req, _ := http.NewRequestWithContext(ctx, "GET", h.ts.URL+"/api/instances/"+h.id+"/stream"+query, nil)
+	req.AddCookie(&http.Cookie{Name: cookieName, Value: token})
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	if resp.StatusCode != 200 || resp.Header.Get("Content-Type") != "text/event-stream" || resp.Header.Get("Cache-Control") != "no-store" {
+		h.t.Fatalf("stream: %d %v", resp.StatusCode, resp.Header)
+	}
+	ch := make(chan sseEvent, 64)
+	go func() {
+		defer close(ch)
+		defer resp.Body.Close()
+		sc := bufio.NewScanner(resp.Body)
+		var ev sseEvent
+		for sc.Scan() {
+			line := sc.Text()
+			switch {
+			case strings.HasPrefix(line, ": "):
+				ch <- sseEvent{name: "comment", data: line[2:]}
+			case strings.HasPrefix(line, "event: "):
+				ev.name = line[7:]
+			case strings.HasPrefix(line, "data: "):
+				if ev.data != "" {
+					h.t.Errorf("multi-line data")
+				}
+				ev.data = line[6:]
+			case line == "" && ev.name != "":
+				ch <- ev
+				ev = sseEvent{}
+			}
+		}
+	}()
+	return ch, cancel
+}
+
+func next(t *testing.T, ch <-chan sseEvent) sseEvent {
+	t.Helper()
+	select {
+	case ev, ok := <-ch:
+		if !ok {
+			t.Fatal("stream ended")
+		}
+		return ev
+	case <-time.After(5 * time.Second):
+		t.Fatal("no event")
+	}
+	return sseEvent{}
+}
+
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func logMsg(level, text string) esl.Message {
+	return esl.Message{Kind: esl.KindLog, Body: text + "\n", Headers: map[string]string{
+		"Log-Level": level, "Log-File": "switch_core.c", "Log-Func": "fn", "Log-Line": "123", "Text-Channel": "3",
+	}}
+}
+
+var heartbeat = esl.Message{Kind: esl.KindEvent, Headers: map[string]string{"Event-Name": "HEARTBEAT", "Session-Count": "0", "Idle-CPU": "98.5"}}
+
+func TestStreamAdmin(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login("admin", adminPW)
+	f := h.fake(0)
+	ch, cancel := h.openStream(admin, "?loglevel=4")
+	defer cancel()
+
+	ev := next(t, ch)
+	if ev.name != "state" || ev.data != `{"connected":true,"since":"2026-01-02T03:04:05Z","lastError":""}` {
+		t.Fatalf("first event %+v", ev)
+	}
+	f.publish(logMsg("7", "debug line"))
+	f.publish(logMsg("x", "bad level"))
+	f.publish(logMsg("3", "error line\nsecond line"))
+	f.publish(esl.Message{Kind: esl.KindEvent, Headers: map[string]string{"Event-Name": "CUSTOM"}})
+	f.publish(heartbeat)
+	f.set(func(f *fakeSwitch) {
+		f.state = esl.State{Connected: false, Since: time.Date(2026, 1, 2, 3, 4, 6, 0, time.UTC), LastError: "EOF"}
+	})
+	f.publish(esl.Message{Kind: esl.KindState, Headers: map[string]string{"connected": "false", "error": "EOF"}})
+
+	if ev := next(t, ch); ev.name != "log" || ev.data != `{"level":3,"text":"error line\nsecond line","file":"switch_core.c","func":"fn","line":123}` {
+		t.Fatalf("log event %+v", ev)
+	}
+	ev = next(t, ch)
+	var hb map[string]string
+	json.Unmarshal([]byte(ev.data), &hb)
+	if ev.name != "heartbeat" || !reflect.DeepEqual(hb, heartbeat.Headers) {
+		t.Fatalf("heartbeat %+v", ev)
+	}
+	if ev := next(t, ch); ev.name != "state" || ev.data != `{"connected":false,"since":"2026-01-02T03:04:06Z","lastError":"EOF"}` {
+		t.Fatalf("state %+v", ev)
+	}
+}
+
+func TestStreamViewerGetsNoLogs(t *testing.T) {
+	h := newHarness(t)
+	viewer := h.login("viewer", viewerPW)
+	f := h.fake(0)
+	ch, cancel := h.openStream(viewer, "?loglevel=7")
+	defer cancel()
+	if ev := next(t, ch); ev.name != "state" {
+		t.Fatalf("first %+v", ev)
+	}
+	f.publish(logMsg("0", "console"))
+	f.publish(heartbeat)
+	if ev := next(t, ch); ev.name != "heartbeat" {
+		t.Fatalf("viewer got %+v", ev)
+	}
+	if _, levels, _, _ := f.snapshot(); len(levels) != 0 {
+		t.Fatalf("viewer changed the log level: %v", levels)
+	}
+
+	// Admin without loglevel gets no logs either.
+	admin := h.login("admin", adminPW)
+	ch2, cancel2 := h.openStream(admin, "")
+	defer cancel2()
+	next(t, ch2)
+	f.publish(logMsg("0", "console"))
+	f.publish(heartbeat)
+	if ev := next(t, ch2); ev.name != "heartbeat" {
+		t.Fatalf("admin without loglevel got %+v", ev)
+	}
+}
+
+func TestStreamSharedLogLevel(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login("admin", adminPW)
+	f := h.fake(0)
+	levels := func() []int { _, l, _, _ := f.snapshot(); return l }
+	expectLevels := func(want ...int) {
+		t.Helper()
+		waitFor(t, "log levels", func() bool { return reflect.DeepEqual(levels(), want) })
+	}
+
+	a, cancelA := h.openStream(admin, "?loglevel=5")
+	next(t, a)
+	expectLevels(5)
+	b, cancelB := h.openStream(admin, "?loglevel=7")
+	next(t, b)
+	expectLevels(5, 7)
+	c, cancelC := h.openStream(admin, "?loglevel=5")
+	next(t, c)
+	expectLevels(5, 7)
+
+	// Each stream filters on its own level.
+	f.publish(logMsg("6", "info"))
+	f.publish(heartbeat)
+	if ev := next(t, a); ev.name != "heartbeat" {
+		t.Fatalf("level 5 stream got %+v", ev)
+	}
+	if ev := next(t, b); ev.name != "log" {
+		t.Fatalf("level 7 stream got %+v", ev)
+	}
+
+	cancelB()
+	expectLevels(5, 7, 5)
+	cancelA()
+	time.Sleep(50 * time.Millisecond)
+	expectLevels(5, 7, 5)
+	cancelC()
+	expectLevels(5, 7, 5, -1)
+	waitFor(t, "unsubscribe", func() bool { _, _, n, _ := f.snapshot(); return n == 0 })
+}
+
+func TestStreamPingAndEnd(t *testing.T) {
+	h := newHarness(t)
+	h.srv.pingInterval = 20 * time.Millisecond
+	admin := h.login("admin", adminPW)
+	ch, cancel := h.openStream(admin, "?loglevel=7")
+	defer cancel()
+	next(t, ch)
+	if ev := next(t, ch); ev.name != "comment" || ev.data != "ping" {
+		t.Fatalf("got %+v", ev)
+	}
+	f := h.fake(0)
+	expect(t, h.do("DELETE", "/api/instances/"+h.id, admin, ""), 204, "")
+	select {
+	case <-func() chan struct{} {
+		done := make(chan struct{})
+		go func() {
+			for range ch {
+			}
+			close(done)
+		}()
+		return done
+	}():
+	case <-time.After(5 * time.Second):
+		t.Fatal("stream did not end after delete")
+	}
+	// The deleted switch is closed, so the level is not reset on it.
+	if _, levels, _, closed := f.snapshot(); !closed || !reflect.DeepEqual(levels, []int{7}) {
+		t.Fatalf("closed %v levels %v", closed, levels)
+	}
+}
+
+func TestStreamUnknownInstance(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login("admin", adminPW)
+	expect(t, h.do("GET", "/api/instances/0000000000000000/stream", admin, ""), 404, `{"error":"instance not found"}`)
+}
