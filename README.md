@@ -7,7 +7,8 @@ logs and a command console in the browser.
 - Nothing to install on the FreeSWITCH side: only `mod_event_socket`, which
   the stock configuration already loads.
 - Does not own your configuration. fsdeck reads what FreeSWITCH reports; it
-  has no database schema and no XML generator.
+  has no database schema and no XML generator. When you edit a file, it is
+  your file, with the previous version kept.
 - One static binary, standard library only, frontend embedded.
 - Several FreeSWITCH instances in one console.
 
@@ -24,6 +25,12 @@ logs and a command console in the browser.
 | Directory | domains with a users table (groups, caller id, context, whether a password is set), or as XML | `xml_locate directory` |
 | Logs | live log tail with level, severity and text filters | `log <level>` |
 | Console | any API command, like `fs_cli` | `api <command>` |
+| Runtime operations | start, stop, restart and rescan profiles; register, unregister and remove gateways; load and unload modules; log level, session limits, pause, global variables | `sofia profile`, `load`, `fsctl`, `global_setvar` |
+| Config files (paid) | file tree and XML editor, a diff to review before saving, history and restore, apply actions that show FreeSWITCH's answer | files on the host, directly or through `fsdeck-agent` |
+| Users and audit (paid) | accounts with the roles administrator, operator and read only; a searchable audit log of every sign-in and change | |
+
+The interface is in English and Simplified Chinese and follows the browser's
+language; the account menu switches it.
 
 Tables sort by any column and filter as you type. Light and dark themes; the
 toggle in the sidebar cycles system, light, dark. When an instance cannot
@@ -231,9 +238,11 @@ version.
 
 ## Not in scope (yet)
 
-- Editing configuration files. The Event Socket has no file API; the plan is
-  an optional agent on the FreeSWITCH host.
-- SIP capture and metrics history. Homer and Prometheus cover those.
+- Configuration that is not in files: what `mod_xml_curl` or a database serves
+  has to be changed at its source.
+- Files that are not UTF-8 (a few language files in the stock set are Latin-1)
+  cannot be edited in the browser.
+- SIP capture and long-term metrics. Homer and Prometheus cover those.
 
 ## Trying it against a stock FreeSWITCH in Docker
 
@@ -271,6 +280,7 @@ The image is amd64 only; on Apple silicon add `--platform linux/amd64`.
 
 ```sh
 go vet ./... && go test -race ./...
+go test -race -tags community ./...   # the build without the paid code
 ```
 
 No third-party Go modules and no frontend build step: `web/static` is served
@@ -279,5 +289,10 @@ files from disk, so a browser reload shows the change without rebuilding.
 
 ## License
 
-MIT. FreeSWITCH is a trademark of its owner; fsdeck is an independent project
-and is not affiliated with or endorsed by the FreeSWITCH project or SignalWire.
+The core is licensed under the GNU Affero General Public License, version 3
+(`LICENSE`). The paid features, which are the files under `ee/` and the files
+named `ee_*.go`, are under separate terms (`ee/LICENSE`); `go build -tags
+community ./cmd/fsdeck` produces a binary that contains none of them.
+
+FreeSWITCH is a trademark of its owner; fsdeck is an independent project and
+is not affiliated with or endorsed by the FreeSWITCH project or SignalWire.
