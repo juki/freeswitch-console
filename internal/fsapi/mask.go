@@ -2,6 +2,7 @@ package fsapi
 
 import (
 	"encoding/xml"
+	"fmt"
 	"io"
 	"regexp"
 	"strings"
@@ -37,6 +38,14 @@ func MaskVars(vars []Var) []Var {
 	return out
 }
 
+// maskNode is an element, or a text node when name is empty.
+type maskNode struct {
+	name     string
+	attrs    []xml.Attr
+	text     string
+	children []*maskNode
+}
+
 // MaskXML parses an XML document and re-emits it indented with secrets
 // masked: the value and data attributes of an element whose name attribute
 // looks secret, every attribute whose own name looks secret, and URL
@@ -44,9 +53,8 @@ func MaskVars(vars []Var) []Var {
 // dropped (comments often hold commented-out credentials).
 func MaskXML(doc string) (string, error) {
 	d := newDecoder(doc)
-	var b strings.Builder
-	e := xml.NewEncoder(&b)
-	e.Indent("", "  ")
+	root := &maskNode{}
+	stack := []*maskNode{root}
 	for {
 		tok, err := d.RawToken()
 		if err == io.EOF {
@@ -55,25 +63,67 @@ func MaskXML(doc string) (string, error) {
 		if err != nil {
 			return "", err
 		}
+		top := stack[len(stack)-1]
 		switch t := tok.(type) {
 		case xml.StartElement:
-			err = e.EncodeToken(maskStart(t))
+			st := maskStart(t)
+			n := &maskNode{name: st.Name.Local, attrs: st.Attr}
+			top.children = append(top.children, n)
+			stack = append(stack, n)
 		case xml.EndElement:
-			err = e.EncodeToken(xml.EndElement{Name: flatName(t.Name)})
+			if name := flatName(t.Name).Local; len(stack) == 1 || name != top.name {
+				return "", fmt.Errorf("unexpected </%s>", name)
+			}
+			stack = stack[:len(stack)-1]
 		case xml.CharData:
-			if strings.TrimSpace(string(t)) != "" {
-				err = e.EncodeToken(xml.CharData(maskURL(string(t))))
+			if s := strings.TrimSpace(string(t)); s != "" {
+				top.children = append(top.children, &maskNode{text: maskURL(s)})
 			}
 		}
-		if err != nil {
-			return "", err
+	}
+	if len(stack) != 1 {
+		return "", fmt.Errorf("unclosed <%s>", stack[len(stack)-1].name)
+	}
+	var b strings.Builder
+	for _, n := range root.children {
+		writeNode(&b, n, 0)
+	}
+	return b.String(), nil
+}
+
+// writeNode prints one element per line; an element without children is
+// self-closing and one that holds only text stays on a single line.
+func writeNode(b *strings.Builder, n *maskNode, depth int) {
+	indent := strings.Repeat("  ", depth)
+	b.WriteString(indent)
+	if n.name == "" {
+		xml.EscapeText(b, []byte(n.text))
+		b.WriteByte('\n')
+		return
+	}
+	b.WriteByte('<')
+	b.WriteString(n.name)
+	for _, a := range n.attrs {
+		b.WriteByte(' ')
+		b.WriteString(a.Name.Local)
+		b.WriteString(`="`)
+		xml.EscapeText(b, []byte(a.Value))
+		b.WriteByte('"')
+	}
+	switch {
+	case len(n.children) == 0:
+		b.WriteString("/>\n")
+	case len(n.children) == 1 && n.children[0].name == "":
+		b.WriteByte('>')
+		xml.EscapeText(b, []byte(n.children[0].text))
+		b.WriteString("</" + n.name + ">\n")
+	default:
+		b.WriteString(">\n")
+		for _, c := range n.children {
+			writeNode(b, c, depth+1)
 		}
+		b.WriteString(indent + "</" + n.name + ">\n")
 	}
-	// Close reports unclosed elements, so the output is always well-formed.
-	if err := e.Close(); err != nil {
-		return "", err
-	}
-	return b.String() + "\n", nil
 }
 
 func maskStart(t xml.StartElement) xml.StartElement {
@@ -100,7 +150,7 @@ func maskStart(t xml.StartElement) xml.StartElement {
 }
 
 // flatName keeps a prefixed name verbatim; RawToken does not resolve
-// namespaces and the encoder would otherwise invent xmlns attributes.
+// namespaces.
 func flatName(n xml.Name) xml.Name {
 	if n.Space != "" {
 		return xml.Name{Local: n.Space + ":" + n.Local}

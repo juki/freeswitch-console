@@ -316,7 +316,7 @@ func TestMaskXML(t *testing.T) {
 		{
 			name:     "param password",
 			in:       `<params><param name="password" value="x1"/><param name="dial-string" value="{a=b}"/></params>`,
-			contains: []string{`<param name="password" value="********">`, `<param name="dial-string" value="{a=b}">`},
+			contains: []string{`<param name="password" value="********"/>`, `<param name="dial-string" value="{a=b}"/>`},
 			absent:   []string{"x1"},
 		},
 		{
@@ -359,7 +359,7 @@ func TestMaskXML(t *testing.T) {
 			name:     "comments dropped",
 			in:       `<a><!-- <param name="password" value="pw7"/> --><b/></a>`,
 			absent:   []string{"pw7", "<!--"},
-			contains: []string{"<b></b>"},
+			contains: []string{"<b/>"},
 		},
 		{
 			name:     "declaration and entities",
