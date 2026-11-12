@@ -1,0 +1,17 @@
+fsdeck paid features: interim licence notice
+
+The files in this directory, and the files elsewhere in this repository whose
+name starts with "ee_", are NOT covered by the GNU Affero General Public
+License in the repository root.
+
+They implement the paid features of fsdeck. Until the commercial licence terms
+are published in this file, no licence is granted for them: they may not be
+used, copied, modified or distributed without a written agreement with the
+fsdeck copyright holders.
+
+Everything else in this repository is licensed under the GNU Affero General
+Public License, version 3 (see ../LICENSE). A build made with
+"go build -tags community" contains none of the files described above.
+
+This notice is a placeholder and is to be replaced by the commercial licence
+text before the first public release.
