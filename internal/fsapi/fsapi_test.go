@@ -538,3 +538,180 @@ func TestArgumentValidation(t *testing.T) {
 		t.Errorf("config %v", err)
 	}
 }
+
+// Shaped like real xml_locate output: blank lines, explicit end tags.
+const dialplanReply = `<section name="dialplan" description="Regex/XML Dialplan">
+
+    <context name="public">
+        <extension name="unloop">
+            <condition field="${unroll_loops}" expression="^true$"></condition>
+        </extension>
+        <extension name="public_extensions">
+            <condition field="destination_number" expression="^(10[01][0-9])$">
+	        <action application="transfer" data="$1 XML default"></action>
+      </condition>
+    </extension>
+    </context>
+
+    <context name="default">
+        <extension name="local">
+            <condition field="destination_number" expression="^1000$">
+	        <action application="bridge" data="user/1000"></action>
+      </condition>
+    </extension>
+        <extension name="a"><condition><extension name="not a child"/></condition></extension>
+        <extension name="b"/>
+    </context>
+
+    <context name="empty"></context>
+    <other><extension name="outside"/></other>
+</section>
+`
+
+func TestDialplanContexts(t *testing.T) {
+	c := reply("xml_locate dialplan", dialplanReply)
+	list, err := DialplanContexts(context.Background(), c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []SectionItem{{"default", 3}, {"empty", 0}, {"public", 2}}
+	if !reflect.DeepEqual(list, want) {
+		t.Fatalf("got %v", list)
+	}
+	if b, _ := json.Marshal(list[0]); string(b) != `{"name":"default","count":3}` {
+		t.Errorf("json %s", b)
+	}
+	if !reflect.DeepEqual(c.sent, []string{"xml_locate dialplan"}) {
+		t.Errorf("sent %q", c.sent)
+	}
+	list, err = DialplanContexts(context.Background(), reply("xml_locate dialplan", "can't find anything\n"))
+	if err != nil || list == nil || len(list) != 0 {
+		t.Fatalf("not found = %#v, %v", list, err)
+	}
+	if _, err := DialplanContexts(context.Background(), reply("xml_locate dialplan", "<section><context")); !errors.Is(err, ErrBadReply) {
+		t.Errorf("truncated: %v", err)
+	}
+	var ce *CommandError
+	if _, err := DialplanContexts(context.Background(), reply("xml_locate dialplan", "-ERR no\n")); !errors.As(err, &ce) {
+		t.Errorf("-ERR: %v", err)
+	}
+}
+
+// A vanilla 1000.xml / brian.xml user after preprocessing, with the
+// commented-out a1-hash enabled, plus pointer entries in a second group.
+const vanillaUser = `<user id="1000">
+                <params>
+                    <param name="password" value="JUkuSM3IzWjCLPqwLrn0"></param>
+                    <param name="vm-password" value="9999"></param>
+                    <param name="a1-hash" value="c6440e5de50b403206989679159de89a"></param>
+    </params>
+                <variables>
+                    <variable name="toll_allow" value="domestic,international,local"></variable>
+                    <variable name="accountcode" value="1000"></variable>
+                    <variable name="user_context" value="default"></variable>
+                    <variable name="effective_caller_id_name" value="Extension 1000"></variable>
+    </variables>
+  </user>`
+
+const directoryReply = `<section name="directory" description="User Directory">
+    <domain name="10.0.0.1">
+        <params>
+            <param name="dial-string" value="{^^:sip_invite_domain=${dialed_domain}:presence_id=${dialed_user}@${dialed_domain}}${sofia_contact(*/${dialed_user}@${dialed_domain})}"></param>
+    </params>
+        <variables>
+            <variable name="record_stereo" value="true"></variable>
+    </variables>
+        <groups>
+            <group name="default">
+	        <users>
+            ` + vanillaUser + `
+            <user id="brian" cidr="192.0.2.0/24">
+                <gateways></gateways>
+                <params><param name="password" value="1234"></param></params>
+            </user>
+    </users>
+  </group>
+            <group name="sales">
+	        <users>
+            <user id="1000" type="pointer"></user>
+            <user id="brian" type="pointer"></user>
+    </users>
+  </group>
+    </groups>
+  </domain>
+    <domain name="alpha.example.com"></domain>
+</section>
+`
+
+func TestDirectoryDomains(t *testing.T) {
+	list, err := DirectoryDomains(context.Background(), reply("xml_locate directory", directoryReply))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Pointer entries are counted: four <user> elements, two distinct ids.
+	want := []SectionItem{{"10.0.0.1", 4}, {"alpha.example.com", 0}}
+	if !reflect.DeepEqual(list, want) {
+		t.Fatalf("got %v", list)
+	}
+	list, err = DirectoryDomains(context.Background(), reply("xml_locate directory", "can't find anything\n"))
+	if err != nil || list == nil || len(list) != 0 {
+		t.Fatalf("not found = %#v, %v", list, err)
+	}
+}
+
+func TestSectionEntry(t *testing.T) {
+	ctx := context.Background()
+	const dpCmd = "xml_locate dialplan context name default"
+	c := reply(dpCmd, `<context name="default"><extension name="x"><condition field="destination_number" expression="^1000$"><action application="bridge" data="user/1000"/></condition></extension></context>`)
+	out, err := DialplanContext(ctx, c, "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "\n  <extension name=\"x\">\n") || !strings.Contains(out, `<action application="bridge" data="user/1000"/>`) {
+		t.Errorf("unexpected output:\n%s", out)
+	}
+	assertWellFormed(t, out)
+
+	const dirCmd = "xml_locate directory domain name 10.0.0.1"
+	out, err = DirectoryDomain(ctx, reply(dirCmd, "<domain name=\"10.0.0.1\"><groups><group name=\"default\"><users>"+vanillaUser+"</users></group></groups></domain>\n"), "10.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range []string{"JUkuSM3IzWjCLPqwLrn0", "9999", "c6440e5de50b403206989679159de89a"} {
+		if strings.Contains(out, s) {
+			t.Errorf("leaked %s in\n%s", s, out)
+		}
+	}
+	for _, s := range []string{`<param name="password" value="********"/>`, `<param name="vm-password" value="********"/>`, `<param name="a1-hash" value="********"/>`, `<variable name="accountcode" value="1000"/>`} {
+		if !strings.Contains(out, s) {
+			t.Errorf("missing %s in\n%s", s, out)
+		}
+	}
+	assertWellFormed(t, out)
+
+	if _, err := DialplanContext(ctx, reply("xml_locate dialplan context name nope", "can't find anything\n"), "nope"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("context not found: %v", err)
+	}
+	if _, err := DirectoryDomain(ctx, reply("xml_locate directory domain name nope", "can't find anything\n"), "nope"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("domain not found: %v", err)
+	}
+	var ce *CommandError
+	if _, err := DirectoryDomain(ctx, reply("xml_locate directory domain name x", "-ERR no\n"), "x"); !errors.As(err, &ce) {
+		t.Errorf("-ERR: %v", err)
+	}
+	if _, err := DialplanContext(ctx, reply("xml_locate dialplan context name x", "<context><x></context>"), "x"); !errors.Is(err, ErrBadReply) {
+		t.Errorf("bad xml: %v", err)
+	}
+	for _, arg := range []string{"", "a b", "default name x", "a;b", "a\nb", "x/y", "ä"} {
+		c := &fakeCommander{}
+		if _, err := DialplanContext(ctx, c, arg); !errors.Is(err, ErrInvalidArgument) {
+			t.Errorf("DialplanContext(%q): %v", arg, err)
+		}
+		if _, err := DirectoryDomain(ctx, c, arg); !errors.Is(err, ErrInvalidArgument) {
+			t.Errorf("DirectoryDomain(%q): %v", arg, err)
+		}
+		if len(c.sent) != 0 {
+			t.Errorf("%q: sent %v", arg, c.sent)
+		}
+	}
+}

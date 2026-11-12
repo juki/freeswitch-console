@@ -55,6 +55,15 @@ type Server struct {
 
 	sessMu   sync.Mutex
 	sessions map[string]session
+
+	// loginMaxFails failures within loginWindow block a key for loginBlock;
+	// the table holds at most loginMaxKeys keys.
+	loginMu       sync.Mutex
+	loginFails    map[loginKey]*loginRecord
+	loginMaxFails int
+	loginWindow   time.Duration
+	loginBlock    time.Duration
+	loginMaxKeys  int
 }
 
 type instance struct {
@@ -64,10 +73,20 @@ type instance struct {
 	logMu   sync.Mutex
 	levels  map[int]int // log level -> open streams asking for it
 	applied int         // level last passed to SetLogLevel
+
+	histMu    sync.Mutex
+	history   [historySize]sample // ring; the oldest is at histNext once full
+	histNext  int
+	histLen   int
+	collected chan struct{} // closed when the history collector has returned
 }
 
+// newInstance starts the history collector of sw.
 func newInstance(sw Switch) *instance {
-	return &instance{sw: sw, done: make(chan struct{}), levels: map[int]int{}, applied: -1}
+	i := &instance{sw: sw, done: make(chan struct{}), levels: map[int]int{}, applied: -1, collected: make(chan struct{})}
+	msgs, cancel := sw.Subscribe(64)
+	go i.collect(msgs, cancel)
+	return i
 }
 
 // New dials every stored instance.
@@ -84,6 +103,12 @@ func New(cfg Config) (*Server, error) {
 		pingInterval: 20 * time.Second,
 		insts:        map[string]*instance{},
 		sessions:     map[string]session{},
+
+		loginFails:    map[loginKey]*loginRecord{},
+		loginMaxFails: 5,
+		loginWindow:   5 * time.Minute,
+		loginBlock:    time.Minute,
+		loginMaxKeys:  10000,
 	}
 	for _, in := range cfg.Store.List() {
 		s.insts[in.ID] = newInstance(s.dial(in))
@@ -106,6 +131,7 @@ func (s *Server) Close() {
 func (i *instance) close() {
 	close(i.done)
 	i.sw.Close()
+	<-i.collected
 }
 
 // eslContext bounds one ESL call. It deliberately does not follow the
@@ -142,6 +168,11 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/instances/{id}/vars", rowsRoute(s, fsapi.GlobalVars))
 	m.HandleFunc("GET /api/instances/{id}/config", rowsRoute(s, fsapi.ConfigList))
 	m.HandleFunc("GET /api/instances/{id}/config/{name}", s.auth(false, s.handleConfig))
+	m.HandleFunc("GET /api/instances/{id}/dialplan", rowsRoute(s, fsapi.DialplanContexts))
+	m.HandleFunc("GET /api/instances/{id}/dialplan/{name}", xmlRoute(s, fsapi.DialplanContext))
+	m.HandleFunc("GET /api/instances/{id}/directory", rowsRoute(s, fsapi.DirectoryDomains))
+	m.HandleFunc("GET /api/instances/{id}/directory/{name}", xmlRoute(s, fsapi.DirectoryDomain))
+	m.HandleFunc("GET /api/instances/{id}/history", s.auth(false, s.handleHistory))
 	m.HandleFunc("DELETE /api/instances/{id}/channels/{uuid}", s.auth(true, s.handleHangup))
 	m.HandleFunc("POST /api/instances/{id}/actions", s.auth(true, s.handleAction))
 	m.HandleFunc("POST /api/instances/{id}/console", s.auth(true, s.handleConsole))
@@ -205,6 +236,25 @@ func rowsRoute[T any](s *Server, fetch func(context.Context, fsapi.Commander) ([
 			rows = []T{}
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"rows": rows})
+	})
+}
+
+// xmlRoute serves one named XML entry as {"name": ..., "xml": ...}.
+func xmlRoute(s *Server, fetch func(context.Context, fsapi.Commander, string) (string, error)) http.HandlerFunc {
+	return s.auth(false, func(w http.ResponseWriter, r *http.Request, _ user) {
+		inst := s.connected(w, r)
+		if inst == nil {
+			return
+		}
+		ctx, cancel := eslContext(r, eslTimeout)
+		defer cancel()
+		name := r.PathValue("name")
+		doc, err := fetch(ctx, inst.sw, name)
+		if err != nil {
+			writeAPIError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"name": name, "xml": doc})
 	})
 }
 

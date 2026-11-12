@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -77,6 +78,13 @@ func newFake(addr, password string) *fakeSwitch {
 			"sofia profile internal rescan": "+OK scan complete\n",
 			"show calls count":              "\n0 total.\n\n",
 			"bogus":                         "-ERR bogus Command not found!\n",
+
+			"xml_locate dialplan":                       `<section name="dialplan"><context name="public"><extension name="p"/></context><context name="default"><extension name="a"/><extension name="b"/></context></section>`,
+			"xml_locate dialplan context name default":  `<context name="default"><extension name="a"><condition field="destination_number" expression="^1000$"><action application="bridge" data="user/1000"/></condition></extension></context>`,
+			"xml_locate dialplan context name nope":     "can't find anything\n",
+			"xml_locate directory":                      `<section name="directory"><domain name="10.0.0.1"><groups><group name="default"><users><user id="1000"/><user id="1001"/></users></group><group name="sales"><users><user id="1000" type="pointer"/></users></group></groups></domain></section>`,
+			"xml_locate directory domain name 10.0.0.1": `<domain name="10.0.0.1"><groups><group name="default"><users><user id="1000"><params><param name="password" value="sip-S3cret"/><param name="vm-password" value="vm-S3cret"/><param name="a1-hash" value="a1-S3cret"/></params><variables><variable name="user_context" value="default"/></variables></user></users></group></groups></domain>`,
+			"xml_locate directory domain name nope":     "can't find anything\n",
 		},
 	}
 }
@@ -426,6 +434,11 @@ func routes(id string) []route {
 		{"GET", p + "/vars", "", false},
 		{"GET", p + "/config", "", false},
 		{"GET", p + "/config/sofia.conf", "", false},
+		{"GET", p + "/dialplan", "", false},
+		{"GET", p + "/dialplan/default", "", false},
+		{"GET", p + "/directory", "", false},
+		{"GET", p + "/directory/10.0.0.1", "", false},
+		{"GET", p + "/history", "", false},
 		{"POST", p + "/actions", `{"action":"reloadxml"}`, true},
 		{"POST", p + "/console", `{"command":"status"}`, true},
 		{"GET", "/api/nope", "", false},
@@ -617,7 +630,11 @@ func TestBadInputSendsNothing(t *testing.T) {
 	} {
 		expect(t, h.do("DELETE", path, admin, ""), 400, "")
 	}
-	for _, path := range []string{p + "/config/a%20b", p + "/config/x%3Breloadxml", p + "/config/a%0Ab"} {
+	for _, path := range []string{
+		p + "/config/a%20b", p + "/config/x%3Breloadxml", p + "/config/a%0Ab",
+		p + "/dialplan/a%20b", p + "/dialplan/default%20name%20x", p + "/dialplan/x%3Breloadxml",
+		p + "/directory/a%0Ab", p + "/directory/x%2Fy", p + "/directory/%C3%A4",
+	} {
 		expect(t, h.do("GET", path, admin, ""), 400, "")
 	}
 	for _, body := range []string{
@@ -652,7 +669,7 @@ func TestDisconnected(t *testing.T) {
 	expect(t, r, 200, `{"state":{"connected":false,"since":"2026-01-02T03:04:05Z","lastError":"dial tcp: connection refused"},"hostname":"","status":null}`)
 
 	for _, rt := range routes(h.id) {
-		if !strings.HasPrefix(rt.path, "/api/instances/"+h.id+"/") || strings.HasSuffix(rt.path, "/status") {
+		if !strings.HasPrefix(rt.path, "/api/instances/"+h.id+"/") || strings.HasSuffix(rt.path, "/status") || strings.HasSuffix(rt.path, "/history") {
 			continue
 		}
 		expect(t, h.do(rt.method, rt.path, admin, rt.body), 503, `{"error":"instance not connected"}`)
@@ -685,7 +702,11 @@ func TestErrReply(t *testing.T) {
 		f.replies["reloadxml"] = "-ERR [file.xml:3 error]\n"
 		f.replies["hostname"] = "-ERR no\n"
 		f.replies["xml_locate configuration"] = "<section><configuration"
+		f.replies["xml_locate dialplan"] = "-ERR dialplan\n"
+		f.replies["xml_locate directory domain name 10.0.0.1"] = "-ERR directory\n"
 	})
+	expect(t, h.do("GET", p+"/dialplan", admin, ""), 502, `{"error":"-ERR dialplan"}`)
+	expect(t, h.do("GET", p+"/directory/10.0.0.1", admin, ""), 502, `{"error":"-ERR directory"}`)
 	expect(t, h.do("GET", p+"/sofia", admin, ""), 502, `{"error":"-ERR sofia Command not found!"}`)
 	expect(t, h.do("GET", p+"/channels", admin, ""), 502, `{"error":"-ERR SQL error"}`)
 	expect(t, h.do("DELETE", p+"/channels/abc-123", admin, ""), 502, `{"error":"-ERR No such channel!"}`)
@@ -960,7 +981,8 @@ func TestStreamSharedLogLevel(t *testing.T) {
 	expectLevels(5, 7, 5)
 	cancelC()
 	expectLevels(5, 7, 5, -1)
-	waitFor(t, "unsubscribe", func() bool { _, _, n, _ := f.snapshot(); return n == 0 })
+	// The history collector keeps its own subscription.
+	waitFor(t, "unsubscribe", func() bool { _, _, n, _ := f.snapshot(); return n == 1 })
 }
 
 func TestStreamPingAndEnd(t *testing.T) {
@@ -998,4 +1020,377 @@ func TestStreamUnknownInstance(t *testing.T) {
 	h := newHarness(t)
 	admin := h.login("admin", adminPW)
 	expect(t, h.do("GET", "/api/instances/0000000000000000/stream", admin, ""), 404, `{"error":"instance not found"}`)
+}
+
+func (h *harness) loginAs(username, password string) response {
+	h.t.Helper()
+	return h.do("POST", "/api/login", "", `{"username":"`+username+`","password":"`+password+`"}`)
+}
+
+// loginFrom logs in from another client address.
+func (h *harness) loginFrom(remoteAddr, username, password string) int {
+	req := httptest.NewRequest("POST", "/api/login", strings.NewReader(`{"username":"`+username+`","password":"`+password+`"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.RemoteAddr = remoteAddr
+	rec := httptest.NewRecorder()
+	h.srv.Handler().ServeHTTP(rec, req)
+	return rec.Code
+}
+
+func expectBlocked(t *testing.T, r response, secs string) {
+	t.Helper()
+	expect(t, r, 429, `{"error":"too many failed attempts; try again in `+secs+`s"}`)
+	if got := r.header.Get("Retry-After"); got != secs {
+		t.Fatalf("Retry-After %q, want %q", got, secs)
+	}
+	if len(r.resp.Cookies()) != 0 {
+		t.Fatal("blocked login set a cookie")
+	}
+}
+
+func TestLoginRateLimit(t *testing.T) {
+	h := newHarness(t)
+	for i := 0; i < 5; i++ {
+		expect(t, h.loginAs("admin", "wrong"), 401, `{"error":"invalid username or password"}`)
+	}
+	// Blocked: the password is not checked and the failed-login delay is
+	// skipped. Less than a second has passed, so 60s rounds up to 60.
+	h.srv.loginDelay = time.Second
+	start := time.Now()
+	expectBlocked(t, h.loginAs("admin", adminPW), "60")
+	expectBlocked(t, h.loginAs("admin", "wrong"), "60")
+	if d := time.Since(start); d >= time.Second {
+		t.Fatalf("blocked login answered after %v", d)
+	}
+	h.srv.loginDelay = 0
+
+	// Other usernames and other addresses are separate keys.
+	h.login("viewer", viewerPW)
+	expect(t, h.loginAs("root", "x"), 401, "")
+	if c := h.loginFrom("192.0.2.7:4000", "admin", adminPW); c != 200 {
+		t.Fatalf("other IPv4 address: %d", c)
+	}
+	if c := h.loginFrom("[2001:db8::7]:4000", "admin", adminPW); c != 200 {
+		t.Fatalf("other IPv6 address: %d", c)
+	}
+	// The test client is 127.0.0.1 on another port: same key.
+	if c := h.loginFrom("127.0.0.1:1", "admin", adminPW); c != 429 {
+		t.Fatalf("same address, other port: %d", c)
+	}
+}
+
+func TestLoginRateLimitSuccessResets(t *testing.T) {
+	h := newHarness(t)
+	for i := 0; i < 4; i++ {
+		expect(t, h.loginAs("admin", "wrong"), 401, "")
+	}
+	h.login("admin", adminPW)
+	for i := 0; i < 4; i++ {
+		expect(t, h.loginAs("admin", "wrong"), 401, "")
+	}
+	h.login("admin", adminPW)
+	for i := 0; i < 5; i++ {
+		expect(t, h.loginAs("admin", "wrong"), 401, "")
+	}
+	expectBlocked(t, h.loginAs("admin", adminPW), "60")
+}
+
+func TestLoginRateLimitBlockExpires(t *testing.T) {
+	h := newHarness(t)
+	h.srv.loginBlock = 400 * time.Millisecond
+	for i := 0; i < 5; i++ {
+		expect(t, h.loginAs("admin", "wrong"), 401, "")
+	}
+	// A partial second rounds up to 1. Attempts while blocked are not
+	// counted and do not extend the block.
+	for i := 0; i < 3; i++ {
+		expectBlocked(t, h.loginAs("admin", "wrong"), "1")
+	}
+	time.Sleep(450 * time.Millisecond)
+	// The five failures are still within the window, so one more failure
+	// blocks again at once.
+	expect(t, h.loginAs("admin", "wrong"), 401, "")
+	expectBlocked(t, h.loginAs("admin", adminPW), "1")
+	time.Sleep(450 * time.Millisecond)
+	h.login("admin", adminPW)
+	for i := 0; i < 4; i++ {
+		expect(t, h.loginAs("admin", "wrong"), 401, "")
+	}
+}
+
+func TestLoginRateLimitWindow(t *testing.T) {
+	h := newHarness(t)
+	h.srv.loginWindow = 200 * time.Millisecond
+	for i := 0; i < 4; i++ {
+		expect(t, h.loginAs("admin", "wrong"), 401, "")
+	}
+	time.Sleep(250 * time.Millisecond)
+	// The earlier failures have left the window.
+	for i := 0; i < 4; i++ {
+		expect(t, h.loginAs("admin", "wrong"), 401, "")
+	}
+	h.login("admin", adminPW)
+}
+
+func TestLoginRateLimitConcurrent(t *testing.T) {
+	h := newHarness(t)
+	codes := make(chan int, 20)
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			codes <- h.loginFrom("198.51.100.1:1", "admin", "wrong")
+		}()
+	}
+	wg.Wait()
+	close(codes)
+	n := map[int]int{}
+	for c := range codes {
+		n[c]++
+	}
+	if n[401] != 5 || n[429] != 15 {
+		t.Fatalf("codes %v", n)
+	}
+}
+
+func TestClientKey(t *testing.T) {
+	for addr, ip := range map[string]string{
+		"192.0.2.1:5000":          "192.0.2.1",
+		"[2001:db8::1]:5000":      "2001:db8::1",
+		"[2001:DB8:0::1]:5000":    "2001:db8::1",
+		"[::ffff:192.0.2.1]:5000": "192.0.2.1",
+		"[fe80::1%en0]:5000":      "fe80::1%en0",
+		"@":                       "@", // e.g. a unix socket listener
+	} {
+		r := httptest.NewRequest("POST", "/", nil)
+		r.RemoteAddr = addr
+		if k := clientKey(r, "admin"); k != (loginKey{"admin", ip}) {
+			t.Errorf("%s: %+v", addr, k)
+		}
+	}
+	r := httptest.NewRequest("POST", "/", nil)
+	if k := clientKey(r, strings.Repeat("u", 1000)); len(k.username) != 64 {
+		t.Errorf("username length %d", len(k.username))
+	}
+}
+
+func TestLoginRateLimitCap(t *testing.T) {
+	h := newHarness(t)
+	s := h.srv
+	s.loginMaxKeys = 3
+	key := func(n string) loginKey { return loginKey{n, "192.0.2.1"} }
+	keys := func() []string {
+		s.loginMu.Lock()
+		defer s.loginMu.Unlock()
+		var out []string
+		for k := range s.loginFails {
+			out = append(out, k.username)
+		}
+		sort.Strings(out)
+		return out
+	}
+	t0 := time.Now()
+	for i, n := range []string{"a", "b", "c"} {
+		s.loginAttempt(key(n), t0.Add(time.Duration(i)*time.Second))
+	}
+	// Full and nothing expired: the least recently failed key goes.
+	s.loginAttempt(key("d"), t0.Add(3*time.Second))
+	if got := keys(); !reflect.DeepEqual(got, []string{"b", "c", "d"}) {
+		t.Fatalf("keys %v", got)
+	}
+	// b has expired; it is dropped and c, the oldest live key, stays.
+	s.loginAttempt(key("e"), t0.Add(s.loginWindow+1500*time.Millisecond))
+	if got := keys(); !reflect.DeepEqual(got, []string{"c", "d", "e"}) {
+		t.Fatalf("keys %v", got)
+	}
+	// A blocked key outlives its window until the block ends.
+	s.loginWindow = time.Second
+	s.loginBlock = time.Hour
+	for i := 0; i < 5; i++ {
+		s.loginAttempt(key("c"), t0.Add(6*time.Minute))
+	}
+	s.loginAttempt(key("f"), t0.Add(10*time.Minute))
+	if got := keys(); !reflect.DeepEqual(got, []string{"c", "f"}) {
+		t.Fatalf("keys %v", got)
+	}
+	if wait := s.loginAttempt(key("c"), t0.Add(10*time.Minute)); wait <= 0 {
+		t.Fatal("blocked key lost")
+	}
+}
+
+func heartbeatWith(count, rate, idle string) esl.Message {
+	return esl.Message{Kind: esl.KindEvent, Headers: map[string]string{
+		"Event-Name": "HEARTBEAT", "Session-Count": count, "Session-Per-Sec-Last": rate, "Idle-CPU": idle,
+	}}
+}
+
+func (h *harness) instance(id string) *instance {
+	h.srv.mu.Lock()
+	defer h.srv.mu.Unlock()
+	return h.srv.insts[id]
+}
+
+type historyReply struct {
+	Samples []sample `json:"samples"`
+}
+
+func TestHistory(t *testing.T) {
+	h := newHarness(t)
+	viewer := h.login("viewer", viewerPW)
+	p := "/api/instances/" + h.id + "/history"
+	expect(t, h.do("GET", p, viewer, ""), 200, `{"samples":[]}`)
+
+	f := h.fake(0)
+	inst := h.instance(h.id)
+	before := time.Now().Unix()
+	f.publish(heartbeatWith("3", "2", "97.25"))
+	f.publish(logMsg("3", "log line"))
+	f.publish(esl.Message{Kind: esl.KindEvent, Headers: map[string]string{"Event-Name": "CUSTOM", "Session-Count": "9"}})
+	f.publish(esl.Message{Kind: esl.KindState, Headers: map[string]string{"connected": "true"}})
+	f.publish(heartbeatWith("x", "", "NaN"))
+	f.publish(esl.Message{Kind: esl.KindEvent, Headers: map[string]string{"Event-Name": "HEARTBEAT", "Idle-CPU": "Inf"}})
+	f.publish(heartbeatWith("1.5", "-1", "1e400"))
+	waitFor(t, "samples", func() bool { return len(inst.samples()) == 4 })
+	after := time.Now().Unix()
+
+	// Readable while disconnected; nothing is sent.
+	f.set(func(f *fakeSwitch) { f.state.Connected = false; f.sent = nil })
+	r := h.do("GET", p, viewer, "")
+	expect(t, r, 200, "")
+	var got historyReply
+	r.json(t, &got)
+	want := []sample{{Sessions: 3, Rate: 2, Idle: 97.25}, {}, {}, {Rate: -1}}
+	for i := range got.Samples {
+		if ts := got.Samples[i].T; ts < before || ts > after {
+			t.Errorf("sample %d time %d", i, ts)
+		}
+		got.Samples[i].T = 0
+	}
+	if !reflect.DeepEqual(got.Samples, want) {
+		t.Fatalf("samples %s", r.body)
+	}
+	if sent, levels, _, _ := f.snapshot(); len(sent) != 0 || len(levels) != 0 {
+		t.Fatalf("sent %q, log levels %v", sent, levels)
+	}
+	expect(t, h.do("GET", "/api/instances/0000000000000000/history", viewer, ""), 404, `{"error":"instance not found"}`)
+}
+
+func TestHistoryRing(t *testing.T) {
+	inst := newInstance(newFake("a", "b"))
+	defer inst.close()
+	for i := 0; i < 3; i++ {
+		inst.addSample(sample{T: int64(i)})
+	}
+	if got := inst.samples(); len(got) != 3 || got[0].T != 0 || got[2].T != 2 {
+		t.Fatalf("samples %v", got)
+	}
+	for i := 3; i < historySize+40; i++ {
+		inst.addSample(sample{T: int64(i)})
+	}
+	got := inst.samples()
+	if len(got) != historySize {
+		t.Fatalf("%d samples", len(got))
+	}
+	for i, s := range got {
+		if s.T != int64(40+i) {
+			t.Fatalf("sample %d: %d", i, s.T)
+		}
+	}
+}
+
+func stopped(inst *instance) bool {
+	select {
+	case <-inst.collected:
+		return true
+	default:
+		return false
+	}
+}
+
+func TestHistoryCollectorLifetime(t *testing.T) {
+	h := newHarness(t)
+	admin := h.login("admin", adminPW)
+	p := "/api/instances/" + h.id
+
+	// Update: the old collector has returned when the PUT answers, and the
+	// new instance starts with an empty history.
+	old := h.instance(h.id)
+	h.fake(0).publish(heartbeat)
+	waitFor(t, "sample", func() bool { return len(old.samples()) == 1 })
+	expect(t, h.do("PUT", p, admin, `{"name":"fs01","host":"10.0.0.6","port":8021,"password":""}`), 200, "")
+	if !stopped(old) {
+		t.Fatal("collector running after update")
+	}
+	if _, _, subs, _ := h.fake(0).snapshot(); subs != 0 {
+		t.Fatalf("old switch has %d subscribers", subs)
+	}
+	expect(t, h.do("GET", p+"/history", admin, ""), 200, `{"samples":[]}`)
+	if _, _, subs, _ := h.fake(1).snapshot(); subs != 1 {
+		t.Fatalf("new switch has %d subscribers", subs)
+	}
+
+	// Delete.
+	cur := h.instance(h.id)
+	expect(t, h.do("DELETE", p, admin, ""), 204, "")
+	if !stopped(cur) {
+		t.Fatal("collector running after delete")
+	}
+
+	// The switch closing on its own ends the collector too.
+	r := h.do("POST", "/api/instances", admin, `{"name":"b","host":"h","port":1,"password":"p"}`)
+	var v instanceView
+	r.json(t, &v)
+	inst := h.instance(v.ID)
+	h.fake(2).Close()
+	waitFor(t, "collector end", func() bool { return stopped(inst) })
+
+	// Server.Close.
+	r = h.do("POST", "/api/instances", admin, `{"name":"c","host":"h","port":1,"password":"p"}`)
+	r.json(t, &v)
+	inst = h.instance(v.ID)
+	h.srv.Close()
+	if !stopped(inst) {
+		t.Fatal("collector running after Close")
+	}
+}
+
+func TestDialplanDirectoryRoutes(t *testing.T) {
+	h := newHarness(t)
+	p := "/api/instances/" + h.id
+	for _, who := range []string{"admin", "viewer"} {
+		tok := h.login(who, map[string]string{"admin": adminPW, "viewer": viewerPW}[who])
+		expect(t, h.do("GET", p+"/dialplan", tok, ""), 200, `{"rows":[{"name":"default","count":2},{"name":"public","count":1}]}`)
+		expect(t, h.do("GET", p+"/directory", tok, ""), 200, `{"rows":[{"name":"10.0.0.1","count":3}]}`)
+
+		var doc struct{ Name, XML string }
+		r := h.do("GET", p+"/dialplan/default", tok, "")
+		expect(t, r, 200, "")
+		r.json(t, &doc)
+		if doc.Name != "default" || !strings.Contains(doc.XML, `<action application="bridge" data="user/1000"/>`) {
+			t.Fatalf("dialplan %s", r.body)
+		}
+		r = h.do("GET", p+"/directory/10.0.0.1", tok, "")
+		expect(t, r, 200, "")
+		r.json(t, &doc)
+		for _, secret := range []string{"sip-S3cret", "vm-S3cret", "a1-S3cret"} {
+			if strings.Contains(r.body, secret) {
+				t.Fatalf("directory leaks %s: %s", secret, r.body)
+			}
+		}
+		if doc.Name != "10.0.0.1" || strings.Count(doc.XML, `value="********"`) != 3 || !strings.Contains(doc.XML, `<variable name="user_context" value="default"/>`) {
+			t.Fatalf("directory %s", r.body)
+		}
+		expect(t, h.do("GET", p+"/dialplan/nope", tok, ""), 404, `{"error":"not found: context nope"}`)
+		expect(t, h.do("GET", p+"/directory/nope", tok, ""), 404, `{"error":"not found: domain nope"}`)
+	}
+	admin := h.login("admin", adminPW)
+	h.fake(0).set(func(f *fakeSwitch) {
+		f.replies["xml_locate dialplan"] = "can't find anything\n"
+		f.replies["xml_locate directory"] = "can't find anything\n"
+	})
+	expect(t, h.do("GET", p+"/dialplan", admin, ""), 200, `{"rows":[]}`)
+	expect(t, h.do("GET", p+"/directory", admin, ""), 200, `{"rows":[]}`)
+	expect(t, h.do("GET", p+"/dialplan/a%20b", admin, ""), 400, `{"error":"invalid argument: invalid context name"}`)
+	expect(t, h.do("GET", p+"/directory/a%20b", admin, ""), 400, `{"error":"invalid argument: invalid domain name"}`)
 }

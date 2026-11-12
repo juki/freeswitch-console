@@ -234,6 +234,97 @@ func Config(ctx context.Context, c Commander, name string) (string, error) {
 	return out, nil
 }
 
+// SectionItem is one named entry of the dialplan or directory section.
+type SectionItem struct {
+	Name  string `json:"name"`
+	Count int    `json:"count"`
+}
+
+// DialplanContexts returns one item per dialplan <context>, counting its
+// <extension> children, sorted by name.
+func DialplanContexts(ctx context.Context, c Commander) ([]SectionItem, error) {
+	return sectionItems(ctx, c, "dialplan", "context", "extension", false)
+}
+
+// DialplanContext returns one dialplan context as masked, indented XML.
+func DialplanContext(ctx context.Context, c Commander, name string) (string, error) {
+	return sectionEntry(ctx, c, "dialplan", "context", name)
+}
+
+// DirectoryDomains returns one item per directory <domain>, counting every
+// <user> element below it (pointer entries included), sorted by name.
+func DirectoryDomains(ctx context.Context, c Commander) ([]SectionItem, error) {
+	return sectionItems(ctx, c, "directory", "domain", "user", true)
+}
+
+// DirectoryDomain returns one directory domain as masked, indented XML.
+func DirectoryDomain(ctx context.Context, c Commander, name string) (string, error) {
+	return sectionEntry(ctx, c, "directory", "domain", name)
+}
+
+// sectionItems lists the <item> children of an xml_locate section and counts
+// the <child> elements below each: direct children only, or at any depth.
+func sectionItems(ctx context.Context, c Commander, section, item, child string, anyDepth bool) ([]SectionItem, error) {
+	cmd := "xml_locate " + section
+	body, err := run(ctx, c, cmd)
+	if err != nil {
+		return nil, err
+	}
+	list := []SectionItem{}
+	if strings.TrimSpace(body) == notFoundReply {
+		return list, nil
+	}
+	d := newDecoder(body)
+	depth, cur := 0, -1 // cur indexes the item being read
+	for {
+		tok, err := d.Token()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, badReply(cmd, err)
+		}
+		switch t := tok.(type) {
+		case xml.StartElement:
+			depth++
+			switch {
+			case depth == 2 && t.Name.Local == item:
+				list = append(list, SectionItem{Name: attr(t, "name")})
+				cur = len(list) - 1
+			case depth == 2:
+				cur = -1
+			case cur >= 0 && t.Name.Local == child && (anyDepth || depth == 3):
+				list[cur].Count++
+			}
+		case xml.EndElement:
+			depth--
+		}
+	}
+	sort.SliceStable(list, func(i, j int) bool { return list[i].Name < list[j].Name })
+	return list, nil
+}
+
+// sectionEntry returns "xml_locate <section> <tag> name <name>" as masked,
+// indented XML.
+func sectionEntry(ctx context.Context, c Commander, section, tag, name string) (string, error) {
+	if !nameRe.MatchString(name) {
+		return "", fmt.Errorf("%w: invalid %s name", ErrInvalidArgument, tag)
+	}
+	cmd := "xml_locate " + section + " " + tag + " name " + name
+	body, err := run(ctx, c, cmd)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(body) == notFoundReply {
+		return "", fmt.Errorf("%w: %s %s", ErrNotFound, tag, name)
+	}
+	out, err := MaskXML(body)
+	if err != nil {
+		return "", badReply(cmd, err)
+	}
+	return out, nil
+}
+
 // HangupChannel kills the channel with the given uuid.
 func HangupChannel(ctx context.Context, c Commander, uuid string) (string, error) {
 	if !uuidRe.MatchString(uuid) {
