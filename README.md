@@ -155,7 +155,8 @@ go vet ./... && go test -race ./...
 ```
 
 No third-party Go modules and no frontend build step: `web/static` is served
-as is.
+as is. While working on the frontend, `./fsdeck -static web/static` serves the
+files from disk, so a browser reload shows the change without rebuilding.
 
 ## License
 

@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"flag"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
@@ -23,7 +24,13 @@ import (
 func main() {
 	listen := flag.String("listen", envOr("FSDECK_LISTEN", "127.0.0.1:8080"), "HTTP listen address")
 	data := flag.String("data", envOr("FSDECK_DATA", "fsdeck.json"), "path of the instance list file")
+	static := flag.String("static", "", "serve the frontend from this directory instead of the embedded copy (frontend development)")
 	flag.Parse()
+
+	var assets fs.FS = web.Static()
+	if *static != "" {
+		assets = os.DirFS(*static)
+	}
 
 	adminPassword := os.Getenv("FSDECK_ADMIN_PASSWORD")
 	if adminPassword == "" {
@@ -41,7 +48,7 @@ func main() {
 		ViewerPassword: os.Getenv("FSDECK_VIEWER_PASSWORD"),
 		Store:          st,
 		Dial:           dial,
-		Static:         web.Static(),
+		Static:         assets,
 	})
 	if err != nil {
 		log.Fatal(err)
