@@ -53,3 +53,34 @@ export function renderXML(text) {
   return h('pre', { class: 'xml', tabIndex: 0 },
     lines.map((line) => h('span', { class: 'xl' }, tokenizeLine(line) || line)));
 }
+
+// wellFormed is a quick structural check: tags balance, attribute values are
+// quoted, every "<" starts markup and every "&" an entity. It lets callers
+// skip DOMParser on broken input, whose error document Chrome builds with an
+// inline style that the Content-Security-Policy then reports.
+const MARKUP = /<!--[\s\S]*?-->|<\?[\s\S]*?\?>|<!\[CDATA\[[\s\S]*?\]\]>|<(\/?)([A-Za-z_:][\w:.-]*)((?:\s+[A-Za-z_:][\w:.-]*\s*=\s*(?:"[^"<]*"|'[^'<]*'))*)\s*(\/?)>/g;
+const BAD_AMP = /&(?!(?:amp|lt|gt|quot|apos|#\d+|#x[0-9a-fA-F]+);)/;
+
+export function wellFormed(text) {
+  const stack = [];
+  let roots = 0;
+  let last = 0;
+  MARKUP.lastIndex = 0;
+  for (let m = MARKUP.exec(text); m; m = MARKUP.exec(text)) {
+    const between = text.slice(last, m.index);
+    if (between.includes('<') || BAD_AMP.test(between) || (!stack.length && between.trim())) return false;
+    last = MARKUP.lastIndex;
+    if (!m[2]) continue; // comment, processing instruction, CDATA
+    if (BAD_AMP.test(m[3])) return false;
+    if (m[1]) {
+      if (m[4] || stack.pop() !== m[2]) return false;
+    } else if (!m[4]) {
+      if (!stack.length) roots++;
+      stack.push(m[2]);
+    } else if (!stack.length) {
+      roots++;
+    }
+  }
+  const rest = text.slice(last);
+  return !stack.length && roots === 1 && !rest.includes('<') && !rest.trim();
+}

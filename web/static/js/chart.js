@@ -31,6 +31,35 @@ function niceStep(span, count) {
   return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10) * p;
 }
 
+// decimate keeps the lowest and the highest point of every pixel column, in
+// time order, so a dense series keeps its peaks without drawing every sample.
+function decimate(points, x0, pxPerMs) {
+  const out = [];
+  let col = null;
+  let lo = null;
+  let hi = null;
+  const flush = () => {
+    if (!lo) return;
+    if (lo === hi) out.push(lo);
+    else if (lo[0] <= hi[0]) out.push(lo, hi);
+    else out.push(hi, lo);
+  };
+  for (const p of points) {
+    const c = Math.floor((p[0] - x0) * pxPerMs);
+    if (c !== col) {
+      flush();
+      col = c;
+      lo = p;
+      hi = p;
+    } else {
+      if (p[1] < lo[1]) lo = p;
+      if (p[1] > hi[1]) hi = p;
+    }
+  }
+  flush();
+  return out;
+}
+
 // nearest returns the index of the point closest in time to t.
 function nearest(points, t) {
   let lo = 0;
@@ -175,12 +204,19 @@ export function timeChart({ scope, height = 240, gapMs = 45000, emptyText = 'Col
       }
       seg = [];
     };
-    for (let i = 0; i < visible.length; i++) {
-      if (i && visible[i][0] - visible[i - 1][0] > gapMs) flushSeg();
-      seg.push([sx(visible[i][0]), sy(visible[i][1])]);
+    const drawn = visible.length > pw * 2 ? decimate(visible, from, pw / (to - from)) : visible;
+    for (let i = 0; i < drawn.length; i++) {
+      if (i && drawn[i][0] - drawn[i - 1][0] > gapMs) flushSeg();
+      seg.push([sx(drawn[i][0]), sy(drawn[i][1])]);
     }
     flushSeg();
     gPlot.append(s('path', { d: area, fill: `url(#${id}g)` }), s('path', { class: 'chart-line', d: line }));
+    // Sparse series (a FreeSWITCH heartbeat every 20s) show their samples, so
+    // a few points read as measurements rather than as a broken line.
+    const inWindow = visible.filter((p) => p[0] >= from);
+    if (inWindow.length <= Math.min(60, pw / 14)) {
+      for (const p of inWindow) gPlot.append(s('circle', { class: 'chart-pt', cx: sx(p[0]).toFixed(1), cy: sy(p[1]).toFixed(1), r: 2.5 }));
+    }
     const last = visible[visible.length - 1];
     if (last[0] >= from) gNow.append(s('circle', { class: 'chart-now', cx: sx(last[0]), cy: sy(last[1]), r: 3 }));
     svg.setAttribute('aria-label', series.label + ': ' + series.format(last[1]) + ' at ' + clock(last[0], true));

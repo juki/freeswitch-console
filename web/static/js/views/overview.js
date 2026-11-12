@@ -1,18 +1,49 @@
 // Overview: live load figures, a load chart, system facts and a summary of
 // SIP and calls. /status is polled every 5s; heartbeats update in between.
-// The chart is fed from those same samples, kept per instance for 30 minutes
-// while the page is open, so switching tabs does not lose the curve.
+//
+// The chart combines two sources. /history is the server's ring of one sample
+// per FreeSWITCH heartbeat (up to 2 hours). Live samples come from the status
+// polls and heartbeat events this page receives; they are denser but only
+// exist while the overview is open, and are kept per instance for the page
+// lifetime so switching tabs keeps them. The rule:
+//   - live samples win where they exist: a server sample that falls inside a
+//     stretch of live samples (no gap over 45s) is dropped, because it is the
+//     same heartbeat the page already saw, so nothing is counted twice;
+//   - everywhere else the server samples fill in;
+//   - server samples newer than the browser clock are dropped, and later live
+//     samples are only appended, so time never runs backwards;
+//   - if /history fails the chart is live-only.
 
 import { api, instPath, isAbort, rowsOf } from '../api.js';
-import { h, DASH, fmtInt, fmtPct, fmtUptime } from '../dom.js';
+import { h, DASH, fmtDuration, fmtInt, fmtPct, fmtUptime } from '../dom.js';
 import { icon } from '../icons.js';
 import { clock, timeChart } from '../chart.js';
 import { connectionHint, errorState, emptyState, kv, meter, panel, pill, segmented, skeleton, sparkline, stateTone } from '../ui.js';
 
 const GW_DOWN = /^(FAIL|DOWN|TIMEOUT|EXPIRED|UNREGED)/i;
-const KEEP_MS = 30 * 60 * 1000;
-const KEEP_N = 5000;
-const history = new Map(); // instance id -> [{t, sessions, rate, idle, capacity}]
+const KEEP_MS = 2 * 60 * 60 * 1000;
+const KEEP_N = 20000;
+const RUN_GAP = 45000;
+const liveCache = new Map(); // instance id -> live samples [{t (ms), sessions, rate, idle}]
+
+function trim(list, now) {
+  let cut = 0;
+  while (cut < list.length && (list.length - cut > KEEP_N || list[cut].t < now - KEEP_MS)) cut++;
+  if (cut) list.splice(0, cut);
+}
+
+// combine merges server history with live samples (see the rule at the top).
+function combine(server, live, now) {
+  const runs = [];
+  for (const x of live) {
+    const r = runs[runs.length - 1];
+    if (r && x.t - r[1] <= RUN_GAP) r[1] = x.t;
+    else runs.push([x.t, x.t]);
+  }
+  // server times are whole seconds, hence the 1s of slack around each run
+  const kept = server.filter((x) => x.t <= now && !runs.some(([a, b]) => x.t >= a - 1000 && x.t <= b + 1000));
+  return kept.concat(live).sort((a, b) => a.t - b.t);
+}
 
 const METRICS = {
   sessions: {
@@ -34,10 +65,9 @@ const METRICS = {
 };
 
 const RANGES = [
-  { key: '1', label: '1m', ms: 60e3 },
-  { key: '5', label: '5m', ms: 5 * 60e3 },
-  { key: '15', label: '15m', ms: 15 * 60e3 },
-  { key: '30', label: '30m', ms: 30 * 60e3 },
+  { key: '5', label: '5m', title: 'Up to the last 5 minutes', ms: 5 * 60e3 },
+  { key: '30', label: '30m', title: 'Up to the last 30 minutes', ms: 30 * 60e3 },
+  { key: '120', label: '2h', title: 'Up to the last 2 hours (all the history fsdeck keeps)', ms: 120 * 60e3 },
 ];
 
 function tileSkeleton() {
@@ -46,8 +76,10 @@ function tileSkeleton() {
 
 export function mountOverview({ id, scope, root, setState }) {
   const base = '#/i/' + encodeURIComponent(id) + '/';
-  const samples = history.get(id) || [];
-  history.set(id, samples);
+  const live = liveCache.get(id) || [];
+  liveCache.set(id, live);
+  let series = live.slice(); // what the chart draws: history + live, oldest first
+  let historyState = 'loading'; // loading | ok | failed
   let metric = 'sessions';
   let range = RANGES[1];
 
@@ -82,7 +114,7 @@ export function mountOverview({ id, scope, root, setState }) {
   // ---- load chart ----
   const chart = timeChart({ scope, height: 260 });
   const since = h('span', { class: 'panel-note' });
-  const rangeSeg = segmented(RANGES.map((r) => ({ key: r.key, label: r.label, title: 'Last ' + r.label.replace('m', ' minutes') })), range.key, (k) => {
+  const rangeSeg = segmented(RANGES.map((r) => ({ key: r.key, label: r.label, title: r.title })), range.key, (k) => {
     range = RANGES.find((r) => r.key === k);
     draw();
   }, 'sm');
@@ -116,27 +148,70 @@ export function mountOverview({ id, scope, root, setState }) {
     draw();
   }
 
-  function draw() {
-    const now = Date.now();
-    const points = samples.filter((x) => Number.isFinite(x[metric])).map((x) => [x.t, x[metric]]);
-    // The window grows with the history (at least a minute) up to the chosen range.
-    const first = points.length ? points[0][0] : now;
-    chart.setData(points, { from: Math.max(now - range.ms, Math.min(first, now - 60e3)), to: now });
-    since.textContent = samples.length ? 'live since ' + clock(samples[0].t) : 'live';
+  function value(x, key) {
+    if (key !== 'capacity') return x[key];
+    return limit && Number.isFinite(x.sessions) ? (x.sessions / limit) * 100 : undefined;
   }
 
-  // record stores one sample (any field may be missing) and redraws.
+  function draw() {
+    const now = Date.now();
+    const points = [];
+    for (const x of series) {
+      const v = value(x, metric);
+      if (Number.isFinite(v)) points.push([x.t, v]);
+    }
+    // The window grows with the data (at least two minutes) up to the chosen
+    // range, so a short history fills the chart instead of hugging its edge.
+    const first = points.length ? points[0][0] : now;
+    const from = Math.max(now - range.ms, Math.min(first, now - 120e3));
+    chart.setData(points, { from, to: now });
+    since.textContent = caption(from, now);
+  }
+
+  // caption says what the chart shows: the span, and where history and live data start.
+  function caption(from, now) {
+    const parts = ['Last ' + fmtDuration((now - from) / 1000).replace(/ 00[ms]$/, '')];
+    const firstLive = live.find((x) => x.t >= from);
+    const firstServer = series.find((x) => x.t >= from && x.src === 'history');
+    if (firstServer) parts.push('heartbeat history from ' + clock(firstServer.t));
+    if (firstLive) parts.push('live since ' + clock(firstLive.t, true));
+    if (historyState === 'failed') parts.push('history unavailable');
+    return parts.join(' · ');
+  }
+
+  function seedSparks() {
+    for (const k of ['sessions', 'rate', 'idle']) sparks[k].set(series.slice(-60).map((x) => x[k]));
+  }
+
+  // record stores one live sample (any field may be missing) and redraws.
   function record(sample) {
     const t = Date.now();
-    samples.push({ t, ...sample });
-    while (samples.length > KEEP_N || (samples.length && samples[0].t < t - KEEP_MS)) samples.shift();
+    const x = { t, ...sample };
+    live.push(x);
+    trim(live, t);
+    const last = series[series.length - 1];
+    if (!last || t >= last.t) series.push(x);
+    trim(series, t);
     draw();
   }
 
-  // Sparklines pick up where the cached history left off.
-  for (const x of samples.slice(-60)) {
-    for (const k of ['sessions', 'rate', 'idle']) sparks[k].push(x[k]);
-  }
+  seedSparks();
+
+  api('GET', instPath(id, 'history'), { signal: scope.signal }).then((data) => {
+    const server = (data && Array.isArray(data.samples) ? data.samples : [])
+      .filter((x) => x && Number.isFinite(Number(x.t)))
+      .map((x) => ({ t: Number(x.t) * 1000, sessions: Number(x.sessions), rate: Number(x.rate), idle: Number(x.idle), src: 'history' }));
+    const now = Date.now();
+    historyState = 'ok';
+    series = combine(server, live, now);
+    trim(series, now);
+    seedSparks();
+    draw();
+  }, (err) => {
+    if (isAbort(err)) return;
+    historyState = 'failed';
+    draw();
+  });
 
   const foot = (el, parts) => el.replaceChildren(...parts.flatMap(([label, value], i) => [i ? ' · ' : '', label + ' ', h('b', { text: value })]));
 
@@ -156,7 +231,6 @@ export function mountOverview({ id, scope, root, setState }) {
       sparks.sessions.push(sessions);
       if (limit) {
         const f = sessions / limit;
-        sample.capacity = f * 100;
         tiles.capacity.value.textContent = fmtPct(f * 100, f < 0.1 ? 1 : 0);
         capMeter.set(f, f > 0.9 ? 'bad' : f > 0.7 ? 'warn' : '');
         tiles.capacity.foot.replaceChildren(h('b', { text: fmtInt(sessions) }), ' of ', h('b', { text: fmtInt(limit) }), ' sessions');

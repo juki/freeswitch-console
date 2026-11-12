@@ -445,6 +445,20 @@ export function sparkline({ zero = true, capacity = 60 } = {}) {
       if (values.length > capacity) values.shift();
       draw();
     },
+    // set replaces the series, e.g. with the tail of a loaded history.
+    set(list) {
+      values.length = 0;
+      for (const v of list) {
+        const n = Number(v);
+        if (Number.isFinite(n)) values.push(n);
+      }
+      values.splice(0, Math.max(0, values.length - capacity));
+      if (values.length < 2) {
+        line.setAttribute('d', '');
+        area.setAttribute('d', '');
+      }
+      draw();
+    },
   };
 }
 
