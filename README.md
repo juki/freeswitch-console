@@ -16,11 +16,13 @@ logs and a command console in the browser.
 | Area | What you get | ESL command behind it |
 |---|---|---|
 | Instances | one card per FreeSWITCH: connection, sessions, idle CPU, uptime, version | `json status` |
-| Overview | live sessions, session rate and idle CPU with sparklines, capacity, SIP and call summary | `json status`, `HEARTBEAT` events |
+| Overview | sessions, session rate, idle CPU and capacity over the last two hours as a chart, SIP and call summary | `json status`, `HEARTBEAT` events |
 | SIP | profiles, gateways, aliases, registrations; profile rescan | `sofia xmlstatus`, `show registrations` |
 | Calls | channels and bridged calls with live durations, every field in a side panel, hang up | `show channels`, `show calls`, `uuid_kill` |
-| Configuration | effective configuration as FreeSWITCH parsed it (highlighted XML), global variables, modules | `xml_locate`, `global_getvar`, `show modules` |
-| Logs | live log tail with level and text filters | `log <level>` |
+| Configuration | effective configuration as FreeSWITCH parsed it (highlighted XML with find), global variables, modules | `xml_locate`, `global_getvar`, `show modules` |
+| Dialplan | contexts and their extensions read as "if this matches, run these actions", or as XML | `xml_locate dialplan` |
+| Directory | domains with a users table (groups, caller id, context, whether a password is set), or as XML | `xml_locate directory` |
+| Logs | live log tail with level, severity and text filters | `log <level>` |
 | Console | any API command, like `fs_cli` | `api <command>` |
 
 Tables sort by any column and filter as you type. Light and dark themes; the
@@ -28,8 +30,10 @@ toggle in the sidebar cycles system, light, dark. When an instance cannot
 connect, the card says why in plain words (wrong password, ACL, nothing
 listening) next to the raw error.
 
-Passwords, DSNs and similar values are masked in the configuration and
-variable views.
+Passwords, DSNs and similar values are masked in the configuration, dialplan,
+directory and variable views, including secrets assigned inside a value such
+as `sip_auth_password=...` in a dial string. The load history is kept in
+memory, one sample per FreeSWITCH heartbeat (every 20 seconds by default).
 
 ## Quick start
 
@@ -106,6 +110,9 @@ these changes.
   TLS-terminating reverse proxy that sets `X-Forwarded-Proto: https`, so the
   session cookie is marked `Secure`.
 - ESL passwords are stored in clear in the data file. Protect that file.
+- Five failed sign-ins for an account from one address within five minutes
+  block that pair for a minute. Behind a reverse proxy every client shares the
+  proxy's address, so the block then applies to the account as a whole.
 - Log lines are not masked and can contain secrets; that is why logs are
   admin-only.
 
@@ -113,7 +120,6 @@ these changes.
 
 - Editing configuration files. The Event Socket has no file API; the plan is
   an optional agent on the FreeSWITCH host.
-- Dialplan and directory browsers.
 - SIP capture and metrics history. Homer and Prometheus cover those.
 
 ## Trying it against a stock FreeSWITCH in Docker
