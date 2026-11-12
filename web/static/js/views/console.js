@@ -9,7 +9,7 @@ const history = []; // kept in memory for the page lifetime
 const QUICK = ['status', 'version', 'sofia status', 'show channels', 'show calls', 'show registrations', 'reloadxml', 'reloadacl'];
 
 export function mountConsole({ id, scope, root }) {
-  const hint = h('div', { class: 'term-empty', text: 'Type a FreeSWITCH API command, the same ones fs_cli accepts. ↑ and ↓ recall earlier commands.' });
+  const hint = h('div', { class: 'term-empty' }, icon('terminal'), h('span', { text: 'Type a FreeSWITCH API command, the same ones fs_cli accepts. ↑ and ↓ recall earlier commands.' }));
   const out = h('div', { class: 'term-body', role: 'log', tabIndex: 0 }, hint);
   const input = h('input', {
     class: 'con-input', type: 'text', autocomplete: 'off', spellcheck: false,
@@ -20,9 +20,10 @@ export function mountConsole({ id, scope, root }) {
   const clearBtn = h('button', { type: 'button', class: 'btn btn-sm' }, icon('eraser'), 'Clear');
   const form = h('form', { class: 'con-form' }, h('span', { class: 'con-prompt', text: 'fs>' }), input, runBtn);
 
-  root.append(h('div', { class: 'term' },
+  root.append(h('div', { class: 'term console' },
     h('div', { class: 'term-bar' },
-      h('span', { class: 'term-title', text: 'API console' }),
+      h('span', { class: 'term-title' }, icon('terminal'), 'API console'),
+      h('span', { class: 'term-sep' }),
       h('div', { class: 'chips' }, chips),
       h('span', { class: 'spacer' }), clearBtn),
     out,

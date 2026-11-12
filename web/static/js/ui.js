@@ -1,5 +1,5 @@
 // Shared UI components: toasts, dialogs, the detail drawer, tables, pills,
-// sparklines and meters.
+// skeletons, sparklines and meters. The time-series chart is in chart.js.
 
 import { h, s, cellText, DASH } from './dom.js';
 import { icon } from './icons.js';
@@ -10,11 +10,18 @@ function cx(...names) {
 
 // ---------- feedback ----------
 
+const TOAST_MAX = 4;
+const TOAST_ICONS = { ok: 'check', error: 'alert', info: 'info' };
+
 export function toast(message, kind = 'ok', title) {
-  const item = h('div', { class: 'toast ' + kind },
+  const host = document.getElementById('toasts');
+  const item = h('div', { class: 'toast ' + kind, role: kind === 'error' ? 'alert' : undefined },
+    h('span', { class: 'toast-icon' }, icon(TOAST_ICONS[kind] || 'info')),
     h('div', { class: 'toast-body' }, title ? h('div', { class: 'toast-title', text: title }) : null, message),
     h('button', { type: 'button', class: 'btn btn-ghost btn-icon btn-sm', 'aria-label': 'Dismiss', on: { click: () => item.remove() } }, icon('x')));
-  document.getElementById('toasts').append(item);
+  host.append(item);
+  // A burst of toasts keeps only the newest few on screen.
+  while (host.childElementCount > TOAST_MAX) host.firstElementChild.remove();
   setTimeout(() => item.remove(), kind === 'error' ? 8000 : 4500);
 }
 
@@ -26,14 +33,16 @@ export function toastError(err, title) {
 }
 
 // openModal shows a modal dialog and returns {dialog, close}. The dialog is
-// removed from the document when it closes.
+// removed from the document when it closes, and focus goes back to where it was.
 export function openModal({ title, body, footer, onClose }) {
-  const dialog = h('dialog', { class: 'modal' },
+  const back = document.activeElement;
+  const dialog = h('dialog', { class: 'modal', 'aria-label': title },
     h('div', { class: 'modal-head' }, h('h2', { class: 'modal-title', text: title })),
     h('div', { class: 'modal-body' }, body),
     h('div', { class: 'modal-foot' }, footer));
   dialog.addEventListener('close', () => {
     dialog.remove();
+    if (back && back.isConnected && typeof back.focus === 'function') back.focus();
     if (onClose) onClose();
   });
   document.body.append(dialog);
@@ -58,6 +67,8 @@ export function confirmDialog({ title, message, confirmLabel = 'Confirm', danger
       result = true;
       m.close();
     });
+    // a destructive action never gets the default focus
+    (danger ? cancel : ok).focus();
   });
 }
 
@@ -72,28 +83,32 @@ export function closeDrawer() {
   d.backdrop.remove();
   d.el.remove();
   document.removeEventListener('keydown', d.onKey);
+  if (d.back && d.back.isConnected && typeof d.back.focus === 'function') d.back.focus({ preventScroll: true });
   if (d.onClose) d.onClose();
 }
 
 // openDrawer opens the right-hand detail panel (one at a time) and returns
 // {body, setTitle, close}.
-export function openDrawer({ title, subtitle, onClose }) {
+export function openDrawer({ title, subtitle, kicker, onClose }) {
+  const back = drawer ? drawer.back : document.activeElement;
   closeDrawer();
   const titleEl = h('div', { class: 'drawer-title', text: title });
   const subEl = h('div', { class: 'drawer-sub', text: subtitle || '' });
   const body = h('div', { class: 'drawer-body' });
+  const closeBtn = h('button', { type: 'button', class: 'btn btn-ghost btn-icon', 'aria-label': 'Close', title: 'Close (Esc)', on: { click: closeDrawer } }, icon('x'));
   const el = h('aside', { class: 'drawer', role: 'dialog', 'aria-label': title },
     h('div', { class: 'drawer-head' },
-      h('div', { class: 'spacer' }, titleEl, subEl),
-      h('button', { type: 'button', class: 'btn btn-ghost btn-icon', 'aria-label': 'Close', on: { click: closeDrawer } }, icon('x'))),
+      h('div', { class: 'spacer' }, kicker ? h('div', { class: 'drawer-kicker', text: kicker }) : null, titleEl, subEl),
+      closeBtn),
     body);
   const backdrop = h('div', { class: 'drawer-backdrop', on: { click: closeDrawer } });
   const onKey = (ev) => {
-    if (ev.key === 'Escape') closeDrawer();
+    if (ev.key === 'Escape' && !document.querySelector('dialog[open]')) closeDrawer();
   };
   document.addEventListener('keydown', onKey);
   document.body.append(backdrop, el);
-  drawer = { el, backdrop, onKey, onClose };
+  drawer = { el, backdrop, onKey, onClose, back };
+  closeBtn.focus({ preventScroll: true });
   return {
     body,
     setTitle(t, sub) {
@@ -104,18 +119,71 @@ export function openDrawer({ title, subtitle, onClose }) {
   };
 }
 
-// detailBody lists every field of a row: the non-empty ones as key/value
-// pairs (primary keys first), the empty ones as a single muted line.
+// copyList is a key/value list whose values copy themselves on click.
+function copyList(pairs) {
+  return h('dl', { class: 'kv' }, pairs.map(([k, v]) => {
+    const glyph = h('span', { class: 'copy-glyph' }, icon('copy'));
+    const btn = h('button', { type: 'button', class: 'copy-val', title: 'Copy value', 'aria-label': 'Copy ' + k }, h('span', { class: 'copy-text', text: v }), glyph);
+    const reset = () => {
+      if (!btn.classList.contains('copied')) return;
+      btn.classList.remove('copied');
+      glyph.replaceChildren(icon('copy'));
+    };
+    btn.addEventListener('click', async () => {
+      if (await copyText(v)) {
+        btn.classList.add('copied');
+        glyph.replaceChildren(icon('check'));
+      } else {
+        toast('The browser did not allow copying.', 'error');
+      }
+    });
+    btn.addEventListener('mouseleave', reset);
+    btn.addEventListener('blur', reset);
+    const row = h('div', { class: 'kv-row' }, h('dt', { text: k }), h('dd', null, btn));
+    row.dataset.k = (k + ' ' + v).toLowerCase();
+    return row;
+  }));
+}
+
+// detailBody lists every field of a row: the primary keys first, then the
+// other non-empty fields alphabetically, then the empty ones as one muted
+// line. A filter box narrows the lists; every value copies on click.
 export function detailBody(row, primary = []) {
   const keys = Object.keys(row);
   const filled = keys.filter((k) => cellText(row[k]) !== '');
-  const ordered = [...primary.filter((k) => filled.includes(k)), ...filled.filter((k) => !primary.includes(k))];
+  const top = primary.filter((k) => filled.includes(k));
+  const rest = filled.filter((k) => !primary.includes(k)).sort((a, b) => a.localeCompare(b));
   const blank = keys.filter((k) => cellText(row[k]) === '');
+  const section = (title, list) => ({
+    head: h('div', { class: 'drawer-section', text: title }),
+    dl: copyList(list.map((k) => [k, cellText(row[k])])),
+  });
+  const parts = [
+    top.length ? section('Summary', top) : null,
+    rest.length ? section((top.length ? 'All other fields' : 'Fields') + ' · ' + rest.length, rest) : null,
+  ].filter(Boolean);
+  const none = h('p', { class: 'note-empty', text: 'No field matches the filter.', hidden: true });
+  const filter = searchBox('Filter ' + filled.length + ' fields', (q) => {
+    let any = false;
+    for (const p of parts) {
+      let shown = 0;
+      for (const r of p.dl.children) {
+        r.hidden = Boolean(q) && !r.dataset.k.includes(q);
+        if (!r.hidden) shown++;
+      }
+      p.head.hidden = !shown;
+      p.dl.hidden = !shown;
+      any = any || shown > 0;
+    }
+    none.hidden = any;
+  }, 'sm');
   return [
-    h('div', { class: 'drawer-section', text: 'Fields' }),
-    kv(ordered.map((k) => [k, cellText(row[k])])),
-    blank.length ? h('div', { class: 'drawer-section', text: 'Empty fields (' + blank.length + ')' }) : null,
-    blank.length ? h('p', { class: 'mono faint', text: blank.join(', ') }) : null,
+    h('div', { class: 'drawer-filter' }, filter.el),
+    ...parts.flatMap((p) => [p.head, p.dl]),
+    none,
+    blank.length ? h('details', null,
+      h('summary', { text: 'Empty fields · ' + blank.length }),
+      h('p', { class: 'mono faint', text: blank.join(', ') })) : null,
   ];
 }
 
@@ -156,7 +224,7 @@ export function iconButton(name, label, onClick, cls) {
 
 export function emptyState({ icon: name = 'box', title, text, action, tone }) {
   return h('div', { class: cx('empty', tone) },
-    icon(name),
+    h('span', { class: 'empty-icon' }, icon(name)),
     h('div', { class: 'empty-title', text: title }),
     text ? h('div', { class: 'empty-text', text }) : null,
     action || null);
@@ -185,19 +253,30 @@ export function connectionHint(error) {
   return '';
 }
 
-export function loading() {
-  return h('div', { class: 'loading', text: 'Loading…' });
+const WIDTHS = ['w-75', 'w-90', 'w-45', 'w-60', 'w-30'];
+
+// skeleton is a placeholder shaped like the content it stands for: table
+// rows (cols > 1) or a list of lines (cols = 1).
+export function skeleton({ rows = 6, cols = 4 } = {}) {
+  return h('div', { class: 'skel', 'aria-busy': 'true', 'aria-label': 'Loading' },
+    Array.from({ length: rows }, (_, i) => (cols > 1
+      ? h('div', { class: 'skel-row' }, Array.from({ length: cols }, (_, j) => h('span', { class: 'skel-bar ' + WIDTHS[(i + j) % WIDTHS.length] })))
+      : h('span', { class: 'skel-bar ' + WIDTHS[i % WIDTHS.length] }))));
 }
 
 export function panel({ title, actions, flush }) {
+  const titleEl = h('h2', { class: 'panel-title', text: title });
   const countEl = h('span', { class: 'panel-count' });
   const body = h('div', { class: flush ? 'panel-body flush' : 'panel-body' });
   const el = h('section', { class: 'panel' },
-    h('div', { class: 'panel-head' }, h('h2', { class: 'panel-title', text: title }), countEl, h('span', { class: 'spacer' }), actions || null),
+    h('div', { class: 'panel-head' }, titleEl, countEl, h('span', { class: 'spacer' }), actions || null),
     body);
   return {
     el,
     body,
+    setTitle(t) {
+      titleEl.textContent = t;
+    },
     setCount(n) {
       countEl.textContent = n === null || n === undefined ? '' : String(n);
     },
@@ -205,13 +284,14 @@ export function panel({ title, actions, flush }) {
 }
 
 export function kv(pairs) {
-  return h('dl', { class: 'kv' }, pairs.map(([k, v]) => [h('dt', { text: k }), h('dd', null, v === '' || v === null || v === undefined ? DASH : v)]));
+  return h('dl', { class: 'kv' }, pairs.map(([k, v]) => h('div', { class: 'kv-row' },
+    h('dt', { text: k }), h('dd', null, v === '' || v === null || v === undefined ? DASH : v))));
 }
 
-export function searchBox(placeholder, onInput) {
+export function searchBox(placeholder, onInput, size) {
   const input = h('input', { type: 'search', class: 'input', placeholder, 'aria-label': placeholder, spellcheck: false, autocomplete: 'off' });
   input.addEventListener('input', () => onInput(input.value.trim().toLowerCase()));
-  return { el: h('label', { class: 'search' }, icon('search'), input), input };
+  return { el: h('label', { class: cx('search', size) }, icon('search'), input), input };
 }
 
 // rowMatches reports whether any field of the row contains q (lower case).
@@ -219,15 +299,15 @@ export function rowMatches(row, q) {
   return !q || Object.values(row).some((v) => cellText(v).toLowerCase().includes(q));
 }
 
-export function segmented(options, value, onChange) {
+export function segmented(options, value, onChange, size) {
   const buttons = new Map();
   const counts = new Map();
   const set = (key) => {
     for (const [k, b] of buttons) b.setAttribute('aria-pressed', String(k === key));
   };
-  const el = h('div', { class: 'segmented', role: 'group' }, options.map((o) => {
+  const el = h('div', { class: cx('segmented', size), role: 'group' }, options.map((o) => {
     const count = h('span', { class: 'count' });
-    const b = h('button', { type: 'button', on: { click: () => { set(o.key); onChange(o.key); } } }, o.label, count);
+    const b = h('button', { type: 'button', title: o.title, on: { click: () => { set(o.key); onChange(o.key); } } }, o.label, count);
     buttons.set(o.key, b);
     counts.set(o.key, count);
     return b;
@@ -269,7 +349,8 @@ export function dataTable({ columns, rows, onRow, keyOf, selected, empty, sort }
   }
   const head = h('tr', null, columns.map((c, i) => {
     const sortable = Boolean(sort && c.sortBy);
-    const th = h('th', { scope: 'col', class: cx(c.right && 'right', c.shrink && 'shrink', sortable && 'sortable'), text: c.label });
+    const th = h('th', { scope: 'col', class: cx(c.right && 'right', c.shrink && 'shrink', sortable && 'sortable') },
+      sortable ? h('span', { class: 'th' }, c.label, icon('sort')) : c.label);
     if (!sortable) return th;
     th.tabIndex = 0;
     th.setAttribute('aria-sort', sort.col === i ? (sort.dir > 0 ? 'ascending' : 'descending') : 'none');
@@ -310,9 +391,9 @@ export function dataTable({ columns, rows, onRow, keyOf, selected, empty, sort }
 }
 
 // tableHost is a scroll container whose content can be swapped without
-// losing the scroll position.
-export function tableHost() {
-  const el = h('div', { class: 'tbl-wrap' }, loading());
+// losing the scroll position. It shows a skeleton until the first show().
+export function tableHost({ rows = 4, cols = 4 } = {}) {
+  const el = h('div', { class: 'tbl-wrap' }, skeleton({ rows, cols }));
   return {
     el,
     show(node) {
@@ -324,18 +405,17 @@ export function tableHost() {
   };
 }
 
-// ---------- charts ----------
+// ---------- small charts ----------
 
-// sparkline keeps the last `capacity` samples. zero anchors the scale at 0;
-// otherwise the scale follows the data range.
-export function sparkline({ tone, zero = true, capacity = 60 } = {}) {
-  const W = 132;
-  const H = 40;
+// sparkline keeps the last `capacity` samples and stretches to its box.
+// zero anchors the scale at 0; otherwise the scale follows the data range.
+export function sparkline({ zero = true, capacity = 60 } = {}) {
+  const W = 120;
+  const H = 38;
   const PAD = 3;
   const area = s('path', { class: 'area', d: '' });
   const line = s('path', { class: 'line', d: '' });
-  const last = s('circle', { class: 'last', r: 2.6, cx: -10, cy: -10 });
-  const el = s('svg', { class: cx('spark', tone), viewBox: `0 0 ${W} ${H}`, 'aria-hidden': 'true' }, area, line, last);
+  const el = s('svg', { class: 'spark', viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: 'none', 'aria-hidden': 'true' }, area, line);
   const values = [];
 
   function draw() {
@@ -349,14 +429,11 @@ export function sparkline({ tone, zero = true, capacity = 60 } = {}) {
     }
     // The series always spans the full width; it only starts scrolling once
     // `capacity` samples are in.
-    const step = (W - 2 * PAD) / (values.length - 1);
-    const x0 = PAD;
-    const pts = values.map((v, i) => [x0 + i * step, H - PAD - ((v - lo) / (hi - lo)) * (H - 2 * PAD)]);
+    const step = W / (values.length - 1);
+    const pts = values.map((v, i) => [i * step, H - PAD - ((v - lo) / (hi - lo)) * (H - 2 * PAD - 4)]);
     const d = pts.map(([x, y], i) => (i ? 'L' : 'M') + x.toFixed(1) + ' ' + y.toFixed(1)).join(' ');
     line.setAttribute('d', d);
-    area.setAttribute('d', d + ` L${pts[pts.length - 1][0].toFixed(1)} ${H} L${pts[0][0].toFixed(1)} ${H} Z`);
-    last.setAttribute('cx', pts[pts.length - 1][0].toFixed(1));
-    last.setAttribute('cy', pts[pts.length - 1][1].toFixed(1));
+    area.setAttribute('d', d + ` L${W} ${H} L0 ${H} Z`);
   }
 
   return {

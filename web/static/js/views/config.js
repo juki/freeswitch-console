@@ -3,7 +3,7 @@
 import { api, instPath, isAbort, rowsOf } from '../api.js';
 import { h, cellText } from '../dom.js';
 import { icon } from '../icons.js';
-import { copyText, dataTable, emptyState, errorState, loading, panel, rowMatches, searchBox, segmented, sortState, tableHost, tag, toast } from '../ui.js';
+import { copyText, dataTable, emptyState, errorState, panel, rowMatches, searchBox, segmented, skeleton, sortState, tableHost, tag, toast } from '../ui.js';
 import { renderXML } from '../xml.js';
 
 const SUBS = {
@@ -32,15 +32,54 @@ export function mountConfig({ id, scope, root }) {
   show('configuration');
 }
 
+// Find in file uses the CSS Custom Highlight API where the browser has it to
+// mark the matched text; otherwise (and in addition) matching lines are tinted.
+const HL = typeof CSS !== 'undefined' && CSS.highlights && typeof Highlight === 'function';
+
+// rangesIn returns a Range for every occurrence of q (lower case) in el's text.
+function rangesIn(el, q) {
+  const nodes = [];
+  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+  let text = '';
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+    nodes.push([n, text.length]);
+    text += n.data;
+  }
+  // at maps a text offset to [node, offset]; an end offset may sit at a node's end
+  const at = (pos) => {
+    let i = nodes.length - 1;
+    while (i > 0 && nodes[i][1] >= pos) i--;
+    return [nodes[i][0], pos - nodes[i][1]];
+  };
+  const out = [];
+  const lower = text.toLowerCase();
+  for (let i = lower.indexOf(q); i >= 0 && nodes.length; i = lower.indexOf(q, i + q.length)) {
+    const r = new Range();
+    r.setStart(...at(i));
+    r.setEnd(...at(i + q.length));
+    out.push(r);
+  }
+  return out;
+}
+
 function mountConfigurations({ id, scope, root }) {
   const list = h('div', { class: 'conf-list' });
   const title = h('div', { class: 'conf-title', text: 'Select a configuration' });
   const desc = h('div', { class: 'faint' });
   const copyBtn = h('button', { type: 'button', class: 'btn btn-sm', disabled: true }, icon('copy'), 'Copy');
+  const wrapBtn = h('button', { type: 'button', class: 'btn btn-sm btn-icon', 'aria-pressed': 'false', 'aria-label': 'Wrap long lines', title: 'Wrap long lines' }, icon('wrap'));
+  const findCount = h('span', { class: 'find-count', 'aria-live': 'polite' });
+  const prevBtn = h('button', { type: 'button', class: 'btn btn-ghost btn-sm btn-icon', 'aria-label': 'Previous match', title: 'Previous match (Shift+Enter)', disabled: true }, icon('chevronUp'));
+  const nextBtn = h('button', { type: 'button', class: 'btn btn-ghost btn-sm btn-icon', 'aria-label': 'Next match', title: 'Next match (Enter)', disabled: true }, icon('chevronDown'));
   const view = h('div', { class: 'conf-view' });
   let items = [];
   let raw = '';
   let loadScope = null;
+  let pre = null;
+  let wrap = false;
+  let needle = '';
+  let hits = []; // matching .xl lines
+  let current = -1;
 
   const search = searchBox('Filter configurations', (q) => {
     let shown = 0;
@@ -50,16 +89,75 @@ function mountConfigurations({ id, scope, root }) {
     }
     noMatch.hidden = !items.length || shown > 0;
   });
-  const noMatch = h('div', { class: 'loading', text: 'No match.', hidden: true });
+  const noMatch = h('div', { class: 'note-empty', text: 'No configuration matches.', hidden: true });
+  const find = searchBox('Find in file', (q) => {
+    needle = q;
+    runFind();
+  }, 'sm');
+  find.input.disabled = true;
 
   const p = h('section', { class: 'panel' },
     h('div', { class: 'conf' },
       h('div', { class: 'conf-side' }, h('div', { class: 'conf-search' }, search.el), list),
       h('div', { class: 'conf-main' },
-        h('div', { class: 'conf-head' }, h('div', { class: 'spacer' }, title, desc), copyBtn),
+        h('div', { class: 'conf-head' }, h('div', { class: 'spacer' }, title, desc), find.el, findCount, prevBtn, nextBtn, wrapBtn, copyBtn),
         view)));
   root.append(p);
-  list.append(loading());
+  list.append(skeleton({ rows: 10, cols: 1 }));
+
+  function clearHighlights() {
+    if (HL) {
+      CSS.highlights.delete('fsdeck-find');
+      CSS.highlights.delete('fsdeck-find-current');
+    }
+  }
+  scope.onCleanup(clearHighlights);
+
+  function showCurrent() {
+    hits.forEach((el, i) => el.classList.toggle('hit-current', i === current));
+    findCount.textContent = !needle ? '' : hits.length ? current + 1 + ' of ' + hits.length : 'No match';
+    prevBtn.disabled = nextBtn.disabled = hits.length < 2;
+    if (HL) {
+      CSS.highlights.delete('fsdeck-find-current');
+      if (current >= 0) CSS.highlights.set('fsdeck-find-current', new Highlight(...rangesIn(hits[current], needle)));
+    }
+    const el = hits[current];
+    if (el) view.scrollTop = Math.max(0, el.offsetTop - view.clientHeight / 2);
+  }
+
+  function runFind() {
+    for (const el of hits) el.classList.remove('hit', 'hit-current');
+    clearHighlights();
+    hits = [];
+    current = -1;
+    if (pre && needle) {
+      hits = [...pre.children].filter((el) => el.textContent.toLowerCase().includes(needle));
+      for (const el of hits) el.classList.add('hit');
+      if (HL && hits.length) CSS.highlights.set('fsdeck-find', new Highlight(...hits.flatMap((el) => rangesIn(el, needle))));
+      current = hits.length ? 0 : -1;
+    }
+    showCurrent();
+  }
+
+  function step(d) {
+    if (!hits.length) return;
+    current = (current + d + hits.length) % hits.length;
+    showCurrent();
+  }
+  prevBtn.addEventListener('click', () => step(-1));
+  nextBtn.addEventListener('click', () => step(1));
+  find.input.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter') {
+      ev.preventDefault();
+      step(ev.shiftKey ? -1 : 1);
+    }
+  });
+  wrapBtn.addEventListener('click', () => {
+    wrap = !wrap;
+    wrapBtn.setAttribute('aria-pressed', String(wrap));
+    if (pre) pre.classList.toggle('wrap', wrap);
+    showCurrent();
+  });
 
   async function open(item) {
     for (const it of items) it.btn.setAttribute('aria-pressed', String(it === item));
@@ -68,13 +166,21 @@ function mountConfigurations({ id, scope, root }) {
     title.textContent = item.name;
     desc.textContent = item.description;
     copyBtn.disabled = true;
-    view.replaceChildren(loading());
+    find.input.disabled = true;
+    pre = null;
+    runFind();
+    view.replaceChildren(skeleton({ rows: 14, cols: 1 }));
     try {
       const data = await api('GET', instPath(id, 'config/' + encodeURIComponent(item.name)), { signal: loadScope.signal });
       raw = data && typeof data.xml === 'string' ? data.xml : '';
-      view.replaceChildren(renderXML(raw));
+      pre = renderXML(raw);
+      pre.classList.toggle('wrap', wrap);
+      pre.classList.toggle('has-ranges', HL);
+      view.replaceChildren(pre);
       view.scrollTop = 0;
       copyBtn.disabled = false;
+      find.input.disabled = false;
+      runFind();
     } catch (err) {
       if (!isAbort(err)) view.replaceChildren(errorState(err));
     }
@@ -117,6 +223,7 @@ function mountVars({ id, scope, root }) {
     render();
   });
   const p = panel({ title: 'Global variables', flush: true, actions: search.el });
+  search.el.classList.add('sm');
   const sort = sortState(() => render());
   const host = tableHost();
   p.body.append(host.el);
@@ -155,6 +262,7 @@ function mountModules({ id, scope, root }) {
     render();
   });
   const p = panel({ title: 'Modules', flush: true, actions: search.el });
+  search.el.classList.add('sm');
   const sort = sortState(() => render());
   const host = tableHost();
   p.body.append(h('div', { class: 'panel-body' }, facets), host.el);

@@ -2,7 +2,7 @@
 
 import { api } from '../api.js';
 import { h } from '../dom.js';
-import { brandMark } from '../icons.js';
+import { brandMark, icon } from '../icons.js';
 
 export function mountLogin({ root, onLogin }) {
   const user = h('input', { id: 'login-user', class: 'input', type: 'text', value: 'admin', required: true, autocomplete: 'username', spellcheck: false });
@@ -33,12 +33,27 @@ export function mountLogin({ root, onLogin }) {
     }
   });
 
+  const feature = (name, title, text) => h('div', { class: 'login-feature' },
+    h('span', { class: 'login-feature-icon' }, icon(name)), h('div', null, h('b', { text: title }), h('span', { text })));
+
   root.replaceChildren(h('div', { class: 'login' },
-    h('div', { class: 'login-card' },
+    h('section', { class: 'login-hero', 'aria-hidden': 'true' },
       h('div', { class: 'login-brand' }, brandMark(), 'fsdeck'),
-      h('h1', { class: 'login-title', text: 'Sign in' }),
-      h('p', { class: 'login-sub', text: 'Operate FreeSWITCH from your browser.' }),
-      form,
-      h('p', { class: 'login-foot', text: 'Connects over the Event Socket. Nothing to install on FreeSWITCH.' }))));
+      h('div', { class: 'login-pitch' },
+        h('span', { class: 'login-kicker', text: 'Web console for FreeSWITCH' }),
+        h('p', { class: 'login-headline', text: 'Operate FreeSWITCH from your browser.' }),
+        h('p', { class: 'login-lede', text: 'One place for the live state of every switch: load, SIP, calls, configuration and logs.' }),
+        h('div', { class: 'login-features' },
+          feature('activity', 'Live load', 'Sessions, call rate and CPU, streamed from the Event Socket.'),
+          feature('radio', 'SIP at a glance', 'Profiles, gateways and registrations with their state.'),
+          feature('terminal', 'Hands on', 'Hang up channels, tail logs and run API commands.'))),
+      h('p', { class: 'login-legal', text: 'Open source · ships as a single binary' })),
+    h('main', { class: 'login-main' },
+      h('div', { class: 'login-card' },
+        h('div', { class: 'login-brand' }, brandMark(), 'fsdeck'),
+        h('h1', { class: 'login-title', text: 'Sign in' }),
+        h('p', { class: 'login-sub', text: 'Use your fsdeck account to continue.' }),
+        form,
+        h('p', { class: 'login-foot', text: 'Connects over the Event Socket. Nothing to install on FreeSWITCH.' })))));
   pass.focus();
 }

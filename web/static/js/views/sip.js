@@ -27,11 +27,11 @@ export function mountSip({ id, scope, root, isAdmin }) {
   const search = searchBox('Filter registrations', (q) => {
     query = q;
     renderRegs();
-  });
+  }, 'sm');
   const regs = panel({ title: 'Registrations', flush: true, actions: search.el });
-  const pHost = tableHost();
-  const gHost = tableHost();
-  const rHost = tableHost();
+  const pHost = tableHost({ rows: 4, cols: 4 });
+  const gHost = tableHost({ rows: 3, cols: 4 });
+  const rHost = tableHost({ rows: 6, cols: 4 });
   const aliases = h('div', { class: 'panel-body row wrap', hidden: true });
   profiles.body.append(pHost.el, aliases);
   gateways.body.append(gHost.el);
@@ -46,8 +46,8 @@ export function mountSip({ id, scope, root, isAdmin }) {
   const gSort = sortState(() => renderGateways());
   const rSort = sortState(() => renderRegs());
 
-  function showDetails(title, subtitle, row, primary) {
-    const d = openDrawer({ title, subtitle, onClose: () => { selected = null; } });
+  function showDetails(kicker, title, subtitle, row, primary) {
+    const d = openDrawer({ kicker, title, subtitle, onClose: () => { selected = null; } });
     d.body.append(...detailBody(row, primary).filter(Boolean));
   }
 
@@ -98,7 +98,7 @@ export function mountSip({ id, scope, root, isAdmin }) {
       selected,
       onRow: (r) => {
         selected = 'gw:' + r.name;
-        showDetails(cellText(r.name), 'Gateway on profile ' + cellText(r.profile), r, ['name', 'profile', 'state', 'status', 'proxy', 'realm', 'username']);
+        showDetails('Gateway', cellText(r.name), 'profile ' + cellText(r.profile), r, ['name', 'profile', 'state', 'status', 'proxy', 'realm', 'username']);
       },
       empty: emptyState({ icon: 'plug', title: 'No gateways', text: 'No gateway is configured on any SIP profile.' }),
       columns: [
@@ -132,7 +132,7 @@ export function mountSip({ id, scope, root, isAdmin }) {
       selected,
       onRow: (r) => {
         selected = 'reg:' + r.token;
-        showDetails(cellText(r.reg_user) + '@' + cellText(r.realm), 'Registration', r, ['reg_user', 'realm', 'url', 'network_ip', 'network_port', 'network_proto', 'expires']);
+        showDetails('Registration', cellText(r.reg_user) + '@' + cellText(r.realm), cellText(r.url).replace(/^sofia\/[^/]+\//, ''), r, ['reg_user', 'realm', 'url', 'network_ip', 'network_port', 'network_proto', 'expires']);
       },
       empty: query
         ? emptyState({ icon: 'search', title: 'No match', text: 'No registration matches the filter.' })

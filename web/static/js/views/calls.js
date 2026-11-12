@@ -50,9 +50,9 @@ export function mountCalls({ id, scope, root, isAdmin }) {
     query = q;
     render();
   });
-  const live = h('span', { class: 'faint', text: 'Live · refreshes every 3 s' });
+  const live = h('span', { class: 'live', text: 'Live · every 3 s' });
   const p = panel({ title: 'Channels', flush: true });
-  const host = tableHost();
+  const host = tableHost({ rows: 6, cols: 4 });
   p.body.append(host.el);
   root.append(h('div', { class: 'toolbar' }, seg.el, search.el, h('span', { class: 'spacer' }), live), p.el);
 
@@ -81,7 +81,7 @@ export function mountCalls({ id, scope, root, isAdmin }) {
 
   function details(row) {
     selected = cellText(row.uuid);
-    const d = openDrawer({ title: cellText(row.name) || selected, subtitle: 'Channel ' + selected, onClose: () => { selected = null; } });
+    const d = openDrawer({ kicker: 'Channel', title: cellText(row.name) || selected, subtitle: selected, onClose: () => { selected = null; } });
     if (isAdmin) {
       d.body.append(h('div', { class: 'drawer-actions' },
         h('button', { type: 'button', class: 'btn btn-danger', on: { click: () => hangup(row) } }, icon('hangup'), 'Hang up')));
@@ -132,7 +132,7 @@ export function mountCalls({ id, scope, root, isAdmin }) {
     const sig = JSON.stringify([mode, query, selected, sort.col, sort.dir, rows]);
     if (sig === signature) return;
     signature = sig;
-    p.el.querySelector('.panel-title').textContent = mode === 'channels' ? 'Channels' : 'Bridged calls';
+    p.setTitle(mode === 'channels' ? 'Channels' : 'Bridged calls');
     p.setCount(query ? rows.length + ' of ' + all.length : all.length);
     host.show(dataTable({
       rows,

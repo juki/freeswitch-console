@@ -30,13 +30,15 @@ export function mountInstance({ scope, root, id, ctx }) {
   const base = '#/i/' + encodeURIComponent(id) + '/';
   const crumb = h('span', { text: '…' });
   const title = h('h1', { class: 'page-title', text: '…' });
-  const stateEl = h('span', { class: 'row' });
-  const addr = h('span', { class: 'tag' });
+  const glyphDot = h('span', { class: 'dot' });
+  const meta = h('div', { class: 'title-meta' });
   const links = new Map();
   const tabs = TABS.filter((t) => ctx.isAdmin || !t.admin);
   let tabScope = null;
   let currentTab = null;
   let missing = false;
+  let addr = '';
+  let lastState = null;
 
   const nav = h('nav', { class: 'tabs', 'aria-label': 'Instance sections' }, tabs.map((t) => {
     const a = h('a', { class: 'tab', href: base + t.key }, icon(t.icon), t.label);
@@ -50,25 +52,38 @@ export function mountInstance({ scope, root, id, ctx }) {
     links.set(t.key, a);
     return a;
   }));
-  const body = h('div');
+  const body = h('div', { class: 'page-body' });
 
   root.replaceChildren(
-    h('header', { class: 'page-head' },
-      h('div', { class: 'spacer' },
+    h('header', { class: 'masthead' },
+      h('div', { class: 'masthead-in' },
         h('div', { class: 'crumbs' }, h('a', { href: '#/', text: 'Instances' }), icon('chevron'), crumb),
-        h('div', { class: 'title-row' }, title, addr, stateEl))),
-    nav,
+        h('div', { class: 'title-block' },
+          h('span', { class: 'inst-glyph', 'aria-hidden': 'true' }, icon('server'), glyphDot),
+          h('div', { class: 'spacer' }, title, meta)),
+        nav)),
     body);
+
+  function paintMeta() {
+    const st = lastState;
+    const ok = Boolean(st && st.connected);
+    const since = st ? sinceText(st.since) : '';
+    const sep = () => h('span', { class: 'sep' });
+    glyphDot.className = st ? (ok ? 'dot ok' : 'dot bad') : 'dot';
+    meta.replaceChildren(...[
+      addr ? h('span', { class: 'mono', text: addr }) : null,
+      st ? sep() : null,
+      st ? pill(ok ? 'Connected' : 'Disconnected', ok ? 'ok' : 'bad') : null,
+      since ? h('span', { text: 'for ' + since }) : null,
+      !ok && st && st.lastError ? sep() : null,
+      !ok && st && st.lastError ? h('span', { class: 'err mono', text: st.lastError }) : null,
+    ].filter(Boolean));
+  }
 
   function paintState(st) {
     if (!st || typeof st !== 'object') return;
-    const ok = Boolean(st.connected);
-    const since = sinceText(st.since);
-    stateEl.replaceChildren(...[
-      pill(ok ? 'Connected' : 'Disconnected', ok ? 'ok' : 'bad'),
-      !ok && st.lastError ? h('span', { class: 'muted', text: st.lastError }) : null,
-      since ? h('span', { class: 'faint', text: 'for ' + since }) : null,
-    ].filter(Boolean));
+    lastState = st;
+    paintMeta();
   }
 
   // setState is called by tabs with states from the event stream.
@@ -85,16 +100,17 @@ export function mountInstance({ scope, root, id, ctx }) {
       missing = true;
       if (tabScope) tabScope.dispose();
       document.title = 'Not found – fsdeck';
-      root.replaceChildren(h('div', { class: 'panel' }, emptyState({
+      root.replaceChildren(h('div', { class: 'page-body' }, h('div', { class: 'panel' }, emptyState({
         icon: 'server', title: 'Instance not found',
         text: 'There is no instance with this id. It may have been deleted.',
         action: h('a', { class: 'btn', href: '#/', text: 'Back to instances' }),
-      })));
+      }))));
       return;
     }
     crumb.textContent = inst.name;
     title.textContent = inst.name;
-    addr.textContent = address(inst);
+    addr = address(inst);
+    paintMeta();
     document.title = inst.name + ' – fsdeck';
     paintState(inst.state);
   }

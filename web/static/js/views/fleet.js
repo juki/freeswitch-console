@@ -3,7 +3,7 @@
 import { api, instPath, isAbort } from '../api.js';
 import { h, DASH, fmtInt, fmtPct, fmtUptime, sinceText } from '../dom.js';
 import { icon } from '../icons.js';
-import { confirmDialog, connectionHint, emptyState, iconButton, loading, openModal, pill, tag, toast, toastError } from '../ui.js';
+import { confirmDialog, connectionHint, emptyState, iconButton, openModal, pill, skeleton, tag, toast, toastError } from '../ui.js';
 
 export function address(inst) {
   const host = String(inst.host || '');
@@ -18,13 +18,18 @@ export function shortVersion(v) {
 export function mountFleet({ scope, root, ctx }) {
   document.title = 'Instances – fsdeck';
   const sub = h('p', { class: 'page-sub' });
-  const grid = h('div', { class: 'fleet' }, loading());
+  const summary = h('section', { class: 'panel summary', 'aria-label': 'Fleet summary' });
+  const grid = h('div', { class: 'fleet' },
+    [0, 1, 2].map(() => h('div', { class: 'inst-card' }, skeleton({ rows: 5, cols: 1 }))));
   const addBtn = ctx.isAdmin
     ? h('button', { type: 'button', class: 'btn btn-primary', on: { click: () => instanceDialog(null) } }, icon('plus'), 'Add instance')
     : null;
   root.replaceChildren(
-    h('header', { class: 'page-head' }, h('div', { class: 'spacer' }, h('h1', { class: 'page-title', text: 'Instances' }), sub), addBtn),
-    grid);
+    h('header', { class: 'masthead' },
+      h('div', { class: 'masthead-in solo' },
+        h('div', { class: 'page-head' }, h('div', { class: 'spacer' }, h('h1', { class: 'page-title', text: 'Instances' }), sub), addBtn))),
+    h('div', { class: 'page-body' }, summary, grid));
+  summary.hidden = true;
 
   const statuses = new Map(); // id -> /status answer
   let signature = '';
@@ -61,14 +66,44 @@ export function mountFleet({ scope, root, ctx }) {
         pill(m.ok ? 'Connected' : 'Disconnected', m.ok ? 'ok' : 'bad')),
       m.ok
         ? h('div', { class: 'inst-stats' }, stat('Sessions', m.sessions), stat('Idle CPU', m.idle), stat('Uptime', m.uptime))
-        : h('div', { class: 'inst-error' }, icon('alert'), h('span', null,
-          connectionHint(m.error) || m.error || 'Connecting…',
+        : h('div', { class: 'inst-error', title: m.error || undefined }, icon('alert'), h('span', { class: 'spacer' },
+          h('span', { class: 'inst-error-text', text: connectionHint(m.error) || m.error || 'Connecting…' }),
           connectionHint(m.error) ? h('span', { class: 'raw', text: m.error }) : null)),
       h('div', { class: 'inst-foot' },
         m.version ? tag(m.version) : null,
         m.hostname ? h('span', { text: m.hostname }) : null,
         h('span', { class: 'spacer' }),
         m.since ? h('span', { text: (m.ok ? 'connected ' : 'down ') + m.since }) : null));
+  }
+
+  function cell(iconName, label, value, note, tone) {
+    return h('div', { class: 'summary-item' },
+      h('div', { class: 'summary-label' }, icon(iconName), label),
+      h('div', { class: tone ? 'summary-value ' + tone : 'summary-value' }, value),
+      h('div', { class: 'summary-note', text: note }));
+  }
+
+  function renderSummary(list) {
+    const up = list.filter((i) => i.state && i.state.connected);
+    const down = list.length - up.length;
+    let sessions = 0;
+    let limit = 0;
+    let known = 0;
+    for (const i of up) {
+      const st = statuses.get(i.id);
+      const count = st && st.status && st.status.sessions && st.status.sessions.count;
+      if (!count) continue;
+      known++;
+      sessions += Number(count.active) || 0;
+      limit += Number(count.limit) || 0;
+    }
+    summary.hidden = !list.length;
+    summary.replaceChildren(
+      cell('server', 'Instances', fmtInt(list.length), list.length === 1 ? 'configured' : 'configured in fsdeck'),
+      cell('plug', 'Connected', [fmtInt(up.length), h('span', { class: 'of', text: ' / ' + fmtInt(list.length) })], up.length === list.length ? 'all Event Sockets up' : 'Event Socket connections', up.length === list.length ? 'ok' : ''),
+      cell('alert', 'Down', fmtInt(down), down ? 'not reachable right now' : 'nothing down', down ? 'bad' : ''),
+      cell('activity', 'Active sessions', known ? fmtInt(sessions) : DASH,
+        known ? (limit ? fmtPct((sessions / limit) * 100, 1) + '% of ' + fmtInt(limit) + ' allowed' : 'across connected instances') : 'waiting for status'));
   }
 
   function stat(label, value) {
@@ -82,6 +117,7 @@ export function mountFleet({ scope, root, ctx }) {
     sub.textContent = list.length
       ? list.length + (list.length === 1 ? ' instance' : ' instances') + ' · ' + up + ' connected' + (up < list.length ? ' · ' + (list.length - up) + ' down' : '')
       : 'No FreeSWITCH connected yet';
+    renderSummary(list);
     if (!list.length) {
       signature = '';
       grid.replaceChildren(h('div', { class: 'panel fleet-empty' }, emptyState({

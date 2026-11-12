@@ -73,12 +73,12 @@ function themeButton() {
 }
 
 function buildShell() {
-  const list = h('div');
+  const list = h('div', { class: 'side-list' });
   const count = h('span', { class: 'count' });
   const fleetLink = h('a', { class: 'side-link', href: '#/', title: 'All instances' }, icon('grid'), h('span', { class: 'name', text: 'All instances' }));
   const main = h('main', { class: 'main' });
   const side = h('aside', { class: 'side' },
-    h('a', { class: 'brand', href: '#/' }, brandMark(), h('span', { text: 'fsdeck' })),
+    h('a', { class: 'brand', href: '#/' }, brandMark(), h('span', { text: 'fsdeck' }), h('span', { class: 'brand-tag', text: 'Console' })),
     h('nav', { class: 'side-scroll', 'aria-label': 'Instances' },
       fleetLink,
       h('div', { class: 'side-label' }, 'Instances', count),
@@ -111,7 +111,7 @@ function renderSide() {
       href: '#/i/' + encodeURIComponent(inst.id) + '/' + tab,
       title: inst.name + (ok ? '' : ' (disconnected)'),
       'aria-current': inst.id === activeId ? 'page' : undefined,
-    }, h('span', { class: ok ? 'dot ok' : 'dot bad' }), h('span', { class: 'name', text: inst.name }));
+    }, h('span', { class: ok ? 'dot ok' : 'dot bad' }), h('span', { class: 'name', text: inst.name }), ok ? null : h('span', { class: 'side-meta', text: 'down' }));
   }));
 }
 
