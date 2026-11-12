@@ -321,6 +321,20 @@ func TestLoginLogoutMe(t *testing.T) {
 	expect(t, h.do("GET", "/api/me", v, ""), 200, `{"username":"viewer","role":"viewer"}`)
 }
 
+func TestESLContextIgnoresRequestCancel(t *testing.T) {
+	reqCtx, abort := context.WithCancel(context.Background())
+	r := httptest.NewRequest("GET", "/", nil).WithContext(reqCtx)
+	ctx, cancel := eslContext(r, time.Minute)
+	defer cancel()
+	abort()
+	if err := ctx.Err(); err != nil {
+		t.Fatalf("ESL context follows the aborted request: %v", err)
+	}
+	if _, ok := ctx.Deadline(); !ok {
+		t.Fatal("ESL context has no deadline")
+	}
+}
+
 func TestSessionCookieSecure(t *testing.T) {
 	plain := httptest.NewRequest("GET", "/", nil)
 	if sessionCookie(plain, "v", 1).Secure {
@@ -697,8 +711,12 @@ func TestHeadersStaticAndUnknownAPI(t *testing.T) {
 				t.Errorf("%s = %q", k, got)
 			}
 		}
-		if got := r.header.Get("Cache-Control"); (got == "no-store") != api {
-			t.Errorf("Cache-Control = %q (api %v)", got, api)
+		want := "no-cache"
+		if api {
+			want = "no-store"
+		}
+		if got := r.header.Get("Cache-Control"); got != want {
+			t.Errorf("Cache-Control = %q, want %q", got, want)
 		}
 	}
 

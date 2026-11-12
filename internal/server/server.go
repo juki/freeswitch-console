@@ -108,6 +108,14 @@ func (i *instance) close() {
 	i.sw.Close()
 }
 
+// eslContext bounds one ESL call. It deliberately does not follow the
+// request's cancellation: the connection is shared, and the ESL client drops
+// it when a pending reply is abandoned, so a browser that aborts a request
+// would disconnect the instance for every other viewer.
+func eslContext(r *http.Request, d time.Duration) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(r.Context()), d)
+}
+
 func (s *Server) dial(in store.Instance) Switch {
 	return s.cfg.Dial(net.JoinHostPort(in.Host, strconv.Itoa(in.Port)), in.Password)
 }
@@ -169,6 +177,11 @@ func (s *Server) Handler() http.Handler {
 					}
 				}
 			}
+		} else {
+			// The embedded files carry no validators and keep their names
+			// across versions; without this a browser can run a stale
+			// frontend against a newer server.
+			h.Set("Cache-Control", "no-cache")
 		}
 		s.mux.ServeHTTP(w, r)
 	})
@@ -181,7 +194,7 @@ func rowsRoute[T any](s *Server, fetch func(context.Context, fsapi.Commander) ([
 		if inst == nil {
 			return
 		}
-		ctx, cancel := context.WithTimeout(r.Context(), eslTimeout)
+		ctx, cancel := eslContext(r, eslTimeout)
 		defer cancel()
 		rows, err := fetch(ctx, inst.sw)
 		if err != nil {

@@ -128,7 +128,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request, _ user) {
 		Status   json.RawMessage `json:"status"` // null while disconnected
 	}{State: inst.sw.State()}
 	if resp.State.Connected {
-		ctx, cancel := context.WithTimeout(r.Context(), eslTimeout)
+		ctx, cancel := eslContext(r, eslTimeout)
 		defer cancel()
 		var err error
 		if resp.Hostname, err = fsapi.Hostname(ctx, inst.sw); err == nil {
@@ -147,7 +147,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request, _ user) {
 	if inst == nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), eslTimeout)
+	ctx, cancel := eslContext(r, eslTimeout)
 	defer cancel()
 	name := r.PathValue("name")
 	doc, err := fsapi.Config(ctx, inst.sw, name)
@@ -163,7 +163,7 @@ func (s *Server) handleHangup(w http.ResponseWriter, r *http.Request, _ user) {
 	if inst == nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), eslTimeout)
+	ctx, cancel := eslContext(r, eslTimeout)
 	defer cancel()
 	writeOutput(w)(fsapi.HangupChannel(ctx, inst.sw, r.PathValue("uuid")))
 }
@@ -197,7 +197,7 @@ func (s *Server) handleAction(w http.ResponseWriter, r *http.Request, _ user) {
 	if !ready(w, inst) {
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), eslTimeout)
+	ctx, cancel := eslContext(r, eslTimeout)
 	defer cancel()
 	writeOutput(w)(run(ctx, inst.sw))
 }
@@ -226,7 +226,7 @@ func (s *Server) handleConsole(w http.ResponseWriter, r *http.Request, _ user) {
 	if !ready(w, inst) {
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), consoleTimeout)
+	ctx, cancel := eslContext(r, consoleTimeout)
 	defer cancel()
 	out, err := inst.sw.API(ctx, cmd)
 	if err != nil {
