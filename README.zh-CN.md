@@ -41,27 +41,24 @@
 
 ## 快速开始
 
+使用 Docker（linux/amd64 和 linux/arm64）：
+
 ```sh
-go install github.com/juki/freeswitch-console/cmd/fsconsole@latest
-FSCONSOLE_ADMIN_PASSWORD='设一个足够长的密码' fsconsole
+docker run --rm -p 127.0.0.1:8080:8080 -v fsconsole-data:/data \
+  -e FSCONSOLE_ADMIN_PASSWORD='设一个足够长的密码' ghcr.io/juki/freeswitch-console
 ```
 
-或者从源码目录构建：
+或者从 [Releases](https://github.com/juki/freeswitch-console/releases) 下载对应平台的压缩包（Linux、macOS、Windows；每个包里有 `fsconsole` 和 `fsconsole-agent`，可用 `checksums.txt` 校验），然后运行：
 
 ```sh
-go build -o fsconsole ./cmd/fsconsole
 FSCONSOLE_ADMIN_PASSWORD='设一个足够长的密码' ./fsconsole
 ```
 
+也可以用 Go 安装：`go install github.com/juki/freeswitch-console/cmd/fsconsole@latest`，或在源码目录里 `go build -o fsconsole ./cmd/fsconsole`。
+
 打开 <http://127.0.0.1:8080>，用 `admin` 登录，添加一个实例（主机、Event Socket 端口、Event Socket 密码）。如果没有设置 `FSCONSOLE_ADMIN_PASSWORD`，首次启动会创建 `admin` 账号并打印一次随机密码。
 
-使用 Docker：
-
-```sh
-docker build -t fsconsole .
-docker run --rm -p 127.0.0.1:8080:8080 -v fsconsole-data:/data \
-  -e FSCONSOLE_ADMIN_PASSWORD='设一个足够长的密码' fsconsole
-```
+在容器里，控制台监听所有网卡，数据保存在 `/data`；除非前面有负责 TLS 的反向代理，否则请只把端口发布到 `127.0.0.1`。自己构建镜像：`docker build -t fsconsole .`
 
 ## 连接 FreeSWITCH
 

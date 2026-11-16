@@ -52,29 +52,32 @@ as `sip_auth_password=…` in a dial string.
 
 ## Quick start
 
+With Docker (linux/amd64 and linux/arm64):
+
 ```sh
-go install github.com/juki/freeswitch-console/cmd/fsconsole@latest
-FSCONSOLE_ADMIN_PASSWORD='choose-a-long-one' fsconsole
+docker run --rm -p 127.0.0.1:8080:8080 -v fsconsole-data:/data \
+  -e FSCONSOLE_ADMIN_PASSWORD='choose-a-long-one' ghcr.io/juki/freeswitch-console
 ```
 
-or from a checkout:
+Or download the archive for your platform from the
+[releases](https://github.com/juki/freeswitch-console/releases) (Linux, macOS
+and Windows; each holds `fsconsole` and `fsconsole-agent`, with
+`checksums.txt` to verify) and run:
 
 ```sh
-go build -o fsconsole ./cmd/fsconsole
 FSCONSOLE_ADMIN_PASSWORD='choose-a-long-one' ./fsconsole
 ```
+
+Or with Go: `go install github.com/juki/freeswitch-console/cmd/fsconsole@latest`,
+or from a checkout `go build -o fsconsole ./cmd/fsconsole`.
 
 Open <http://127.0.0.1:8080>, sign in as `admin`, add an instance (host, Event
 Socket port, Event Socket password). Without `FSCONSOLE_ADMIN_PASSWORD` the first
 start creates `admin` with a random password and prints it once.
 
-With Docker:
-
-```sh
-docker build -t fsconsole .
-docker run --rm -p 127.0.0.1:8080:8080 -v fsconsole-data:/data \
-  -e FSCONSOLE_ADMIN_PASSWORD='choose-a-long-one' fsconsole
-```
+In a container the console listens on all interfaces and keeps its data in
+`/data`; publish the port on `127.0.0.1` unless something in front of it
+terminates TLS. To build the image yourself: `docker build -t fsconsole .`
 
 ## Connecting FreeSWITCH
 
