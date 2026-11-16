@@ -4,12 +4,18 @@
 
 [English](README.md) | 简体中文
 
-![单个 FreeSWITCH 实例的概览页](assets/screenshots/overview.png)
+![实例页、单台交换机概览、最近挂断、一通电话为什么失败、控制台](assets/screenshots/demo.gif)
 
 - **FreeSWITCH 一侧零安装。** fsconsole 连接的是 `mod_event_socket`，原版配置默认就加载了它。
 - **不接管你的配置。** 没有数据库表结构，也不生成 XML。fsconsole 展示的是 FreeSWITCH 实际加载的内容；你编辑的就是你自己的文件，旧版本会被保留。
 - **单个二进制。** 只用 Go 标准库，Web 界面内嵌其中，前端没有构建步骤。
 - **一个控制台管多台交换机**，界面支持简体中文和英文。
+
+**没有 FreeSWITCH 也能先试。** 演示模式会启动三台模拟交换机，有通话、注册、日志和挂断记录；不保存任何数据，也不连接任何真实系统：
+
+```sh
+docker run --rm -p 127.0.0.1:8080:8080 ghcr.io/juki/freeswitch-console -demo
+```
 
 ## 功能
 
@@ -136,6 +142,7 @@ fsconsole 连接 `mod_event_socket`（默认端口 8021）。原版 FreeSWITCH �
 | | `FSCONSOLE_SECRET_KEY` | 未设置 | 加密数据文件中的 Event Socket 密码和代理令牌；至少 16 个字符 |
 | | `FSCONSOLE_ADMIN_PASSWORD` | 未设置 | 受管 `admin` 账号的密码 |
 | | `FSCONSOLE_VIEWER_PASSWORD` | 未设置 | 受管 `viewer` 账号的密码 |
+| `-demo` | `FSCONSOLE_DEMO=1` | 关闭 | 演示模式：模拟交换机、免登录、不保存任何数据；对账号、实例和文件的修改会被拒绝，访客在模拟交换机上做的改动两分钟后自动还原 |
 | `-static` | | 未设置 | 从该目录而不是内嵌副本提供前端文件（开发用） |
 | `-version` | | | 打印版本并退出 |
 
@@ -179,6 +186,14 @@ docker exec freeswitch-test fs_cli -x 'bgapi originate loopback/9196/default &pa
 ```
 
 该镜像只有 amd64 版本；在 Apple 芯片的机器上加 `--platform linux/amd64`。如果还想试用文件编辑器，把宿主机的一个目录挂载到 `/etc/freeswitch`，并把这个路径填给 fsconsole。
+
+## 与同类工具的区别
+
+| | 它是什么 | 什么时候选它 |
+|---|---|---|
+| `fs_cli` | FreeSWITCH 自带的命令行：一次连一台，在主机的 shell 里用 | 你本来就在主机上，而且熟悉命令 |
+| FusionPBX、FS PBX | 完整的 PBX 平台：由平台接管配置（数据库、它自己的拨号计划和用户目录，FreeSWITCH 旁边还要装 Web 服务器和 PHP） | 你要搭一套 PBX，并希望由平台来管理 |
+| FreeSWITCH Console | 面向你已经在运行、自己维护配置的交换机：通过 Event Socket 连接，展示和编辑现有的东西，带角色和审计日志 | 你运维一台或多台 FreeSWITCH，想在浏览器里查看和修改，又不想改变它们的部署方式 |
 
 ## 不在范围内
 

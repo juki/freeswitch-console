@@ -7,7 +7,7 @@ project, not affiliated with the FreeSWITCH project or SignalWire.
 
 English | [简体中文](README.zh-CN.md)
 
-![Overview of one FreeSWITCH instance](assets/screenshots/overview.png)
+![Instances, the overview of one switch, recent hang-ups, why a call failed, and the console](assets/screenshots/demo.gif)
 
 - **Nothing to install on FreeSWITCH.** fsconsole connects to `mod_event_socket`,
   which the stock configuration already loads.
@@ -17,6 +17,14 @@ English | [简体中文](README.zh-CN.md)
 - **One binary.** Go standard library only, the web interface is embedded, no
   build step for the frontend.
 - **Many switches, one console**, in English and Simplified Chinese.
+
+**Try it without a FreeSWITCH.** Demo mode starts three simulated switches
+with calls, registrations, logs and hang-ups; nothing is saved and nothing
+real is contacted:
+
+```sh
+docker run --rm -p 127.0.0.1:8080:8080 ghcr.io/juki/freeswitch-console -demo
+```
 
 ## What you get
 
@@ -182,6 +190,7 @@ shows them as managed by the environment and cannot change them.
 | | `FSCONSOLE_SECRET_KEY` | unset | encrypt the Event Socket passwords and agent tokens in the data file; at least 16 characters |
 | | `FSCONSOLE_ADMIN_PASSWORD` | unset | password of the managed `admin` account |
 | | `FSCONSOLE_VIEWER_PASSWORD` | unset | password of the managed `viewer` account |
+| `-demo` | `FSCONSOLE_DEMO=1` | off | demo mode: simulated switches, no sign-in, nothing saved; changes to accounts, instances and files are refused, and what a visitor changes on a simulated switch is undone after two minutes |
 | `-static` | | unset | serve the frontend from this directory instead of the embedded copy (development) |
 | `-version` | | | print the version and exit |
 
@@ -253,6 +262,14 @@ docker exec freeswitch-test fs_cli -x 'bgapi originate loopback/9196/default &pa
 The image is amd64 only; on Apple silicon add `--platform linux/amd64`. To try
 the file editor as well, mount a host directory at `/etc/freeswitch` and give
 fsconsole that path.
+
+## How it compares
+
+| | What it is | Choose it when |
+|---|---|---|
+| `fs_cli` | the command line that ships with FreeSWITCH: one switch at a time, from a shell on the host | you are on the host anyway and know the commands |
+| FusionPBX, FS PBX | complete PBX platforms: they own the configuration (database, their own dialplan and directory, a web server and PHP next to FreeSWITCH) | you are building a PBX and want the platform to manage it |
+| FreeSWITCH Console | a console for switches you already run and configure yourself: connects over the Event Socket, shows and edits what is there, keeps roles and an audit log | you operate one or many FreeSWITCH servers and want to see and change them from a browser without changing how they are set up |
 
 ## Not in scope
 
