@@ -78,6 +78,17 @@ export function mountSip({ id, scope, root, ctx }) {
     if (out !== null) refresh();
   }
 
+  // siptrace turns "sofia profile <p> siptrace on|off" on or off; the trace
+  // goes to the FreeSWITCH log, so turning it on is confirmed.
+  function siptrace(profile, on) {
+    return operate({
+      id, scope, body: { action: 'sofia_siptrace', profile, on },
+      confirm: on ? { title: t('sip.trace.title', { profile }), message: t('sip.trace.text'), confirmLabel: t('sip.trace.confirm') } : null,
+      done: on ? t('sip.trace.onDone', { profile }) : t('sip.trace.offDone', { profile }),
+      failed: t('sip.op.failed', { op: on ? t('sip.trace.on') : t('sip.trace.off'), name: profile }),
+    });
+  }
+
   async function gatewayOp(r, op) {
     const gateway = cellText(r.name);
     const profile = cellText(r.profile);
@@ -143,6 +154,9 @@ export function mountSip({ id, scope, root, ctx }) {
             return h('span', { class: 'row-actions' },
               h('button', { type: 'button', class: 'btn btn-sm', title: t('sip.rescanTitle'), on: { click: () => profileOp(name, 'rescan') } }, icon('refresh'), t('sip.rescan')),
               canControl ? rowMenu(t('sip.op.menu', { name }), [
+                { label: t('sip.trace.on'), icon: 'activity', run: () => siptrace(name, true) },
+                { label: t('sip.trace.off'), icon: 'pause', run: () => siptrace(name, false) },
+                { sep: true },
                 { label: t('sip.op.restart'), sub: t('sip.op.restartSub'), icon: 'refresh', danger: true, run: () => profileOp(name, 'restart') },
                 { label: t('sip.op.stop'), sub: t('sip.op.stopSub'), icon: 'stop', danger: true, run: () => profileOp(name, 'stop') },
                 { sep: true },

@@ -189,7 +189,9 @@ export function instanceDialog(ctx, inst, { focusConfig = false, onSaved } = {})
   const cancel = h('button', { type: 'button', class: 'btn', text: t('common.cancel') });
   const submit = h('button', { type: 'submit', class: 'btn btn-primary', text: editing ? t('fleet.form.save') : t('fleet.add') });
   submit.setAttribute('form', 'inst-form');
-  const field = (id, label, input, hint) => h('div', { class: 'field' }, h('label', { for: id, text: label }), input, hint ? h('span', { class: 'hint', text: hint }) : null);
+  const field = (id, label, input, hint, extra) => h('div', { class: 'field' }, h('label', { for: id, text: label }), input, hint ? h('span', { class: 'hint', text: hint }) : null, extra || null);
+  const passError = h('span', { class: 'field-error', hidden: true, text: t('fleet.form.passAgain') });
+  const tokenError = h('span', { class: 'field-error', hidden: true, text: t('fleet.cfg.tokenAgain') });
 
   // ---- configuration files ----
   const mode0 = (inst && inst.configMode) || '';
@@ -203,9 +205,10 @@ export function instanceDialog(ctx, inst, { focusConfig = false, onSaved } = {})
   ];
   const radios = [];
   const localFields = h('div', { class: 'cfg-fields' }, field('f-cpath', t('fleet.cfg.path'), path, t('fleet.cfg.pathHint')));
+  const tokenHint = h('span', { class: 'hint' });
   const agentFields = h('div', { class: 'cfg-fields' },
     field('f-curl', t('fleet.cfg.url'), url, t('fleet.cfg.urlHint')),
-    field('f-ctoken', t('fleet.cfg.token'), token, mode0 === 'agent' ? t('fleet.cfg.tokenKeep') : t('fleet.cfg.tokenHint')));
+    field('f-ctoken', t('fleet.cfg.token'), token, null, [tokenHint, tokenError]));
   const explain = h('p', { class: 'cfg-explain' });
   const choose = () => {
     const mode = (radios.find((r) => r.checked) || {}).value || '';
@@ -228,10 +231,34 @@ export function instanceDialog(ctx, inst, { focusConfig = false, onSaved } = {})
     agentFields);
   choose();
 
+  // A changed address must not get the saved secret: the password (host or
+  // port changed) and the agent token (agent address changed) are asked again.
+  const addressChanged = () => editing && (host.value.trim() !== String(inst.host) || Number(port.value) !== Number(inst.port));
+  const agentChanged = () => editing && mode0 === 'agent' && choose() === 'agent' && url.value.trim() !== String(inst.agentURL || '');
+  const required = (input, on) => (on ? input.setAttribute('aria-required', 'true') : input.removeAttribute('aria-required'));
+  const settle = (input, err, on) => {
+    if (on && !input.value) return;
+    err.hidden = true;
+    input.removeAttribute('aria-invalid');
+  };
+  function recheck() {
+    const a = addressChanged();
+    pass.placeholder = a ? t('fleet.form.newPass') : editing ? t('fleet.form.keepPass') : '';
+    required(pass, a);
+    settle(pass, passError, a);
+    const g = agentChanged();
+    token.placeholder = g ? t('fleet.cfg.newToken') : mode0 === 'agent' ? t('fleet.cfg.keepToken') : '';
+    tokenHint.textContent = mode0 === 'agent' && !g ? t('fleet.cfg.tokenKeep') : t('fleet.cfg.tokenHint');
+    required(token, g);
+    settle(token, tokenError, g);
+  }
+  for (const el of [host, port, pass, url, token, ...radios]) el.addEventListener(el.type === 'radio' ? 'change' : 'input', recheck);
+  recheck();
+
   const form = h('form', { id: 'inst-form', class: 'modal-form' },
     field('f-name', t('fleet.form.name'), name),
     h('div', { class: 'form-row' }, field('f-host', t('fleet.form.host'), host), field('f-port', t('fleet.form.port'), port)),
-    field('f-pass', t('fleet.form.pass'), pass, editing ? null : t('fleet.form.passHint')),
+    field('f-pass', t('fleet.form.pass'), pass, editing ? null : t('fleet.form.passHint'), passError),
     section,
     error);
   const m = openModal({ title: editing ? t('fleet.form.editTitle', { name: inst.name }) : t('fleet.add'), body: form, footer: [cancel, submit] });
@@ -239,6 +266,15 @@ export function instanceDialog(ctx, inst, { focusConfig = false, onSaved } = {})
   cancel.addEventListener('click', m.close);
   form.addEventListener('submit', async (ev) => {
     ev.preventDefault();
+    const missing = [[addressChanged(), pass, passError], [agentChanged(), token, tokenError]].filter(([on, input]) => on && !input.value);
+    for (const [, input, err] of missing) {
+      err.hidden = false;
+      input.setAttribute('aria-invalid', 'true');
+    }
+    if (missing.length) {
+      missing[0][1].focus();
+      return;
+    }
     const body = { name: name.value.trim(), host: host.value.trim(), port: Number(port.value), password: pass.value };
     const mode = choose();
     body.configMode = mode;

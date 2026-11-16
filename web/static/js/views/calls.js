@@ -1,12 +1,14 @@
 // Calls: channels and bridged calls, refreshed every 3s; admin can hang up.
+// The third segment, recent hang-ups, is in hangups.js.
 
 import { api, instPath, isAbort, rowsOf } from '../api.js';
 import { h, DASH, cellText, fmtDuration, fmtInt } from '../dom.js';
 import { icon } from '../icons.js';
 import { t } from '../i18n.js';
+import { hangupsSegment } from './hangups.js';
 import { clip, confirmDialog, dataTable, detailBody, emptyState, iconButton, openDrawer, panel, rowMatches, searchBox, segmented, sortState, statePill, tableHost, tag, toast, toastError } from '../ui.js';
 
-function party(name, num) {
+export function party(name, num) {
   const n = cellText(name);
   const d = cellText(num);
   if (!n || n === d) return h('span', { class: 'cell-strong', text: d || DASH });
@@ -27,7 +29,7 @@ function duration(epoch) {
   return h('span', { class: 'num', 'data-epoch': String(e), text: fmtDuration(Date.now() / 1000 - e) });
 }
 
-function direction(dir) {
+export function direction(dir) {
   const d = cellText(dir);
   const inbound = d === 'inbound';
   return h('span', { class: inbound ? 'dir in' : 'dir out' }, icon(inbound ? 'in' : 'out'), inbound ? t('calls.in') : t('calls.out'));
@@ -44,8 +46,12 @@ export function mountCalls({ id, scope, root, ctx }) {
   let signature = '';
   const sorts = { channels: sortState(() => render()), calls: sortState(() => render()) };
 
-  const seg = segmented([{ key: 'channels', label: t('calls.channels') }, { key: 'calls', label: t('calls.bridged') }], mode, (k) => {
+  const seg = segmented([{ key: 'channels', label: t('calls.channels') }, { key: 'calls', label: t('calls.bridged') }, { key: 'hangups', label: t('calls.hangups') }], mode, (k) => {
     mode = k;
+    signature = '';
+    search.input.placeholder = k === 'hangups' ? t('hangups.filter') : t('calls.filter');
+    search.input.setAttribute('aria-label', search.input.placeholder);
+    hangups.show(k === 'hangups');
     render();
   });
   const search = searchBox(t('calls.filter'), (q) => {
@@ -56,7 +62,8 @@ export function mountCalls({ id, scope, root, ctx }) {
   const p = panel({ title: t('calls.channels'), flush: true });
   const host = tableHost({ rows: 6, cols: 4 });
   p.body.append(host.el);
-  root.append(h('div', { class: 'toolbar' }, seg.el, search.el, h('span', { class: 'spacer' }), live), p.el);
+  const hangups = hangupsSegment({ id, scope, host, panel: p });
+  root.append(h('div', { class: 'toolbar' }, seg.el, search.el, hangups.filterEl, h('span', { class: 'spacer' }), live), p.el);
 
   const tick = setInterval(() => {
     const now = Date.now() / 1000;
@@ -118,6 +125,15 @@ export function mountCalls({ id, scope, root, ctx }) {
   ].filter(Boolean);
 
   function render() {
+    if (mode === 'hangups') {
+      // the other two segments keep their counts current
+      if (!lastError && channels && calls) {
+        seg.setCount('channels', channels.length);
+        seg.setCount('calls', calls.filter((c) => c.b_uuid).length);
+      }
+      hangups.render(query);
+      return;
+    }
     if (lastError) {
       signature = '';
       host.error(lastError);
@@ -163,7 +179,7 @@ export function mountCalls({ id, scope, root, ctx }) {
       lastError = err;
       seg.setCount('channels', null);
       seg.setCount('calls', null);
-      p.setCount(null);
+      if (mode !== 'hangups') p.setCount(null);
     }
     render();
   }, 3000);

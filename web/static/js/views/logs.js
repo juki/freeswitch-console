@@ -30,7 +30,8 @@ function level(n) {
   return Number.isInteger(v) && v >= 0 && v <= 7 ? v : 0;
 }
 
-function lineEl(ev) {
+// lineEl renders one log event; the drawer of a hang-up uses it too.
+export function lineEl(ev) {
   const lvl = level(ev.level);
   const text = String(ev.text === undefined || ev.text === null ? '' : ev.text).replace(/\r?\n$/, '');
   const m = LINE.exec(text);
