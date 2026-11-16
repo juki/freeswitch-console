@@ -1,0 +1,6 @@
+# Only what the build copies.
+*
+!go.mod
+!cmd
+!internal
+!web
