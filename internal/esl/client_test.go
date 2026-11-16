@@ -363,7 +363,7 @@ func api(t *testing.T, c *Client, cmd string) string {
 func TestAuthSuccess(t *testing.T) {
 	s := newFakeServer(t, nil)
 	c := newTestClient(t, s)
-	msgs, cancel := c.Subscribe(16)
+	msgs, _, cancel := c.Subscribe(16)
 	defer cancel()
 	c.Start()
 	c.Start()
@@ -447,7 +447,7 @@ func TestAPIConcurrentOrdering(t *testing.T) {
 	s := newFakeServer(t, nil)
 	c := startConnected(t, s)
 	// Never read: interleaved events must not block the reader.
-	_, cancel := c.Subscribe(0)
+	_, _, cancel := c.Subscribe(0)
 	defer cancel()
 
 	var wg sync.WaitGroup
@@ -480,7 +480,7 @@ func TestAPIConcurrentOrdering(t *testing.T) {
 func TestEventDelivery(t *testing.T) {
 	s := newFakeServer(t, nil)
 	c := newTestClient(t, s)
-	msgs, cancel := c.Subscribe(16)
+	msgs, _, cancel := c.Subscribe(16)
 	defer cancel()
 	c.Start()
 	fc := s.nextConn()
@@ -519,7 +519,7 @@ func TestLogDelivery(t *testing.T) {
 	s := newFakeServer(t, nil)
 	c := startConnected(t, s)
 	fc := s.nextConn()
-	msgs, cancel := c.Subscribe(16)
+	_, msgs, cancel := c.Subscribe(16)
 	defer cancel()
 
 	c.SetLogLevel(7)
@@ -541,6 +541,60 @@ func TestLogDelivery(t *testing.T) {
 	s.expectCmds("log 7")
 }
 
+// TestLogFloodKeepsEvents: a subscriber that never reads its log channel
+// still gets every event and state change, and the log lines beyond its
+// buffer are dropped without holding up the reader.
+func TestLogFloodKeepsEvents(t *testing.T) {
+	const buffer, lines, events = 64, 5000, 50
+	s := newFakeServer(t, nil)
+	c := newTestClient(t, s)
+	msgs, logs, cancel := c.Subscribe(buffer)
+	defer cancel()
+	c.Start()
+	fc := s.nextConn()
+	waitMsg(t, msgs, "connect", isState(true))
+
+	for n := 1; n <= lines; n++ {
+		fc.write(logFrame(7, fmt.Sprintf("line %d\n", n)))
+		if n%(lines/events) == 0 {
+			fc.write(eventFrame(fmt.Sprintf(`{"Event-Name":"HEARTBEAT","Seq":"%d"}`, n/(lines/events))))
+		}
+	}
+	// The reply follows every frame above on the wire, so the reader has
+	// handled them all.
+	if got := api(t, c, "echo after the flood"); got != "after the flood" {
+		t.Errorf("got %q", got)
+	}
+	s.dropAll()
+
+	next := func() Message {
+		t.Helper()
+		select {
+		case m := <-msgs:
+			return m
+		case <-time.After(5 * time.Second):
+			t.Fatal("no message")
+			return Message{}
+		}
+	}
+	for n := 1; n <= events; n++ {
+		if m := next(); m.Kind != KindEvent || m.Headers["Seq"] != strconv.Itoa(n) {
+			t.Fatalf("message %d = %+v, want heartbeat %d", n, m, n)
+		}
+	}
+	if m := next(); !isState(false)(m) {
+		t.Fatalf("after the heartbeats %+v, want the disconnect", m)
+	}
+	if n := len(logs); n != buffer {
+		t.Fatalf("%d log lines buffered, want %d", n, buffer)
+	}
+	for n := 1; n <= buffer; n++ {
+		if m := <-logs; m.Kind != KindLog || m.Body != fmt.Sprintf("line %d\n", n) {
+			t.Fatalf("log line %d = %+v", n, m)
+		}
+	}
+}
+
 func TestSetLogLevelWhileDisconnected(t *testing.T) {
 	c := NewClient("127.0.0.1:1", testPassword)
 	defer c.Close()
@@ -560,7 +614,7 @@ func TestSetLogLevelWhileDisconnected(t *testing.T) {
 func TestReconnectReappliesSetup(t *testing.T) {
 	s := newFakeServer(t, nil)
 	c := newTestClient(t, s)
-	msgs, cancel := c.Subscribe(64)
+	msgs, _, cancel := c.Subscribe(64)
 	defer cancel()
 	c.Start()
 	s.nextConn()
@@ -585,7 +639,7 @@ func TestReconnectReappliesSetup(t *testing.T) {
 func TestDisconnectNotice(t *testing.T) {
 	s := newFakeServer(t, nil)
 	c := newTestClient(t, s)
-	msgs, cancel := c.Subscribe(64)
+	msgs, _, cancel := c.Subscribe(64)
 	defer cancel()
 	c.Start()
 	fc := s.nextConn()
@@ -603,7 +657,7 @@ func TestDisconnectNotice(t *testing.T) {
 func TestAPITimeoutClosesConnection(t *testing.T) {
 	s := newFakeServer(t, nil)
 	c := newTestClient(t, s)
-	msgs, cancel := c.Subscribe(64)
+	msgs, _, cancel := c.Subscribe(64)
 	defer cancel()
 	c.Start()
 	s.nextConn()
@@ -648,12 +702,15 @@ func TestSubscribeCancelAndClose(t *testing.T) {
 	c := startConnected(t, s)
 	fc := s.nextConn()
 
-	a, cancelA := c.Subscribe(1)
-	b, _ := c.Subscribe(1)
+	a, aLogs, cancelA := c.Subscribe(1)
+	b, bLogs, _ := c.Subscribe(1)
 	cancelA()
 	cancelA()
 	if _, ok := <-a; ok {
 		t.Error("cancelled channel still open")
+	}
+	if _, ok := <-aLogs; ok {
+		t.Error("cancelled log channel still open")
 	}
 
 	// A full subscriber must not stall delivery or the reader.
@@ -674,9 +731,15 @@ func TestSubscribeCancelAndClose(t *testing.T) {
 			t.Fatal("subscriber channel not closed by Close")
 		}
 	}
-	late, cancelLate := c.Subscribe(1)
+	if _, ok := <-bLogs; ok {
+		t.Error("subscriber log channel not closed by Close")
+	}
+	late, lateLogs, cancelLate := c.Subscribe(1)
 	if _, ok := <-late; ok {
 		t.Error("Subscribe after Close returned an open channel")
+	}
+	if _, ok := <-lateLogs; ok {
+		t.Error("Subscribe after Close returned an open log channel")
 	}
 	cancelLate()
 	if st := c.State(); st.Connected {
@@ -732,7 +795,7 @@ func TestNoGoroutineLeak(t *testing.T) {
 	before := runtime.NumGoroutine()
 	s := newFakeServer(t, nil)
 	c := startConnected(t, s)
-	msgs, _ := c.Subscribe(4)
+	msgs, logs, _ := c.Subscribe(4)
 	c.SetLogLevel(5)
 	s.expectCmds("log 5")
 	api(t, c, "echo x")
@@ -742,6 +805,8 @@ func TestNoGoroutineLeak(t *testing.T) {
 	c.Close()
 	s.close()
 	for range msgs {
+	}
+	for range logs {
 	}
 	waitFor(t, "goroutines to exit", func() bool { return runtime.NumGoroutine() <= before })
 }
@@ -773,7 +838,7 @@ func TestProbeSilentPeer(t *testing.T) {
 	s := newFakeServer(t, func(s *fakeServer) { s.mute = 1 })
 	c := probingClient(t, s, after, timeout)
 	c.backoff = 300 * time.Millisecond // keeps the failed state observable
-	msgs, cancel := c.Subscribe(64)
+	msgs, _, cancel := c.Subscribe(64)
 	defer cancel()
 	c.Start()
 	waitMsg(t, msgs, "connect", isState(true))
@@ -804,7 +869,7 @@ func TestProbeQuietPeer(t *testing.T) {
 	const after = 40 * time.Millisecond
 	s := newFakeServer(t, nil)
 	c := probingClient(t, s, after, 40*time.Millisecond)
-	msgs, cancel := c.Subscribe(64)
+	msgs, _, cancel := c.Subscribe(64)
 	defer cancel()
 	c.Start()
 	waitMsg(t, msgs, "connect", isState(true))
@@ -853,7 +918,7 @@ func TestProbeWaitsForPendingAPI(t *testing.T) {
 	}
 	s := newFakeServer(t, nil)
 	c := probingClient(t, s, after, timeout)
-	msgs, cancel := c.Subscribe(64)
+	msgs, _, cancel := c.Subscribe(64)
 	defer cancel()
 	c.Start()
 	waitMsg(t, msgs, "connect", isState(true))
@@ -950,7 +1015,7 @@ func TestBackgroundConcurrent(t *testing.T) {
 func TestBackgroundDeadlineKeepsConnection(t *testing.T) {
 	s := newFakeServer(t, nil)
 	c := newTestClient(t, s)
-	msgs, cancel := c.Subscribe(64)
+	msgs, _, cancel := c.Subscribe(64)
 	defer cancel()
 	c.Start()
 	waitMsg(t, msgs, "connect", isState(true))
@@ -980,7 +1045,7 @@ func TestBackgroundDeadlineKeepsConnection(t *testing.T) {
 func TestBackgroundLateResult(t *testing.T) {
 	s := newFakeServer(t, nil)
 	c := newTestClient(t, s)
-	msgs, cancel := c.Subscribe(64)
+	msgs, _, cancel := c.Subscribe(64)
 	defer cancel()
 	c.Start()
 	waitMsg(t, msgs, "connect", isState(true))
@@ -1014,7 +1079,7 @@ func TestBackgroundOtherJobs(t *testing.T) {
 	s := newFakeServer(t, nil)
 	c := startConnected(t, s)
 	fc := s.nextConn()
-	msgs, cancel := c.Subscribe(64)
+	msgs, _, cancel := c.Subscribe(64)
 	defer cancel()
 	if got := background(t, c, "other-first"); got != "mine" {
 		t.Errorf("got %q", got)

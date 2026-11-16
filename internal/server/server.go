@@ -31,7 +31,7 @@ type Switch interface {
 	// the switch, so it does not hold the connection.
 	Background(ctx context.Context, command string) (string, error)
 	SetLogLevel(level int)
-	Subscribe(buffer int) (<-chan esl.Message, func())
+	Subscribe(buffer int) (events, logs <-chan esl.Message, cancel func())
 	Close()
 }
 
@@ -160,12 +160,12 @@ func newInstance(sw Switch, backlog, backlogLevel, recentCalls int) *instance {
 		recent:      map[string]recentHangup{},
 		lateLog:     hangupLateLog,
 	}
-	msgs, cancel := sw.Subscribe(1024)
+	events, logs, cancel := sw.Subscribe(1024)
 	if backlog > 0 {
 		i.floor, i.applied = backlogLevel, backlogLevel
 		sw.SetLogLevel(backlogLevel)
 	}
-	go i.collect(msgs, cancel)
+	go i.collect(events, logs, cancel)
 	return i
 }
 

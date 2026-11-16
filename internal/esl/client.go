@@ -53,7 +53,13 @@ type Client struct {
 	state    State
 	cur      *conn
 	logLevel int
-	subs     map[chan Message]struct{}
+	subs     map[subscriber]struct{}
+}
+
+// subscriber is the pair of channels returned by Subscribe.
+type subscriber struct {
+	events chan Message // events and state changes
+	logs   chan Message // log lines
 }
 
 // NewClient returns a client for addr ("host:port") that subscribes to the
@@ -75,7 +81,7 @@ func NewClient(addr, password string, events ...string) *Client {
 		loopDone:     make(chan struct{}),
 		state:        State{Since: time.Now()},
 		logLevel:     -1,
-		subs:         make(map[chan Message]struct{}),
+		subs:         make(map[subscriber]struct{}),
 	}
 }
 
@@ -93,8 +99,8 @@ func (c *Client) Start() {
 	go c.run()
 }
 
-// Close stops the loop, closes the connection and closes every subscriber
-// channel. Safe to call more than once.
+// Close stops the loop, closes the connection and closes the channels of
+// every subscriber. Safe to call more than once.
 func (c *Client) Close() {
 	c.closeOnce.Do(func() {
 		c.mu.Lock()
@@ -108,9 +114,10 @@ func (c *Client) Close() {
 		}
 
 		c.mu.Lock()
-		for ch := range c.subs {
-			delete(c.subs, ch)
-			close(ch)
+		for s := range c.subs {
+			delete(c.subs, s)
+			close(s.events)
+			close(s.logs)
 		}
 		c.mu.Unlock()
 	})
@@ -226,25 +233,30 @@ func (c *Client) SetLogLevel(level int) {
 	}
 }
 
-// Subscribe returns a channel of asynchronous messages and a cancel func.
-// A subscriber that does not keep up loses messages (non-blocking send);
-// the client never blocks on a subscriber. cancel closes the channel.
-// Messages are shared between subscribers and must not be modified.
-func (c *Client) Subscribe(buffer int) (<-chan Message, func()) {
-	ch := make(chan Message, max(buffer, 0))
+// Subscribe returns a channel of events and state changes, a channel of log
+// lines, each with the given buffer, and a cancel func. The two are filled
+// separately, so a flood of log lines cannot crowd out events; the order
+// between a log line and an event is not kept. A subscriber that does not
+// keep up loses messages (non-blocking send); the client never blocks on a
+// subscriber. cancel closes both channels. Messages are shared between
+// subscribers and must not be modified.
+func (c *Client) Subscribe(buffer int) (events, logs <-chan Message, cancel func()) {
+	s := subscriber{events: make(chan Message, max(buffer, 0)), logs: make(chan Message, max(buffer, 0))}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed {
-		close(ch)
-		return ch, func() {}
+		close(s.events)
+		close(s.logs)
+		return s.events, s.logs, func() {}
 	}
-	c.subs[ch] = struct{}{}
-	return ch, func() {
+	c.subs[s] = struct{}{}
+	return s.events, s.logs, func() {
 		c.mu.Lock()
 		defer c.mu.Unlock()
-		if _, ok := c.subs[ch]; ok {
-			delete(c.subs, ch)
-			close(ch)
+		if _, ok := c.subs[s]; ok {
+			delete(c.subs, s)
+			close(s.events)
+			close(s.logs)
 		}
 	}
 }
@@ -256,7 +268,11 @@ func (c *Client) publish(m Message) {
 }
 
 func (c *Client) publishLocked(m Message) {
-	for ch := range c.subs {
+	for s := range c.subs {
+		ch := s.events
+		if m.Kind == KindLog {
+			ch = s.logs
+		}
 		select {
 		case ch <- m:
 		default:

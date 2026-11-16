@@ -370,6 +370,39 @@ func TestHangupLateLog(t *testing.T) {
 	}
 }
 
+// TestHangupsUnderLogFlood: log lines that overflow the collector's buffer
+// are dropped, the hang-ups sent in between are all recorded.
+func TestHangupsUnderLogFlood(t *testing.T) {
+	const lines, calls = 3000, 30
+	h := newHarness(t, withBacklog(lines, 6), withRecentCalls(calls))
+	f := h.fake(0)
+	inst := h.instance(h.id)
+	viewer := h.login("viewer", viewerPW)
+
+	// The collector waits for logMu on the first message while the rest
+	// pile up behind it.
+	inst.logMu.Lock()
+	var want []string
+	for n := 1; n <= lines; n++ {
+		f.send(logMsg("6", fmt.Sprint("line ", n)))
+		if n%(lines/calls) == 0 {
+			id := fmt.Sprint("call-", n/(lines/calls))
+			f.send(hangupEvent(id))
+			want = append([]string{id}, want...)
+		}
+	}
+	inst.logMu.Unlock()
+
+	waitFor(t, "every record", func() bool { return len(h.hangups(viewer, "").Rows) == calls })
+	if got := rowUUIDs(h.hangups(viewer, "").Rows); got != strings.Join(want, " ") {
+		t.Fatalf("rows %s", got)
+	}
+	// One message in hand and a full buffer of lines: the rest were dropped.
+	if n := inst.lastSeq(); n > 1025 {
+		t.Fatalf("%d of %d lines stored: the flood did not overflow the buffer", n, lines)
+	}
+}
+
 // hangupsReply is the answer of GET .../hangups.
 type hangupsReply struct {
 	Enabled  bool        `json:"enabled"`

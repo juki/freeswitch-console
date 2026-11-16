@@ -37,7 +37,7 @@ type fakeSwitch struct {
 	apiErr    error    // returned by API and Background
 	sent      []string // API commands; Background ones with the prefix "bgapi "
 	logLevels []int
-	subs      map[int]chan esl.Message
+	subs      map[int]fakeSub
 	nextSub   int
 	closed    bool
 	// hold, when set, keeps API calls waiting until it is closed; a call
@@ -53,7 +53,7 @@ func newFake(addr, password string) *fakeSwitch {
 		addr:     addr,
 		password: password,
 		state:    esl.State{Connected: true, Since: time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)},
-		subs:     map[int]chan esl.Message{},
+		subs:     map[int]fakeSub{},
 		replies: map[string]string{
 			"hostname":                            "fs01\n",
 			`json {"command":"status","data":""}`: statusJSON + "\n",
@@ -146,22 +146,30 @@ func (f *fakeSwitch) SetLogLevel(level int) {
 	f.logLevels = append(f.logLevels, level)
 }
 
-func (f *fakeSwitch) Subscribe(buffer int) (<-chan esl.Message, func()) {
+// fakeSub is one subscriber: events and state changes, and log lines.
+type fakeSub struct{ events, logs chan esl.Message }
+
+func (s fakeSub) close() {
+	close(s.events)
+	close(s.logs)
+}
+
+func (f *fakeSwitch) Subscribe(buffer int) (<-chan esl.Message, <-chan esl.Message, func()) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	ch := make(chan esl.Message, buffer)
+	s := fakeSub{make(chan esl.Message, buffer), make(chan esl.Message, buffer)}
 	if f.closed {
-		close(ch)
-		return ch, func() {}
+		s.close()
+		return s.events, s.logs, func() {}
 	}
 	id := f.nextSub
 	f.nextSub++
-	f.subs[id] = ch
-	return ch, func() {
+	f.subs[id] = s
+	return s.events, s.logs, func() {
 		f.mu.Lock()
 		defer f.mu.Unlock()
-		if c, ok := f.subs[id]; ok {
-			close(c)
+		if s, ok := f.subs[id]; ok {
+			s.close()
 			delete(f.subs, id)
 		}
 	}
@@ -172,18 +180,48 @@ func (f *fakeSwitch) Close() {
 	defer f.mu.Unlock()
 	f.closed = true
 	f.state.Connected = false
-	for id, c := range f.subs {
-		close(c)
+	for id, s := range f.subs {
+		s.close()
 		delete(f.subs, id)
 	}
 }
 
+// publish delivers m once the subscribers have taken every message of the
+// other kind, so the collector handles messages in the order they are
+// published, which tests rely on (a heartbeat after log lines marks that the
+// lines have been handled).
 func (f *fakeSwitch) publish(m esl.Message) {
+	for {
+		f.mu.Lock()
+		waiting := false
+		for _, s := range f.subs {
+			other := s.logs
+			if m.Kind == esl.KindLog {
+				other = s.events
+			}
+			waiting = waiting || len(other) > 0
+		}
+		f.mu.Unlock()
+		if !waiting {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	f.send(m)
+}
+
+// send delivers m at once, as esl.Client does: dropped when the channel of
+// its kind is full.
+func (f *fakeSwitch) send(m esl.Message) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	for _, c := range f.subs {
+	for _, s := range f.subs {
+		ch := s.events
+		if m.Kind == esl.KindLog {
+			ch = s.logs
+		}
 		select {
-		case c <- m:
+		case ch <- m:
 		default:
 		}
 	}
