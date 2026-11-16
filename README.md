@@ -18,9 +18,10 @@ English | [简体中文](README.zh-CN.md)
   build step for the frontend.
 - **Many switches, one console**, in English and Simplified Chinese.
 
-**Try it without a FreeSWITCH.** Demo mode starts three simulated switches
-with calls, registrations, logs and hang-ups; nothing is saved and nothing
-real is contacted:
+**Try it without a FreeSWITCH.** Open the live demo at
+<https://fsconsole.vi.uy> (no sign-in), or run demo mode yourself: it starts
+three simulated switches with calls, registrations, logs and hang-ups;
+nothing is saved and nothing real is contacted:
 
 ```sh
 docker run --rm -p 127.0.0.1:8080:8080 ghcr.io/juki/freeswitch-console -demo
