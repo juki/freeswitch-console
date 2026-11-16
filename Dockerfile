@@ -8,6 +8,8 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/fsconsole ./cmd/fs
     && mkdir /out/data
 
 FROM scratch
+# Root certificates, for HTTPS connections to fsconsole-agent.
+COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=build /out/fsconsole /fsconsole
 COPY --from=build --chown=65534:65534 /out/data /data
 USER 65534:65534
