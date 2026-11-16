@@ -1,4 +1,4 @@
-// Package server is the fsdeck HTTP API, authentication, event stream and
+// Package server is the fsconsole HTTP API, authentication, event stream and
 // static file server.
 package server
 
@@ -16,10 +16,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/juki/fsdeck/internal/audit"
-	"github.com/juki/fsdeck/internal/esl"
-	"github.com/juki/fsdeck/internal/fsapi"
-	"github.com/juki/fsdeck/internal/store"
+	"github.com/juki/freeswitch-console/internal/audit"
+	"github.com/juki/freeswitch-console/internal/esl"
+	"github.com/juki/freeswitch-console/internal/fsapi"
+	"github.com/juki/freeswitch-console/internal/store"
 )
 
 // Switch is one ESL connection to a FreeSWITCH. *esl.Client satisfies it.
@@ -32,8 +32,8 @@ type Switch interface {
 }
 
 type Config struct {
-	AdminPassword  string // FSDECK_ADMIN_PASSWORD: the managed account admin; empty for none
-	ViewerPassword string // FSDECK_VIEWER_PASSWORD: the managed account viewer; empty for none
+	AdminPassword  string // FSCONSOLE_ADMIN_PASSWORD: the managed account admin; empty for none
+	ViewerPassword string // FSCONSOLE_VIEWER_PASSWORD: the managed account viewer; empty for none
 	Store          *store.Store
 	Dial           func(addr, password string) Switch // returns a started client
 	Static         fs.FS

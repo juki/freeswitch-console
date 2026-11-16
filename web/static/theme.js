@@ -3,7 +3,7 @@
 (function () {
   var mode = 'auto';
   try {
-    mode = localStorage.getItem('fsdeck-theme') || 'auto';
+    mode = localStorage.getItem('fsconsole-theme') || 'auto';
   } catch (e) {
     // storage disabled: stay on auto
   }
@@ -17,14 +17,14 @@
   apply();
   mq.addEventListener('change', apply);
 
-  window.fsdeckTheme = {
+  window.fsconsoleTheme = {
     get: function () {
       return mode;
     },
     set: function (m) {
       mode = m;
       try {
-        localStorage.setItem('fsdeck-theme', m);
+        localStorage.setItem('fsconsole-theme', m);
       } catch (e) {
         // not persisted
       }

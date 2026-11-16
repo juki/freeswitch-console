@@ -1,5 +1,5 @@
 // Package conffs reads and writes the FreeSWITCH configuration files below
-// one root directory, on this host (Local) or through the fsdeck agent
+// one root directory, on this host (Local) or through the fsconsole agent
 // (Client), with optimistic concurrency and a backup of every overwritten
 // or deleted version.
 package conffs
@@ -284,7 +284,7 @@ func CheckXML(content string) error {
 	}
 }
 
-// errorBody is the JSON of an error answer, shared by fsdeck and the agent.
+// errorBody is the JSON of an error answer, shared by fsconsole and the agent.
 type errorBody struct {
 	Error         string  `json:"error"`
 	CurrentSHA256 *string `json:"currentSha256,omitempty"`

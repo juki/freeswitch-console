@@ -87,7 +87,7 @@ func (c *Client) do(ctx context.Context, method, path string, q url.Values, body
 		return &kindError{ErrInvalid, e.Error}
 	case http.StatusNotFound:
 		if e.Error == "" || e.Error == "not found" {
-			return fmt.Errorf("%w: no fsdeck agent at %s (404)", ErrAgent, c.base.Host)
+			return fmt.Errorf("%w: no fsconsole agent at %s (404)", ErrAgent, c.base.Host)
 		}
 		return &kindError{ErrNotFound, e.Error}
 	case http.StatusConflict:

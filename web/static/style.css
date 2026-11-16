@@ -1,4 +1,4 @@
-/* fsdeck design system. Tokens first, then base, components, views. */
+/* fsconsole design system. Tokens first, then base, components, views. */
 
 :root {
   color-scheme: light;
@@ -785,8 +785,8 @@ dialog.modal::backdrop { background: rgba(8, 9, 16, 0.5); -webkit-backdrop-filte
 .xl.hit-current { background: var(--find-current); box-shadow: inset 2px 0 0 var(--warn-solid); }
 .has-ranges .xl.hit { background: color-mix(in srgb, var(--find) 35%, transparent); }
 .has-ranges .xl.hit-current { background: color-mix(in srgb, var(--find) 70%, transparent); }
-::highlight(fsdeck-find) { background-color: var(--find); color: inherit; }
-::highlight(fsdeck-find-current) { background-color: var(--find-current); color: inherit; }
+::highlight(fsconsole-find) { background-color: var(--find); color: inherit; }
+::highlight(fsconsole-find-current) { background-color: var(--find-current); color: inherit; }
 .x-p { color: var(--text-3); }
 .x-t { color: #8a35b8; }
 .x-a { color: #0b63c4; }

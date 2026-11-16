@@ -17,8 +17,8 @@ import (
 	"testing/fstest"
 	"time"
 
-	"github.com/juki/fsdeck/internal/esl"
-	"github.com/juki/fsdeck/internal/store"
+	"github.com/juki/freeswitch-console/internal/esl"
+	"github.com/juki/freeswitch-console/internal/store"
 )
 
 const (
@@ -199,7 +199,7 @@ func newHarness(t *testing.T, opts ...func(*Config)) *harness {
 		ViewerPassword: viewerPW,
 		Store:          st,
 		Dial:           h.dial,
-		Static:         fstest.MapFS{"index.html": {Data: []byte("<!doctype html><title>fsdeck</title>")}},
+		Static:         fstest.MapFS{"index.html": {Data: []byte("<!doctype html><title>fsconsole</title>")}},
 	}
 	for _, opt := range opts {
 		opt(&cfg)
@@ -317,7 +317,7 @@ func TestLoginLogoutMe(t *testing.T) {
 		t.Fatalf("cookies %v", cookies)
 	}
 	c := cookies[0]
-	if c.Name != "fsdeck_session" || len(c.Value) != 64 || !c.HttpOnly || c.SameSite != http.SameSiteStrictMode || c.Path != "/" || c.Secure || c.MaxAge != 12*3600 {
+	if c.Name != "fsconsole_session" || len(c.Value) != 64 || !c.HttpOnly || c.SameSite != http.SameSiteStrictMode || c.Path != "/" || c.Secure || c.MaxAge != 12*3600 {
 		t.Fatalf("cookie %+v", c)
 	}
 	expect(t, h.do("GET", "/api/me", c.Value, ""), 200, `{"username":"admin","role":"admin","managed":true}`)
@@ -751,7 +751,7 @@ func TestHeadersStaticAndUnknownAPI(t *testing.T) {
 	}
 
 	r := h.do("GET", "/", "", "")
-	expect(t, r, 200, "<!doctype html><title>fsdeck</title>")
+	expect(t, r, 200, "<!doctype html><title>fsconsole</title>")
 	check(r, false)
 	r = h.do("GET", "/missing.js", "", "")
 	expect(t, r, 404, "")

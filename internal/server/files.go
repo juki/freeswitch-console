@@ -7,9 +7,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/juki/fsdeck/internal/audit"
-	"github.com/juki/fsdeck/internal/conffs"
-	"github.com/juki/fsdeck/internal/store"
+	"github.com/juki/freeswitch-console/internal/audit"
+	"github.com/juki/freeswitch-console/internal/conffs"
+	"github.com/juki/freeswitch-console/internal/store"
 )
 
 // filesTimeout bounds one config file operation; the agent client has its

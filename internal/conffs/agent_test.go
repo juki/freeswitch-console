@@ -129,7 +129,7 @@ func TestClientErrors(t *testing.T) {
 	other := httptest.NewServer(http.NotFoundHandler())
 	defer other.Close()
 	notAgent, _ := NewClient(other.URL, testToken)
-	if _, err := notAgent.List(ctx, ""); !errors.Is(err, ErrAgent) || !strings.Contains(err.Error(), "no fsdeck agent") {
+	if _, err := notAgent.List(ctx, ""); !errors.Is(err, ErrAgent) || !strings.Contains(err.Error(), "no fsconsole agent") {
 		t.Fatalf("not an agent: %v", err)
 	}
 

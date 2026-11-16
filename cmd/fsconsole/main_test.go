@@ -20,7 +20,7 @@ import (
 // TestMain lets a test run the real main in a child process of the test
 // binary, so start-up behaviour is checked end to end.
 func TestMain(m *testing.M) {
-	if os.Getenv("FSDECK_TEST_RUN_MAIN") == "1" {
+	if os.Getenv("FSCONSOLE_TEST_RUN_MAIN") == "1" {
 		main()
 		os.Exit(0)
 	}
@@ -31,7 +31,7 @@ func TestMain(m *testing.M) {
 func runMain(t *testing.T, env []string, args ...string) (*exec.Cmd, *bufio.Scanner) {
 	t.Helper()
 	cmd := exec.Command(os.Args[0], args...)
-	cmd.Env = append([]string{"FSDECK_TEST_RUN_MAIN=1", "PATH=" + os.Getenv("PATH")}, env...)
+	cmd.Env = append([]string{"FSCONSOLE_TEST_RUN_MAIN=1", "PATH=" + os.Getenv("PATH")}, env...)
 	out, err := cmd.StderrPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -61,7 +61,7 @@ func startupOutput(t *testing.T, env []string, args ...string) (string, bool) {
 
 func TestVersionFlag(t *testing.T) {
 	cmd := exec.Command(os.Args[0], "-version")
-	cmd.Env = []string{"FSDECK_TEST_RUN_MAIN=1"}
+	cmd.Env = []string{"FSCONSOLE_TEST_RUN_MAIN=1"}
 	out, err := cmd.CombinedOutput()
 	if err != nil || string(out) != "dev\n" {
 		t.Fatalf("-version: %v %q", err, out)
@@ -70,31 +70,31 @@ func TestVersionFlag(t *testing.T) {
 
 func TestSecretKeyStartup(t *testing.T) {
 	dir := t.TempDir()
-	data := filepath.Join(dir, "fsdeck.json")
+	data := filepath.Join(dir, "fsconsole.json")
 	os.WriteFile(data, []byte(`{"instances":[{"id":"0123456789abcdef","name":"a","host":"127.0.0.1","port":1,"password":"ClueCon"}]}`), 0o600)
-	base := []string{"FSDECK_DATA=" + data, "FSDECK_LISTEN=127.0.0.1:0", "FSDECK_ADMIN_PASSWORD=admin-password", "FSDECK_AUDIT="}
+	base := []string{"FSCONSOLE_DATA=" + data, "FSCONSOLE_LISTEN=127.0.0.1:0", "FSCONSOLE_ADMIN_PASSWORD=admin-password", "FSCONSOLE_AUDIT="}
 
 	// No key: one warning, then it runs.
 	out, ok := startupOutput(t, base)
-	if !ok || strings.Count(out, "FSDECK_SECRET_KEY is not set") != 1 {
+	if !ok || strings.Count(out, "FSCONSOLE_SECRET_KEY is not set") != 1 {
 		t.Fatalf("no key:\n%s", out)
 	}
 
 	// With a key: runs without the warning; the file is encrypted on the
 	// next save, not at start.
-	key := "FSDECK_SECRET_KEY=0123456789abcdef-key"
+	key := "FSCONSOLE_SECRET_KEY=0123456789abcdef-key"
 	out, ok = startupOutput(t, append(base, key))
-	if !ok || strings.Contains(out, "FSDECK_SECRET_KEY") {
+	if !ok || strings.Contains(out, "FSCONSOLE_SECRET_KEY") {
 		t.Fatalf("with key:\n%s", out)
 	}
 
 	// Encrypted file, then missing, wrong and short keys.
 	os.WriteFile(data, []byte(`{"instances":[{"id":"0123456789abcdef","name":"a","host":"127.0.0.1","port":1,"password":"enc:v1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}]}`), 0o600)
 	for env, want := range map[string]string{
-		"":                                   "no secret key is set (FSDECK_SECRET_KEY)",
-		key:                                  "the secret key (FSDECK_SECRET_KEY) is wrong",
-		"FSDECK_SECRET_KEY=short":            "must be at least 16 characters",
-		"FSDECK_SECRET_KEY=x-16-characters!": "is wrong",
+		"":                                      "no secret key is set (FSCONSOLE_SECRET_KEY)",
+		key:                                     "the secret key (FSCONSOLE_SECRET_KEY) is wrong",
+		"FSCONSOLE_SECRET_KEY=short":            "must be at least 16 characters",
+		"FSCONSOLE_SECRET_KEY=x-16-characters!": "is wrong",
 	} {
 		out, ok := startupOutput(t, append(base, env))
 		if ok || !strings.Contains(out, want) {
@@ -126,7 +126,7 @@ func TestLoadTLS(t *testing.T) {
 	}
 
 	// main refuses to start with only one of them.
-	out, ok := startupOutput(t, []string{"FSDECK_TLS_CERT=" + certFile, "FSDECK_LISTEN=127.0.0.1:0"})
+	out, ok := startupOutput(t, []string{"FSCONSOLE_TLS_CERT=" + certFile, "FSCONSOLE_LISTEN=127.0.0.1:0"})
 	if ok || !strings.Contains(out, "must be given together") {
 		t.Fatalf("one file:\n%s", out)
 	}
@@ -161,10 +161,10 @@ func writeCert(t *testing.T, dir string) (certFile, keyFile string) {
 
 func TestBootstrapAndAuditDefault(t *testing.T) {
 	dir := t.TempDir()
-	data := filepath.Join(dir, "fsdeck.json")
-	env := []string{"FSDECK_DATA=" + data, "FSDECK_LISTEN=127.0.0.1:0", "FSDECK_SECRET_KEY=0123456789abcdef-key"}
+	data := filepath.Join(dir, "fsconsole.json")
+	env := []string{"FSCONSOLE_DATA=" + data, "FSCONSOLE_LISTEN=127.0.0.1:0", "FSCONSOLE_SECRET_KEY=0123456789abcdef-key"}
 
-	// First start without FSDECK_ADMIN_PASSWORD: admin is created and its
+	// First start without FSCONSOLE_ADMIN_PASSWORD: admin is created and its
 	// password printed once.
 	out, ok := startupOutput(t, env)
 	if !ok || strings.Count(out, "created the account admin with password ") != 1 {
@@ -178,7 +178,7 @@ func TestBootstrapAndAuditDefault(t *testing.T) {
 	if !strings.Contains(string(stored), `"username": "admin"`) || strings.Contains(string(stored), password) {
 		t.Fatalf("data file %s", stored)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "fsdeck-audit.log")); err != nil {
+	if _, err := os.Stat(filepath.Join(dir, "fsconsole-audit.log")); err != nil {
 		t.Fatalf("audit log not beside the data file: %v", err)
 	}
 
@@ -188,13 +188,13 @@ func TestBootstrapAndAuditDefault(t *testing.T) {
 		t.Fatalf("second start:\n%s", out)
 	}
 
-	// An empty FSDECK_AUDIT disables the log; -audit wins over it.
+	// An empty FSCONSOLE_AUDIT disables the log; -audit wins over it.
 	other := t.TempDir()
-	envOther := []string{"FSDECK_DATA=" + filepath.Join(other, "d.json"), "FSDECK_LISTEN=127.0.0.1:0", "FSDECK_ADMIN_PASSWORD=admin-password", "FSDECK_AUDIT="}
+	envOther := []string{"FSCONSOLE_DATA=" + filepath.Join(other, "d.json"), "FSCONSOLE_LISTEN=127.0.0.1:0", "FSCONSOLE_ADMIN_PASSWORD=admin-password", "FSCONSOLE_AUDIT="}
 	if _, ok := startupOutput(t, envOther); !ok {
 		t.Fatal("start with audit disabled")
 	}
-	if _, err := os.Stat(filepath.Join(other, "fsdeck-audit.log")); err == nil {
+	if _, err := os.Stat(filepath.Join(other, "fsconsole-audit.log")); err == nil {
 		t.Fatal("audit log written while disabled")
 	}
 	explicit := filepath.Join(other, "explicit.log")
@@ -206,7 +206,7 @@ func TestBootstrapAndAuditDefault(t *testing.T) {
 	}
 
 	// Bad numbers and levels stop the start.
-	for _, e := range []string{"FSDECK_LOG_BACKLOG=lots", "FSDECK_LOG_BACKLOG_LEVEL=9", "FSDECK_LOG_BACKLOG=-1"} {
+	for _, e := range []string{"FSCONSOLE_LOG_BACKLOG=lots", "FSCONSOLE_LOG_BACKLOG_LEVEL=9", "FSCONSOLE_LOG_BACKLOG=-1"} {
 		if out, ok := startupOutput(t, append(envOther, e)); ok || out == "" {
 			t.Errorf("%s:\n%s", e, out)
 		}

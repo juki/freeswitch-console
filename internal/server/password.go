@@ -12,7 +12,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/juki/fsdeck/internal/store"
+	"github.com/juki/freeswitch-console/internal/store"
 )
 
 // pbkdf2Iterations is the work factor of new hashes. Tests lower it; a

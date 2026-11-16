@@ -1,3 +1,3 @@
-module github.com/juki/fsdeck
+module github.com/juki/freeswitch-console
 
 go 1.25

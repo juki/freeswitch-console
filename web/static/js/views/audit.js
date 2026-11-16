@@ -1,5 +1,5 @@
 // Audit log (admin): who signed in, from where, and every change made through
-// fsdeck, newest first. The search goes to the server (?q=, debounced); the
+// fsconsole, newest first. The search goes to the server (?q=, debounced); the
 // result chips filter the loaded rows. Reading the log is itself audited, so
 // it is loaded on demand and never polled.
 

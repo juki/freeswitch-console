@@ -11,7 +11,7 @@ import (
 	"testing/fstest"
 	"time"
 
-	"github.com/juki/fsdeck/internal/store"
+	"github.com/juki/freeswitch-console/internal/store"
 )
 
 func TestPasswordHash(t *testing.T) {
@@ -159,7 +159,7 @@ func TestChangeOwnPassword(t *testing.T) {
 }
 
 func TestLegacyDataFile(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "fsdeck.json")
+	path := filepath.Join(t.TempDir(), "fsconsole.json")
 	st, _ := store.Open(path)
 	if _, err := st.Add(store.Instance{Name: "a", Host: "h", Port: 1, Password: eslPW}); err != nil {
 		t.Fatal(err)

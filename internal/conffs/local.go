@@ -23,7 +23,7 @@ import (
 )
 
 // tmpPrefix starts the name of a file being written; listings hide it.
-const tmpPrefix = ".fsdeck-tmp-"
+const tmpPrefix = ".fsconsole-tmp-"
 
 var backupIDRE = regexp.MustCompile(`^[0-9]{19}-[0-9a-f]{8}$`)
 

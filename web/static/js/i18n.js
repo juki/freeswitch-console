@@ -9,7 +9,7 @@
 // passed to plural(n, one, other), which picks one with Intl.PluralRules;
 // Chinese catalogs give both keys the same text.
 //
-// The language is the stored choice (localStorage "fsdeck-lang"), else the
+// The language is the stored choice (localStorage "fsconsole-lang"), else the
 // browser's first supported language (zh* -> zh-CN), else English.
 // setLang() stores the choice and tells the listeners, which re-render.
 
@@ -21,7 +21,7 @@ export const LANGS = [
   { code: 'en', label: 'English', short: 'EN' },
   { code: 'zh-CN', label: '简体中文', short: '中' },
 ];
-const KEY = 'fsdeck-lang';
+const KEY = 'fsconsole-lang';
 
 function supported(code) {
   const c = String(code || '').toLowerCase();

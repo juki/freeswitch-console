@@ -1,6 +1,6 @@
-// Users (admin): the accounts that can sign in to fsdeck, their roles, and
+// Users (admin): the accounts that can sign in to fsconsole, their roles, and
 // the dialogs to add, edit and delete them. Accounts set by the environment
-// (FSDECK_ADMIN_PASSWORD, FSDECK_VIEWER_PASSWORD) are listed but read-only,
+// (FSCONSOLE_ADMIN_PASSWORD, FSCONSOLE_VIEWER_PASSWORD) are listed but read-only,
 // and nobody is offered actions the server refuses on their own account.
 
 import { api, isAbort } from '../api.js';

@@ -7,14 +7,14 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/juki/fsdeck/internal/audit"
+	"github.com/juki/freeswitch-console/internal/audit"
 )
 
 // withAudit gives the harness an audit log; its path is returned through
 // *path.
 func withAudit(t *testing.T, path *string) func(*Config) {
 	return func(c *Config) {
-		*path = filepath.Join(t.TempDir(), "fsdeck-audit.log")
+		*path = filepath.Join(t.TempDir(), "fsconsole-audit.log")
 		l, err := audit.Open(*path)
 		if err != nil {
 			t.Fatal(err)

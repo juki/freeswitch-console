@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/juki/fsdeck/internal/audit"
-	"github.com/juki/fsdeck/internal/store"
+	"github.com/juki/freeswitch-console/internal/audit"
+	"github.com/juki/freeswitch-console/internal/store"
 )
 
 func brief(e audit.Entry) string {

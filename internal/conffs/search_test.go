@@ -25,7 +25,7 @@ func TestSearch(t *testing.T) {
 	put := func(p, s string) { os.WriteFile(filepath.Join(f.root, p), []byte(s), 0o644) }
 	put("sip_profiles/external.xml", "<profile name=\"external\">\n  <param name=\"Secret-Thing\" value=\"x\"/>\n\t<!-- secret -->  \r\n</profile>\n")
 	put("a.txt", "SECRET here\nnothing\n")
-	put(".fsdeck-tmp-0123", "<secret/>")
+	put(".fsconsole-tmp-0123", "<secret/>")
 	put("big.xml", "<a>secret"+strings.Repeat("x", MaxSize)+"</a>")
 	put("latin1.xml", "<a>secret \xe9</a>")
 	put("notes.pem", "secret")

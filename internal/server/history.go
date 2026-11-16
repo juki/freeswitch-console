@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/juki/fsdeck/internal/esl"
+	"github.com/juki/freeswitch-console/internal/esl"
 )
 
 // historySize keeps 2 hours at FreeSWITCH's default 20s heartbeat.

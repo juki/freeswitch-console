@@ -7,10 +7,10 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/juki/fsdeck/internal/audit"
-	"github.com/juki/fsdeck/internal/esl"
-	"github.com/juki/fsdeck/internal/fsapi"
-	"github.com/juki/fsdeck/internal/store"
+	"github.com/juki/freeswitch-console/internal/audit"
+	"github.com/juki/freeswitch-console/internal/esl"
+	"github.com/juki/freeswitch-console/internal/fsapi"
+	"github.com/juki/freeswitch-console/internal/store"
 )
 
 // instanceView is what the API exposes of an instance: never the ESL

@@ -1,4 +1,4 @@
-// HTTP client for the fsdeck API. Paths are relative ("api/..."), so the
+// HTTP client for the fsconsole API. Paths are relative ("api/..."), so the
 // console also works when served below a path prefix.
 
 import { t } from './i18n.js';

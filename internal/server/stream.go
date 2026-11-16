@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/juki/fsdeck/internal/esl"
+	"github.com/juki/freeswitch-console/internal/esl"
 )
 
 type logEvent struct {

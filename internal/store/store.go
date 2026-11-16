@@ -33,7 +33,7 @@ type Instance struct {
 	Password string `json:"password"` // ESL password; encrypted in the file when a secret key is set
 
 	// Config file access: ConfigMode "" (none), "local" (ConfigPath is the
-	// conf directory on this host) or "agent" (the fsdeck agent at AgentURL,
+	// conf directory on this host) or "agent" (the fsconsole agent at AgentURL,
 	// AgentToken encrypted like Password).
 	ConfigMode string `json:"configMode,omitempty"`
 	ConfigPath string `json:"configPath,omitempty"`
@@ -72,9 +72,9 @@ var (
 	ErrInvalidUser  = errors.New("invalid user")
 	ErrDuplicate    = errors.New("username already exists")
 
-	ErrSecretKeyShort   = errors.New("the secret key (FSDECK_SECRET_KEY) must be at least 16 characters")
-	ErrSecretKeyMissing = errors.New("the file holds encrypted ESL passwords but no secret key is set (FSDECK_SECRET_KEY)")
-	ErrSecretKeyWrong   = errors.New("cannot decrypt the ESL passwords: the secret key (FSDECK_SECRET_KEY) is wrong")
+	ErrSecretKeyShort   = errors.New("the secret key (FSCONSOLE_SECRET_KEY) must be at least 16 characters")
+	ErrSecretKeyMissing = errors.New("the file holds encrypted ESL passwords but no secret key is set (FSCONSOLE_SECRET_KEY)")
+	ErrSecretKeyWrong   = errors.New("cannot decrypt the ESL passwords: the secret key (FSCONSOLE_SECRET_KEY) is wrong")
 )
 
 // encPrefix marks an encrypted ESL password: enc:v1:<base64(nonce|ciphertext)>.

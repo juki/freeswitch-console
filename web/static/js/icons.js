@@ -69,7 +69,7 @@ export function icon(name, cls) {
     shapes.map((sh) => (typeof sh === 'string' ? s('path', { d: sh }) : s(sh[0], sh[1]))));
 }
 
-// brandMark is the fsdeck logo: a stack of bars with a live dot.
+// brandMark is the fsconsole logo: a stack of bars with a live dot.
 export function brandMark() {
   return s('svg', { class: 'brand-mark', viewBox: '0 0 32 32', 'aria-hidden': 'true' },
     s('rect', { width: 32, height: 32, rx: 8, fill: '#5653d4' }),

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/juki/fsdeck/internal/store"
+	"github.com/juki/freeswitch-console/internal/store"
 )
 
 // TestActionCaps pins the role split of the contract.

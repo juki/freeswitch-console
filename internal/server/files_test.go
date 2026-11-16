@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/juki/fsdeck/internal/conffs"
+	"github.com/juki/freeswitch-console/internal/conffs"
 )
 
 const agentToken = "agent-token-0123456789"

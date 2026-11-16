@@ -13,7 +13,7 @@ import (
 // maxBody bounds a request: a file of MaxSize, JSON-escaped.
 const maxBody = 8 << 20
 
-// NewAgentHandler serves store under /v1/ to fsdeck. Every request needs
+// NewAgentHandler serves store under /v1/ to fsconsole. Every request needs
 // "Authorization: Bearer <token>"; nothing else is exposed.
 func NewAgentHandler(store FileStore, token string) http.Handler {
 	want := sha256.Sum256([]byte(token))
@@ -76,7 +76,7 @@ func NewAgentHandler(store FileStore, token string) http.Handler {
 		// Hashing first keeps the comparison constant in time and length.
 		have := sha256.Sum256([]byte(got))
 		if !ok || subtle.ConstantTimeCompare(have[:], want[:]) != 1 {
-			w.Header().Set("WWW-Authenticate", `Bearer realm="fsdeck-agent"`)
+			w.Header().Set("WWW-Authenticate", `Bearer realm="fsconsole-agent"`)
 			writeJSON(w, http.StatusUnauthorized, errorBody{Error: "invalid token"})
 			return
 		}

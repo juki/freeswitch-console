@@ -118,7 +118,7 @@ export function mountInstance({ scope, root, id, ctx }) {
 
   scope.onCleanup(ctx.onInstances(sync));
   scope.onCleanup(() => {
-    document.title = 'fsdeck';
+    document.title = 'FreeSWITCH Console';
   });
   sync();
 

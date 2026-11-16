@@ -90,7 +90,7 @@ export function mountLogin({ root, onLogin }) {
 
   root.replaceChildren(h('div', { class: 'login' },
     h('section', { class: 'login-hero', 'aria-hidden': 'true' },
-      h('div', { class: 'login-brand' }, brandMark(), 'fsdeck'),
+      h('div', { class: 'login-brand' }, brandMark(), 'FreeSWITCH Console'),
       h('div', { class: 'login-pitch' },
         h('span', { class: 'login-kicker', text: t('login.kicker') }),
         h('p', { class: 'login-headline', text: t('login.headline') }),
@@ -103,7 +103,7 @@ export function mountLogin({ root, onLogin }) {
     h('main', { class: 'login-main' },
       h('div', { class: 'login-lang' }, langMenu({ label: true })),
       h('div', { class: 'login-card' },
-        h('div', { class: 'login-brand' }, brandMark(), 'fsdeck'),
+        h('div', { class: 'login-brand' }, brandMark(), 'FreeSWITCH Console'),
         h('h1', { class: 'login-title', text: t('login.title') }),
         h('p', { class: 'login-sub', text: t('login.sub') }),
         form,

@@ -1,4 +1,4 @@
-// Command fsdeck-agent runs on a FreeSWITCH host and lets fsdeck read and
+// Command fsconsole-agent runs on a FreeSWITCH host and lets fsconsole read and
 // write the configuration files below one directory, with backups kept on
 // that host. It serves only /v1/ and every request needs the bearer token.
 package main
@@ -18,7 +18,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/juki/fsdeck/internal/conffs"
+	"github.com/juki/freeswitch-console/internal/conffs"
 )
 
 func main() {
@@ -35,10 +35,10 @@ func main() {
 		srv.Shutdown(shutdownCtx)
 	}()
 	if srv.TLSConfig != nil {
-		log.Printf("fsdeck-agent listening on https://%s", srv.Addr)
+		log.Printf("fsconsole-agent listening on https://%s", srv.Addr)
 		err = srv.ListenAndServeTLS("", "")
 	} else {
-		log.Printf("fsdeck-agent listening on http://%s (no TLS: use it on a trusted network or through a tunnel)", srv.Addr)
+		log.Printf("fsconsole-agent listening on http://%s (no TLS: use it on a trusted network or through a tunnel)", srv.Addr)
 		err = srv.ListenAndServe()
 	}
 	if !errors.Is(err, http.ErrServerClosed) {
@@ -49,11 +49,11 @@ func main() {
 // setup checks the flags and returns the server; it refuses to start
 // without a usable token.
 func setup(args []string, stderr io.Writer) (*http.Server, error) {
-	fs := flag.NewFlagSet("fsdeck-agent", flag.ContinueOnError)
+	fs := flag.NewFlagSet("fsconsole-agent", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	listen := fs.String("listen", "127.0.0.1:8025", "listen address")
 	root := fs.String("root", "/etc/freeswitch", "FreeSWITCH configuration directory")
-	backups := fs.String("backups", "/var/lib/fsdeck-agent/backups", "backup directory, outside -root")
+	backups := fs.String("backups", "/var/lib/fsconsole-agent/backups", "backup directory, outside -root")
 	tokenFile := fs.String("token-file", "", "file holding the bearer token (at least 16 characters); required")
 	tlsCert := fs.String("tls-cert", "", "TLS certificate file (PEM); with -tls-key the agent serves HTTPS")
 	tlsKey := fs.String("tls-key", "", "TLS private key file (PEM)")

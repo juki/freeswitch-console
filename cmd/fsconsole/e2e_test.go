@@ -17,11 +17,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/juki/fsdeck/internal/audit"
-	"github.com/juki/fsdeck/internal/conffs"
-	"github.com/juki/fsdeck/internal/server"
-	"github.com/juki/fsdeck/internal/store"
-	"github.com/juki/fsdeck/web"
+	"github.com/juki/freeswitch-console/internal/audit"
+	"github.com/juki/freeswitch-console/internal/conffs"
+	"github.com/juki/freeswitch-console/internal/server"
+	"github.com/juki/freeswitch-console/internal/store"
+	"github.com/juki/freeswitch-console/web"
 )
 
 const eslPassword = "s3cret-esl"
@@ -200,7 +200,7 @@ func (c *testClient) get(path string, want int, into any) []byte {
 	return body
 }
 
-// stack is the whole fsdeck wiring against one fake FreeSWITCH.
+// stack is the whole fsconsole wiring against one fake FreeSWITCH.
 type stack struct {
 	host string
 	port int
@@ -214,11 +214,11 @@ func startStack(t *testing.T) stack {
 	t.Helper()
 	host, port := fakeFreeSWITCH(t)
 	dir := t.TempDir()
-	st, err := store.Open(filepath.Join(dir, "fsdeck.json"), store.WithSecretKey("an-e2e-secret-key-value"))
+	st, err := store.Open(filepath.Join(dir, "fsconsole.json"), store.WithSecretKey("an-e2e-secret-key-value"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	auditLog, err := audit.Open(filepath.Join(dir, "fsdeck-audit.log"))
+	auditLog, err := audit.Open(filepath.Join(dir, "fsconsole-audit.log"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -290,7 +290,7 @@ func TestEndToEnd(t *testing.T) {
 	if bytes.Contains(body, []byte(eslPassword)) {
 		t.Fatalf("create response leaks the ESL password: %s", body)
 	}
-	if data, _ := os.ReadFile(filepath.Join(dir, "fsdeck.json")); bytes.Contains(data, []byte(eslPassword)) || !bytes.Contains(data, []byte(`"password": "enc:v1:`)) {
+	if data, _ := os.ReadFile(filepath.Join(dir, "fsconsole.json")); bytes.Contains(data, []byte(eslPassword)) || !bytes.Contains(data, []byte(`"password": "enc:v1:`)) {
 		t.Fatalf("ESL password not encrypted at rest: %s", data)
 	}
 	var inst struct{ ID string }
@@ -439,7 +439,7 @@ func TestEndToEnd(t *testing.T) {
 	if code, body := c.do("POST", p+"/actions", map[string]any{"action": "fsctl", "op": "loglevel", "value": 6}); code != http.StatusOK || !strings.Contains(string(body), "log level") {
 		t.Fatalf("fsctl: status %d: %s", code, body)
 	}
-	auditData, _ := os.ReadFile(filepath.Join(dir, "fsdeck-audit.log"))
+	auditData, _ := os.ReadFile(filepath.Join(dir, "fsconsole-audit.log"))
 	for _, want := range []string{
 		`"user":"admin","ip":"127.0.0.1","action":"console.run","target":"test","detail":"status","result":"ok"`,
 		`"action":"action.fsctl","target":"test","detail":"op=loglevel value=6","result":"ok"`,

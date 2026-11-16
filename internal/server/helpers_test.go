@@ -4,7 +4,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/juki/fsdeck/internal/store"
+	"github.com/juki/freeswitch-console/internal/store"
 )
 
 const userPW = "user-password-1"

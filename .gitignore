@@ -1,11 +1,11 @@
 # Build output
-/fsdeck
-/fsdeck-agent
+/fsconsole
+/fsconsole-agent
 /bin/
 /dist/
 
 # Runtime data (instance list with ESL passwords)
-/fsdeck.json
+/fsconsole.json
 /data/
 
 # IDE / OS noise

@@ -801,7 +801,7 @@ export function mountFiles({ id, ctx, scope, root, params = new URLSearchParams(
   }
 }
 
-// setupState explains the two ways to give fsdeck the configuration files and
+// setupState explains the two ways to give fsconsole the configuration files and
 // opens the instance dialog at that section.
 function setupState(ctx, inst) {
   const action = ctx.can('manage') && inst && inst.name

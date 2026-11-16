@@ -108,7 +108,7 @@ function buildShell() {
   const main = h('main', { class: 'main' });
   const foot = h('div', { class: 'side-foot' }, accountMenu({ me, version, onSignOut: logout }));
   const side = h('aside', { class: 'side' },
-    h('a', { class: 'brand', href: '#/' }, brandMark(), h('span', { text: 'fsdeck' }), h('span', { class: 'brand-tag', text: t('brand.tag') })),
+    h('a', { class: 'brand', href: '#/' }, brandMark(), h('span', { text: 'FreeSWITCH' }), h('span', { class: 'brand-tag', text: t('brand.tag') })),
     h('nav', { class: 'side-scroll', 'aria-label': t('nav.main') },
       fleetLink,
       h('div', { class: 'side-label' }, t('nav.instances'), count),

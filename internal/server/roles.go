@@ -1,6 +1,6 @@
 package server
 
-import "github.com/juki/fsdeck/internal/store"
+import "github.com/juki/freeswitch-console/internal/store"
 
 // capability is what a route requires of the signed-in account.
 type capability int

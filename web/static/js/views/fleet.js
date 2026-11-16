@@ -178,7 +178,7 @@ export function mountFleet({ scope, root, ctx }) {
 
 // instanceDialog adds or edits an instance: the Event Socket connection and,
 // optionally, access to its configuration files (on this server or through
-// the fsdeck agent).
+// the fsconsole agent).
 export function instanceDialog(ctx, inst, { focusConfig = false, onSaved } = {}) {
   const editing = Boolean(inst);
   const name = h('input', { id: 'f-name', class: 'input', type: 'text', required: true, maxLength: 64, autocomplete: 'off', value: editing ? inst.name : '', placeholder: 'fs-prod-01' });

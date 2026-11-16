@@ -40,10 +40,10 @@ export function accountMenu({ me, version, onSignOut }) {
 
   const themeButtons = THEMES.map((th) => {
     const b = h('button', {
-      type: 'button', class: 'theme-opt', role: 'menuitemradio', 'aria-checked': String(window.fsdeckTheme.get() === th.mode), title: th.label(),
+      type: 'button', class: 'theme-opt', role: 'menuitemradio', 'aria-checked': String(window.fsconsoleTheme.get() === th.mode), title: th.label(),
       on: {
         click: () => {
-          window.fsdeckTheme.set(th.mode);
+          window.fsconsoleTheme.set(th.mode);
           for (const x of themeButtons) x.setAttribute('aria-checked', String(x === b));
         },
       },
@@ -75,7 +75,7 @@ export function accountMenu({ me, version, onSignOut }) {
       icon('info'), h('span', { class: 'menu-text' }, t('about.title'), h('span', { class: 'menu-sub', text: t('about.menuSub') }))),
     h('button', { type: 'button', class: 'menu-item', role: 'menuitem', on: { click: () => { pop.close(); onSignOut(); } } },
       icon('logout'), h('span', { class: 'menu-text', text: t('nav.signOut') })),
-    h('div', { class: 'menu-foot' }, h('span', { text: 'fsdeck' }), version ? h('span', { class: 'mono', text: version }) : null));
+    h('div', { class: 'menu-foot' }, h('span', { text: 'fsconsole' }), version ? h('span', { class: 'mono', text: version }) : null));
   return pop.el;
 }
 
@@ -148,11 +148,11 @@ export function changePasswordDialog() {
 
 // ---------- about ----------
 
-// SOURCE_URL is where the source code of fsdeck is published. The AGPL asks
+// SOURCE_URL is where the source code of fsconsole is published. The AGPL asks
 // that users of the console be offered it, so the About dialog links to it.
-const SOURCE_URL = 'https://github.com/juki/fsdeck';
+const SOURCE_URL = 'https://github.com/juki/freeswitch-console';
 
-// aboutDialog shows what fsdeck is, its version, the terms it is published
+// aboutDialog shows what fsconsole is, its version, the terms it is published
 // under and where its source code is.
 export function aboutDialog({ version }) {
   const close = h('button', { type: 'button', class: 'btn btn-primary', text: t('common.close') });
@@ -161,7 +161,7 @@ export function aboutDialog({ version }) {
     body: [
       h('div', { class: 'about-head' },
         brandMark(),
-        h('div', { class: 'about-who' }, h('div', { class: 'about-name', text: 'fsdeck' }), h('p', { class: 'modal-text', text: t('about.text') }))),
+        h('div', { class: 'about-who' }, h('div', { class: 'about-name', text: 'FreeSWITCH Console' }), h('p', { class: 'modal-text', text: t('about.text') }))),
       kv([
         [t('about.k.version'), version ? h('span', { class: 'mono', text: version }) : ''],
         [t('about.k.licence'), 'GNU AGPL-3.0'],

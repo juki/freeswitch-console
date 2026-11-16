@@ -1,4 +1,4 @@
-// Command fsdeck serves a web console for operating FreeSWITCH over ESL.
+// Command fsconsole serves a web console for operating FreeSWITCH over ESL.
 package main
 
 import (
@@ -17,25 +17,25 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/juki/fsdeck/internal/audit"
-	"github.com/juki/fsdeck/internal/esl"
-	"github.com/juki/fsdeck/internal/server"
-	"github.com/juki/fsdeck/internal/store"
-	"github.com/juki/fsdeck/web"
+	"github.com/juki/freeswitch-console/internal/audit"
+	"github.com/juki/freeswitch-console/internal/esl"
+	"github.com/juki/freeswitch-console/internal/server"
+	"github.com/juki/freeswitch-console/internal/store"
+	"github.com/juki/freeswitch-console/web"
 )
 
 // version is set at build time with -ldflags "-X main.version=...".
 var version = "dev"
 
 func main() {
-	listen := flag.String("listen", envOr("FSDECK_LISTEN", "127.0.0.1:8080"), "HTTP listen address")
-	data := flag.String("data", envOr("FSDECK_DATA", "fsdeck.json"), "data file: instances and accounts")
+	listen := flag.String("listen", envOr("FSCONSOLE_LISTEN", "127.0.0.1:8080"), "HTTP listen address")
+	data := flag.String("data", envOr("FSCONSOLE_DATA", "fsconsole.json"), "data file: instances and accounts")
 	static := flag.String("static", "", "serve the frontend from this directory instead of the embedded copy (frontend development)")
-	tlsCert := flag.String("tls-cert", os.Getenv("FSDECK_TLS_CERT"), "TLS certificate file (PEM); with -tls-key the console serves HTTPS")
-	tlsKey := flag.String("tls-key", os.Getenv("FSDECK_TLS_KEY"), "TLS private key file (PEM)")
-	backlog := flag.Int("log-backlog", envInt("FSDECK_LOG_BACKLOG", 2000), "log lines kept per instance and replayed when the Logs view opens; 0 disables")
-	backlogLevel := flag.Int("log-backlog-level", envInt("FSDECK_LOG_BACKLOG_LEVEL", 6), "highest log level kept in the backlog, 0 (console) to 7 (debug)")
-	auditPath := flag.String("audit", "", "audit log file (default fsdeck-audit.log beside the data file; empty disables)")
+	tlsCert := flag.String("tls-cert", os.Getenv("FSCONSOLE_TLS_CERT"), "TLS certificate file (PEM); with -tls-key the console serves HTTPS")
+	tlsKey := flag.String("tls-key", os.Getenv("FSCONSOLE_TLS_KEY"), "TLS private key file (PEM)")
+	backlog := flag.Int("log-backlog", envInt("FSCONSOLE_LOG_BACKLOG", 2000), "log lines kept per instance and replayed when the Logs view opens; 0 disables")
+	backlogLevel := flag.Int("log-backlog-level", envInt("FSCONSOLE_LOG_BACKLOG_LEVEL", 6), "highest log level kept in the backlog, 0 (console) to 7 (debug)")
+	auditPath := flag.String("audit", "", "audit log file (default fsconsole-audit.log beside the data file; empty disables)")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
 
@@ -44,11 +44,11 @@ func main() {
 		return
 	}
 	if !flagSet("audit") {
-		// An empty FSDECK_AUDIT disables the log, so unset and empty differ.
-		if v, ok := os.LookupEnv("FSDECK_AUDIT"); ok {
+		// An empty FSCONSOLE_AUDIT disables the log, so unset and empty differ.
+		if v, ok := os.LookupEnv("FSCONSOLE_AUDIT"); ok {
 			*auditPath = v
 		} else {
-			*auditPath = filepath.Join(filepath.Dir(*data), "fsdeck-audit.log")
+			*auditPath = filepath.Join(filepath.Dir(*data), "fsconsole-audit.log")
 		}
 	}
 
@@ -63,17 +63,17 @@ func main() {
 	}
 
 	var opts []store.Option
-	if key := os.Getenv("FSDECK_SECRET_KEY"); key != "" {
+	if key := os.Getenv("FSCONSOLE_SECRET_KEY"); key != "" {
 		opts = append(opts, store.WithSecretKey(key))
 	} else {
-		log.Printf("warning: FSDECK_SECRET_KEY is not set; ESL passwords are stored in clear in %s", *data)
+		log.Printf("warning: FSCONSOLE_SECRET_KEY is not set; ESL passwords are stored in clear in %s", *data)
 	}
 	st, err := store.Open(*data, opts...)
 	if err != nil {
 		log.Fatalf("open %s: %v", *data, err)
 	}
 
-	adminPassword := os.Getenv("FSDECK_ADMIN_PASSWORD")
+	adminPassword := os.Getenv("FSCONSOLE_ADMIN_PASSWORD")
 	password, err := server.Bootstrap(st, adminPassword != "")
 	if err != nil {
 		log.Fatalf("create the admin account: %v", err)
@@ -92,7 +92,7 @@ func main() {
 
 	app, err := server.New(server.Config{
 		AdminPassword:   adminPassword,
-		ViewerPassword:  os.Getenv("FSDECK_VIEWER_PASSWORD"),
+		ViewerPassword:  os.Getenv("FSCONSOLE_VIEWER_PASSWORD"),
 		Store:           st,
 		Dial:            dial,
 		Static:          assets,
@@ -129,10 +129,10 @@ func main() {
 	}()
 
 	if tlsConfig != nil {
-		log.Printf("fsdeck %s listening on https://%s", version, *listen)
+		log.Printf("fsconsole %s listening on https://%s", version, *listen)
 		err = srv.ListenAndServeTLS("", "")
 	} else {
-		log.Printf("fsdeck %s listening on http://%s", version, *listen)
+		log.Printf("fsconsole %s listening on http://%s", version, *listen)
 		err = srv.ListenAndServe()
 	}
 	if !errors.Is(err, http.ErrServerClosed) {
@@ -147,7 +147,7 @@ func loadTLS(certFile, keyFile string) (*tls.Config, error) {
 	case certFile == "" && keyFile == "":
 		return nil, nil
 	case certFile == "" || keyFile == "":
-		return nil, errors.New("-tls-cert and -tls-key (FSDECK_TLS_CERT, FSDECK_TLS_KEY) must be given together")
+		return nil, errors.New("-tls-cert and -tls-key (FSCONSOLE_TLS_CERT, FSCONSOLE_TLS_KEY) must be given together")
 	}
 	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {

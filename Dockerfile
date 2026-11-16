@@ -4,15 +4,15 @@ COPY go.mod ./
 COPY cmd ./cmd
 COPY internal ./internal
 COPY web ./web
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/fsdeck ./cmd/fsdeck \
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/fsconsole ./cmd/fsconsole \
     && mkdir /out/data
 
 FROM scratch
-COPY --from=build /out/fsdeck /fsdeck
+COPY --from=build /out/fsconsole /fsconsole
 COPY --from=build --chown=65534:65534 /out/data /data
 USER 65534:65534
-ENV FSDECK_LISTEN=0.0.0.0:8080 \
-    FSDECK_DATA=/data/fsdeck.json
+ENV FSCONSOLE_LISTEN=0.0.0.0:8080 \
+    FSCONSOLE_DATA=/data/fsconsole.json
 EXPOSE 8080
 VOLUME /data
-ENTRYPOINT ["/fsdeck"]
+ENTRYPOINT ["/fsconsole"]

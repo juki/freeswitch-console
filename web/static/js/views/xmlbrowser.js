@@ -138,8 +138,8 @@ export function mountXmlBrowser({ id, scope, root, kind, ctx, label, params = ne
 
   function clearHighlights() {
     if (HL) {
-      CSS.highlights.delete('fsdeck-find');
-      CSS.highlights.delete('fsdeck-find-current');
+      CSS.highlights.delete('fsconsole-find');
+      CSS.highlights.delete('fsconsole-find-current');
     }
   }
   scope.onCleanup(clearHighlights);
@@ -152,8 +152,8 @@ export function mountXmlBrowser({ id, scope, root, kind, ctx, label, params = ne
     findCount.textContent = !needle ? '' : hits.length ? t('common.nOfM', { n: fmtInt(current + 1), m: fmtInt(hits.length) }) : t('common.noMatch');
     prevBtn.disabled = nextBtn.disabled = hits.length < 2;
     if (HL) {
-      CSS.highlights.delete('fsdeck-find-current');
-      if (current >= 0) CSS.highlights.set('fsdeck-find-current', new Highlight(...rangesIn(hits[current], needle)));
+      CSS.highlights.delete('fsconsole-find-current');
+      if (current >= 0) CSS.highlights.set('fsconsole-find-current', new Highlight(...rangesIn(hits[current], needle)));
     }
     const el = hits[current];
     if (el) view.scrollTop = Math.max(0, el.offsetTop - view.clientHeight / 2);
@@ -172,7 +172,7 @@ export function mountXmlBrowser({ id, scope, root, kind, ctx, label, params = ne
     if (pre && needle) {
       hits = [...pre.children].filter((el) => el.textContent.toLowerCase().includes(needle));
       for (const el of hits) el.classList.add('hit');
-      if (HL && hits.length) CSS.highlights.set('fsdeck-find', new Highlight(...hits.flatMap((el) => rangesIn(el, needle))));
+      if (HL && hits.length) CSS.highlights.set('fsconsole-find', new Highlight(...hits.flatMap((el) => rangesIn(el, needle))));
       current = hits.length ? 0 : -1;
     }
     showCurrent();

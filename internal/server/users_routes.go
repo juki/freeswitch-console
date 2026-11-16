@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/juki/fsdeck/internal/audit"
-	"github.com/juki/fsdeck/internal/store"
+	"github.com/juki/freeswitch-console/internal/audit"
+	"github.com/juki/freeswitch-console/internal/store"
 )
 
 // userView is what the API exposes of an account: never the hash.

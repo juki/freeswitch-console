@@ -10,9 +10,9 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/juki/fsdeck/internal/audit"
-	"github.com/juki/fsdeck/internal/esl"
-	"github.com/juki/fsdeck/internal/fsapi"
+	"github.com/juki/freeswitch-console/internal/audit"
+	"github.com/juki/freeswitch-console/internal/esl"
+	"github.com/juki/freeswitch-console/internal/fsapi"
 )
 
 // actionRequest is the body of POST .../actions; each action reads the

@@ -6,7 +6,7 @@
 // lines come first, and a divider "Live from 19:20:05 · 312 earlier lines
 // replayed" marks where live starts. While no line is visible, a panel in the
 // middle of the pane says why: still connecting, FreeSWITCH not connected,
-// nothing logged at this level since fsdeck connected to the switch, or
+// nothing logged at this level since fsconsole connected to the switch, or
 // everything hidden by the filters.
 
 import { instPath } from '../api.js';

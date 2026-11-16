@@ -11,12 +11,12 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/juki/fsdeck/internal/audit"
-	"github.com/juki/fsdeck/internal/store"
+	"github.com/juki/freeswitch-console/internal/audit"
+	"github.com/juki/freeswitch-console/internal/store"
 )
 
 const (
-	cookieName  = "fsdeck_session"
+	cookieName  = "fsconsole_session"
 	sessionTTL  = 12 * time.Hour
 	tokenLength = 32
 
@@ -34,7 +34,7 @@ type user struct {
 }
 
 // account is an account that can sign in: a file user, or one managed by
-// the environment (FSDECK_ADMIN_PASSWORD, FSDECK_VIEWER_PASSWORD).
+// the environment (FSCONSOLE_ADMIN_PASSWORD, FSCONSOLE_VIEWER_PASSWORD).
 type account struct {
 	store.User
 	Managed bool

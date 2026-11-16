@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/juki/fsdeck/internal/esl"
+	"github.com/juki/freeswitch-console/internal/esl"
 )
 
 func TestConsoleCompletion(t *testing.T) {
