@@ -1,0 +1,21 @@
+.github/workflows/release.yml
+  s_2cc77eefef5207::t_639e6097f3f08a 1-73
+Dockerfile
+  s_2cc77eefef5207::t_7504c16a282572 1-5,11-12,16-18
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "7f8bf60b59030280b91c87f2491438202ac796e6",
+  "prompts": {},
+  "sessions": {
+    "s_2cc77eefef5207": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1e205-abdd-7ab3-ace5-a1eac725375a",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "juki <50308992+juki@users.noreply.github.com>"
+    }
+  }
+}
