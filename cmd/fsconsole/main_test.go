@@ -8,7 +8,9 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"io"
 	"math/big"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -62,7 +64,9 @@ func startupOutput(t *testing.T, env []string, args ...string) (string, bool) {
 func TestVersionFlag(t *testing.T) {
 	cmd := exec.Command(os.Args[0], "-version")
 	cmd.Env = []string{"FSCONSOLE_TEST_RUN_MAIN=1"}
-	out, err := cmd.CombinedOutput()
+	// Only stdout: under -cover the child warns on stderr that GOCOVERDIR
+	// is not set.
+	out, err := cmd.Output()
 	if err != nil || string(out) != "dev\n" {
 		t.Fatalf("-version: %v %q", err, out)
 	}
@@ -206,9 +210,54 @@ func TestBootstrapAndAuditDefault(t *testing.T) {
 	}
 
 	// Bad numbers and levels stop the start.
-	for _, e := range []string{"FSCONSOLE_LOG_BACKLOG=lots", "FSCONSOLE_LOG_BACKLOG_LEVEL=9", "FSCONSOLE_LOG_BACKLOG=-1"} {
+	for _, e := range []string{"FSCONSOLE_LOG_BACKLOG=lots", "FSCONSOLE_LOG_BACKLOG_LEVEL=9", "FSCONSOLE_LOG_BACKLOG=-1", "FSCONSOLE_RECENT_CALLS=lots", "FSCONSOLE_RECENT_CALLS=-1"} {
 		if out, ok := startupOutput(t, append(envOther, e)); ok || out == "" {
 			t.Errorf("%s:\n%s", e, out)
+		}
+	}
+	if out, ok := startupOutput(t, envOther, "-recent-calls", "-5"); ok || !strings.Contains(out, "recent calls must not be negative") {
+		t.Errorf("-recent-calls -5:\n%s", out)
+	}
+	if out, ok := startupOutput(t, append(envOther, "FSCONSOLE_RECENT_CALLS=0")); !ok {
+		t.Errorf("FSCONSOLE_RECENT_CALLS=0:\n%s", out)
+	}
+}
+
+// TestDialerEvents checks the subscription the clients of main send: the
+// hang-up event only while recent calls are kept.
+func TestDialerEvents(t *testing.T) {
+	for n, want := range map[int]string{500: "event json HEARTBEAT CHANNEL_HANGUP_COMPLETE", 0: "event json HEARTBEAT"} {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer ln.Close()
+		sw := dialer(n)(ln.Addr().String(), "ClueCon")
+		defer sw.Close()
+		conn, err := ln.Accept()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		conn.SetDeadline(time.Now().Add(5 * time.Second))
+		r := bufio.NewReader(conn)
+		io.WriteString(conn, "Content-Type: auth/request\n\n")
+		var cmds []string
+		for len(cmds) < 2 {
+			line, err := r.ReadString('\n')
+			if err != nil {
+				t.Fatal(err)
+			}
+			if line = strings.TrimSpace(line); line == "" {
+				continue
+			}
+			cmds = append(cmds, line)
+			if len(cmds) == 1 {
+				io.WriteString(conn, "Content-Type: command/reply\nReply-Text: +OK accepted\n\n")
+			}
+		}
+		if cmds[0] != "auth ClueCon" || cmds[1] != want {
+			t.Errorf("recent calls %d: commands %q, want %q", n, cmds, want)
 		}
 	}
 }

@@ -343,9 +343,14 @@ func Run(ctx context.Context, c Commander, command string) (string, error) {
 	return output(ctx, c, command)
 }
 
+// ValidUUID reports whether s may be a channel uuid.
+func ValidUUID(s string) bool {
+	return uuidRe.MatchString(s)
+}
+
 // HangupChannel kills the channel with the given uuid.
 func HangupChannel(ctx context.Context, c Commander, uuid string) (string, error) {
-	if !uuidRe.MatchString(uuid) {
+	if !ValidUUID(uuid) {
 		return "", fmt.Errorf("%w: invalid channel uuid", ErrInvalidArgument)
 	}
 	return output(ctx, c, "uuid_kill "+uuid)

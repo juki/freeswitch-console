@@ -21,8 +21,9 @@ type sample struct {
 }
 
 // collect is the only subscriber of the switch. It records a sample per
-// HEARTBEAT, keeps the log backlog and forwards state changes, heartbeats and
-// log lines to the open streams, until the switch is closed.
+// HEARTBEAT and a record per CHANNEL_HANGUP_COMPLETE, keeps the log backlog
+// and forwards state changes, heartbeats and log lines to the open streams,
+// until the switch is closed.
 func (i *instance) collect(msgs <-chan esl.Message, cancel func()) {
 	defer close(i.collected)
 	defer cancel()
@@ -36,9 +37,12 @@ func (i *instance) collect(msgs <-chan esl.Message, cancel func()) {
 			}
 			switch m.Kind {
 			case esl.KindEvent:
-				if m.Headers["Event-Name"] == "HEARTBEAT" {
+				switch m.Headers["Event-Name"] {
+				case "HEARTBEAT":
 					i.addSample(heartbeatSample(m.Headers, time.Now()))
 					i.forward(streamItem{kind: "heartbeat", headers: m.Headers})
+				case "CHANNEL_HANGUP_COMPLETE":
+					i.addHangup(m.Headers)
 				}
 			case esl.KindState:
 				i.forward(streamItem{kind: "state"})

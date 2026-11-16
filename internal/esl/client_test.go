@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -206,7 +207,7 @@ func (s *fakeServer) handle(fc *fakeConn, cmd string) {
 	case cmd == "api event-first":
 		fc.write(eventFrame(`{"Event-Name":"CUSTOM","_body":"not a reply"}`))
 		fc.write(apiResponse("after event"))
-	case cmd == "event json HEARTBEAT":
+	case strings.HasPrefix(cmd, "event json "):
 		fc.write(reply("+OK event listener enabled json"))
 	case strings.HasPrefix(cmd, "log "):
 		n := strings.TrimPrefix(cmd, "log ")
@@ -248,7 +249,7 @@ func (s *fakeServer) nextConn() *fakeConn {
 
 func newTestClient(t *testing.T, s *fakeServer) *Client {
 	t.Helper()
-	c := NewClient(s.addr(), testPassword)
+	c := NewClient(s.addr(), testPassword, "HEARTBEAT")
 	c.backoff = 10 * time.Millisecond
 	t.Cleanup(c.Close)
 	return c
@@ -327,6 +328,30 @@ func TestAuthSuccess(t *testing.T) {
 	}
 	if n := s.accepted.Load(); n != 1 {
 		t.Errorf("accepted %d connections, want 1 (Start twice must be a no-op)", n)
+	}
+}
+
+// TestEventSubscription checks the subscription line: the events given to
+// NewClient, and none without them.
+func TestEventSubscription(t *testing.T) {
+	for _, events := range [][]string{{"HEARTBEAT", "CHANNEL_HANGUP_COMPLETE"}, {"HEARTBEAT"}, nil} {
+		s := newFakeServer(t, nil)
+		c := NewClient(s.addr(), testPassword, events...)
+		t.Cleanup(c.Close)
+		c.Start()
+		waitFor(t, "connection", func() bool { return c.State().Connected })
+		api(t, c, "echo done")
+		var got []string
+		for range len(s.cmds) {
+			got = append(got, <-s.cmds)
+		}
+		want := []string{"api echo done"}
+		if events != nil {
+			want = append([]string{"event json " + strings.Join(events, " ")}, want...)
+		}
+		if !slices.Equal(got, want) {
+			t.Errorf("events %q: commands %q, want %q", events, got, want)
+		}
 	}
 }
 

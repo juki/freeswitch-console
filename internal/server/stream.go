@@ -17,7 +17,8 @@ type logEvent struct {
 	File  string `json:"file"`
 	Func  string `json:"func"`
 	Line  int    `json:"line"`
-	Seq   uint64 `json:"seq"` // 0 for a line that is not kept in the backlog
+	Seq   uint64 `json:"seq"`            // 0 for a line that is not kept in the backlog
+	UUID  string `json:"uuid,omitempty"` // the channel the line is about, from User-Data
 }
 
 // streamItem is one message for an open stream.
@@ -50,6 +51,7 @@ func (i *instance) addLog(m esl.Message) {
 		File:  m.Headers["Log-File"],
 		Func:  m.Headers["Log-Func"],
 		Line:  line,
+		UUID:  m.Headers["User-Data"],
 	}
 	i.logMu.Lock()
 	defer i.logMu.Unlock()
@@ -62,6 +64,7 @@ func (i *instance) addLog(m esl.Message) {
 			i.backlog[i.backlogNext] = ev
 			i.backlogNext = (i.backlogNext + 1) % i.backlogSize
 		}
+		i.attachLate(ev)
 	}
 	for st := range i.streams {
 		if level <= st.level {

@@ -224,6 +224,8 @@ func routeTable(id string) []routeCase {
 		{"GET /api/instances/{id}/directory", "GET", p + "/directory", "", capRead},
 		{"GET /api/instances/{id}/directory/{name}", "GET", p + "/directory/10.0.0.1", "", capRead},
 		{"GET /api/instances/{id}/history", "GET", p + "/history", "", capRead},
+		{"GET /api/instances/{id}/hangups", "GET", p + "/hangups", "", capRead},
+		{"GET /api/instances/{id}/hangups/{uuid}", "GET", p + "/hangups/abc-123", "", capRead},
 		{"GET /api/instances/{id}/stream", "GET", p + "/stream?loglevel=7", "", capRead},
 		{"/api/", "GET", "/api/nope", "", capRead},
 		{"DELETE /api/instances/{id}/channels/{uuid}", "DELETE", p + "/channels/abc-123", "", capOperate},

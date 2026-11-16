@@ -29,6 +29,7 @@ var errNoAnswer = errors.New("esl: no answer from FreeSWITCH")
 type Client struct {
 	addr     string
 	password string
+	events   []string      // event names subscribed after authentication
 	backoff  time.Duration // first reconnect delay; tests shorten it
 
 	// A connection that has received nothing for probeAfter is sent
@@ -54,12 +55,15 @@ type Client struct {
 	subs     map[chan Message]struct{}
 }
 
-// NewClient returns a client for addr ("host:port"). It does not connect.
-func NewClient(addr, password string) *Client {
+// NewClient returns a client for addr ("host:port") that subscribes to the
+// named events ("HEARTBEAT", ...) on every connection; with none it receives
+// no events. It does not connect.
+func NewClient(addr, password string, events ...string) *Client {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Client{
 		addr:         addr,
 		password:     password,
+		events:       events,
 		backoff:      time.Second,
 		probeAfter:   30 * time.Second,
 		probeTimeout: 10 * time.Second,
@@ -74,7 +78,7 @@ func NewClient(addr, password string) *Client {
 }
 
 // Start launches the background connect loop: dial, authenticate, send
-// "event json HEARTBEAT", re-apply the log level, then read frames until the
+// "event json <events>", re-apply the log level, then read frames until the
 // connection drops; reconnect with backoff (1s doubling to 30s, reset after a
 // successful auth). Calling Start twice is a no-op.
 func (c *Client) Start() {
@@ -286,7 +290,10 @@ func (c *Client) session() bool {
 	level := c.logLevel
 	c.mu.Unlock()
 	// Replies to setup commands are consumed by the reader and ignored.
-	cmds := []string{"event json HEARTBEAT"}
+	var cmds []string
+	if len(c.events) > 0 {
+		cmds = append(cmds, "event json "+strings.Join(c.events, " "))
+	}
 	if level >= 0 {
 		cmds = append(cmds, logCommand(level))
 	}

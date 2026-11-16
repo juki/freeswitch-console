@@ -35,6 +35,7 @@ func main() {
 	tlsKey := flag.String("tls-key", os.Getenv("FSCONSOLE_TLS_KEY"), "TLS private key file (PEM)")
 	backlog := flag.Int("log-backlog", envInt("FSCONSOLE_LOG_BACKLOG", 2000), "log lines kept per instance and replayed when the Logs view opens; 0 disables")
 	backlogLevel := flag.Int("log-backlog-level", envInt("FSCONSOLE_LOG_BACKLOG_LEVEL", 6), "highest log level kept in the backlog, 0 (console) to 7 (debug)")
+	recentCalls := flag.Int("recent-calls", envInt("FSCONSOLE_RECENT_CALLS", 500), "hang-ups kept per instance for the recent calls list; 0 disables")
 	auditPath := flag.String("audit", "", "audit log file (default fsconsole-audit.log beside the data file; empty disables)")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
@@ -94,11 +95,12 @@ func main() {
 		AdminPassword:   adminPassword,
 		ViewerPassword:  os.Getenv("FSCONSOLE_VIEWER_PASSWORD"),
 		Store:           st,
-		Dial:            dial,
+		Dial:            dialer(*recentCalls),
 		Static:          assets,
 		Version:         version,
 		LogBacklog:      *backlog,
 		LogBacklogLevel: *backlogLevel,
+		RecentCalls:     *recentCalls,
 		Audit:           auditLog,
 		BackupDir:       filepath.Join(filepath.Dir(*data), "backups"),
 	})
@@ -163,10 +165,18 @@ func newHTTPServer(addr string, h http.Handler, tlsConfig *tls.Config) *http.Ser
 	}
 }
 
-func dial(addr, password string) server.Switch {
-	c := esl.NewClient(addr, password)
-	c.Start()
-	return c
+// dialer returns the Dial of the server: clients that subscribe to HEARTBEAT,
+// and to CHANNEL_HANGUP_COMPLETE when recent calls are kept.
+func dialer(recentCalls int) func(addr, password string) server.Switch {
+	events := []string{"HEARTBEAT"}
+	if recentCalls > 0 {
+		events = append(events, "CHANNEL_HANGUP_COMPLETE")
+	}
+	return func(addr, password string) server.Switch {
+		c := esl.NewClient(addr, password, events...)
+		c.Start()
+		return c
+	}
 }
 
 func envOr(name, fallback string) string {

@@ -28,7 +28,7 @@ func TestActionCaps(t *testing.T) {
 			}
 		}
 	}
-	if n != 20 {
+	if n != 21 {
 		t.Fatalf("%d operations", n)
 	}
 	if !allowed(store.RoleAdmin, capControl) || allowed(store.RoleOperator, capControl) || allowed(store.RoleViewer, capOperate) {
@@ -59,6 +59,8 @@ func TestActions(t *testing.T) {
 		`{"action":"sofia_gateway","profile":"external","gateway":"gw.1","op":"kill"}`:      "sofia profile external killgw gw.1",
 		`{"action":"sofia_gateway","profile":"external","gateway":"gw1","op":"register"}`:   "sofia profile external register gw1",
 		`{"action":"sofia_gateway","profile":"external","gateway":"gw1","op":"unregister"}`: "sofia profile external unregister gw1",
+		`{"action":"sofia_siptrace","profile":"internal","on":true}`:                        "sofia profile internal siptrace on",
+		`{"action":"sofia_siptrace","profile":"external","on":false}`:                       "sofia profile external siptrace off",
 		`{"action":"module","module":"mod_sofia","op":"reload"}`:                            "reload mod_sofia",
 		`{"action":"module","module":"mod_xml_curl","op":"load"}`:                           "load mod_xml_curl",
 		`{"action":"module","module":"mod_xml_curl","op":"unload"}`:                         "unload mod_xml_curl",
@@ -94,6 +96,12 @@ func TestActions(t *testing.T) {
 		`{"action":"sofia_gateway","profile":"external","op":"kill"}`,
 		`{"action":"sofia_gateway","profile":"external","gateway":"gw 1","op":"kill"}`,
 		`{"action":"sofia_gateway","profile":"external","gateway":"gw1","op":"delete"}`,
+		`{"action":"sofia_siptrace","profile":"internal"}`,
+		`{"action":"sofia_siptrace","profile":"internal","on":"on"}`,
+		`{"action":"sofia_siptrace","profile":"internal","on":null}`,
+		`{"action":"sofia_siptrace","profile":"in ternal","on":true}`,
+		`{"action":"sofia_siptrace","profile":"","on":true}`,
+		`{"action":"sofia_siptrace","profile":"internal","op":"on","on":true}`,
 		`{"action":"module","module":"sofia","op":"load"}`,
 		`{"action":"module","module":"mod_Sofia","op":"load"}`,
 		`{"action":"module","module":"mod_x y","op":"load"}`,
@@ -139,6 +147,9 @@ func TestActions(t *testing.T) {
 	for _, want := range []string{
 		`"action":"action.sofia_gateway","target":"fs01","detail":"op=kill profile=external gateway=gw.1","result":"ok"`,
 		`"action":"action.fsctl","target":"fs01","detail":"op=loglevel value=7","result":"ok"`,
+		`"action":"action.sofia_siptrace","target":"fs01","detail":"profile=internal siptrace=on","result":"ok"`,
+		`"action":"action.sofia_siptrace","target":"fs01","detail":"profile=external siptrace=off","result":"ok"`,
+		`"action":"action.sofia_siptrace","target":"fs01","detail":"","result":"error","error":"on must be true or false"`,
 		`"action":"action.module","target":"fs01","detail":"op=load module=mod_nope","result":"error","error":"-ERR [module load file routine returned an error]"`,
 		`"action":"action.setvar","target":"fs01","detail":"name=outbound_caller_id value=Acme <1000>","result":"ok"`,
 		`"action":"action.setvar","target":"fs01","detail":"name=default_password value=********","result":"ok"`,
@@ -176,6 +187,8 @@ func TestOperatorActions(t *testing.T) {
 		`{"action":"module","module":"mod_sofia","op":"reload"}`:                            403,
 		`{"action":"fsctl","op":"pause"}`:                                                   403,
 		`{"action":"setvar","name":"a","value":"b"}`:                                        403,
+		`{"action":"sofia_siptrace","profile":"internal","on":true}`:                        403,
+		`{"action":"sofia_siptrace","profile":"bad name"}`:                                  403,
 		`{"action":"sofia_gateway","profile":"bad name","gateway":"gw1","op":"kill"}`:       403, // refused before validation
 	} {
 		f.set(func(f *fakeSwitch) { f.sent = nil })

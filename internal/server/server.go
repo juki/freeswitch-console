@@ -42,6 +42,8 @@ type Config struct {
 	LogBacklog      int // log lines kept per instance; 0 disables the backlog
 	LogBacklogLevel int // highest log level kept, 0..7
 
+	RecentCalls int // hang-up records kept per instance; 0 turns them off
+
 	Audit *audit.Log // nil disables the audit log
 
 	BackupDir string // config file backups of local-mode instances, one directory per instance
@@ -106,10 +108,11 @@ type instance struct {
 	sw   Switch
 	done chan struct{} // closed when the instance is deleted or replaced, or the server closes
 
-	// logMu guards the log-level bookkeeping, the backlog and the open
-	// streams. The collector stores and forwards each message while holding
-	// it, so a stream that copies the backlog and registers in one critical
-	// section gets every later line exactly once.
+	// logMu guards the log-level bookkeeping, the backlog, the open streams
+	// and the channels that hung up recently. The collector stores and
+	// forwards each message while holding it, so a stream that copies the
+	// backlog and registers in one critical section gets every later line
+	// exactly once; so does a hang-up record.
 	logMu       sync.Mutex
 	levels      map[int]int // log level -> open streams asking for it
 	applied     int         // level last passed to SetLogLevel
@@ -118,18 +121,28 @@ type instance struct {
 	backlog     []logEvent // ring; the oldest is at backlogNext once full
 	backlogSize int        // 0 disables the backlog
 	backlogNext int
-	seq         uint64 // sequence number of the last stored line
+	seq         uint64                  // sequence number of the last stored line
+	recent      map[string]recentHangup // channel uuid -> its record, while late lines are attached
+	lateLog     time.Duration           // how long after the hang-up a channel's lines are attached
 
 	histMu    sync.Mutex
 	history   [historySize]sample // ring; the oldest is at histNext once full
 	histNext  int
 	histLen   int
 	collected chan struct{} // closed when the collector has returned
+
+	// callsMu guards the records and the log of each. It is taken after
+	// logMu, never before.
+	callsMu   sync.Mutex
+	calls     []*hangup // ring; the oldest is at callsNext once full
+	callsSize int       // 0 turns the records off
+	callsNext int
 }
 
 // newInstance starts the collector of sw. With a backlog the ESL log level is
 // raised to backlogLevel at once, so lines are kept before any stream opens.
-func newInstance(sw Switch, backlog, backlogLevel int) *instance {
+// recentCalls is the number of hang-up records kept.
+func newInstance(sw Switch, backlog, backlogLevel, recentCalls int) *instance {
 	i := &instance{
 		sw:          sw,
 		done:        make(chan struct{}),
@@ -139,6 +152,9 @@ func newInstance(sw Switch, backlog, backlogLevel int) *instance {
 		streams:     map[*stream]struct{}{},
 		backlogSize: backlog,
 		collected:   make(chan struct{}),
+		callsSize:   recentCalls,
+		recent:      map[string]recentHangup{},
+		lateLog:     hangupLateLog,
 	}
 	msgs, cancel := sw.Subscribe(1024)
 	if backlog > 0 {
@@ -158,6 +174,8 @@ func New(cfg Config) (*Server, error) {
 		return nil, errors.New("server: the log backlog must not be negative")
 	case cfg.LogBacklog > 0 && (cfg.LogBacklogLevel < 0 || cfg.LogBacklogLevel > 7):
 		return nil, errors.New("server: the log backlog level must be 0 to 7")
+	case cfg.RecentCalls < 0:
+		return nil, errors.New("server: the number of recent calls must not be negative")
 	}
 	if cfg.Version == "" {
 		cfg.Version = "dev"
@@ -242,7 +260,7 @@ func eslContext(r *http.Request, d time.Duration) (context.Context, context.Canc
 // limiter.
 func (s *Server) newInstance(in store.Instance) *instance {
 	sw := s.cfg.Dial(net.JoinHostPort(in.Host, strconv.Itoa(in.Port)), in.Password)
-	return newInstance(&limitedSwitch{Switch: sw, slots: make(chan struct{}, apiSlots), wait: apiWait}, s.cfg.LogBacklog, s.cfg.LogBacklogLevel)
+	return newInstance(&limitedSwitch{Switch: sw, slots: make(chan struct{}, apiSlots), wait: apiWait}, s.cfg.LogBacklog, s.cfg.LogBacklogLevel, s.cfg.RecentCalls)
 }
 
 // The API calls of one instance share one ESL connection, and a call that
@@ -319,6 +337,9 @@ func (s *Server) routes() {
 	s.handle(m, "GET /api/instances/{id}/directory", capRead, "", rowsRoute(s, fsapi.DirectoryDomains))
 	s.handle(m, "GET /api/instances/{id}/directory/{name}", capRead, "", xmlRoute(s, fsapi.DirectoryDomain))
 	s.handle(m, "GET /api/instances/{id}/history", capRead, "", s.handleHistory)
+	// The call's log lines need capLogs, checked in the handler.
+	s.handle(m, "GET /api/instances/{id}/hangups", capRead, "", s.handleHangups)
+	s.handle(m, "GET /api/instances/{id}/hangups/{uuid}", capRead, "", s.handleHangupDetail)
 	// The stream is readable by every role; log lines need capLogs, checked
 	// in the handler.
 	s.handle(m, "GET /api/instances/{id}/stream", capRead, "", s.handleStream)

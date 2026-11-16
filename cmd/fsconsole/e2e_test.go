@@ -51,7 +51,9 @@ var cannedAPI = map[string]string{
 }
 
 // fakeFreeSWITCH speaks enough inbound ESL for the whole stack to run:
-// auth, api with canned bodies, HEARTBEAT events and log lines.
+// auth, api with canned bodies, HEARTBEAT events and log lines, and for a
+// client subscribed to CHANNEL_HANGUP_COMPLETE a log line and that event
+// when abc-123 is hung up.
 func fakeFreeSWITCH(t *testing.T) (host string, port int) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -107,6 +109,7 @@ func serveESL(conn net.Conn) {
 
 	write("Content-Type: auth/request\n\n")
 	r := bufio.NewReader(conn)
+	hangups := false
 	for {
 		var cmd string
 		for {
@@ -139,12 +142,21 @@ func serveESL(conn net.Conn) {
 				body = "-ERR no such command\n"
 			}
 			write(fmt.Sprintf("Content-Type: api/response\nContent-Length: %d\n\n%s", len(body), body))
+			if cmd == "api uuid_kill abc-123" && hangups {
+				line := "Hangup sofia/internal/1000@192.0.2.1 [CS_EXECUTE] [NORMAL_CLEARING]\n"
+				write(fmt.Sprintf("Content-Type: log/data\nContent-Length: %d\nLog-Level: 5\nText-Channel: 3\nLog-File: switch_ivr.c\nLog-Func: fn\nLog-Line: 1\nUser-Data: abc-123\n\n%s", len(line), line))
+				ev := `{"Event-Name":"CHANNEL_HANGUP_COMPLETE","Unique-ID":"abc-123","Hangup-Cause":"NORMAL_CLEARING","Caller-Destination-Number":"9196","variable_billsec":"7","variable_sip_term_status":"200","variable_sip_auth_password":"` + eslPassword + `"}`
+				write(fmt.Sprintf("Content-Length: %d\nContent-Type: text/event-json\n\n%s", len(ev), ev))
+			}
 		case strings.HasPrefix(cmd, "log "):
 			logging <- true
 			reply("+OK log level " + strings.TrimPrefix(cmd, "log "))
 		case cmd == "nolog":
 			logging <- false
 			reply("+OK no longer logging")
+		case strings.HasPrefix(cmd, "event json "):
+			hangups = strings.Contains(cmd, " CHANNEL_HANGUP_COMPLETE")
+			reply("+OK event listener enabled json")
 		default:
 			reply("+OK")
 		}
@@ -227,11 +239,12 @@ func startStack(t *testing.T, edit ...func(*http.Server)) stack {
 		AdminPassword:   "admin-pw",
 		ViewerPassword:  "viewer-pw",
 		Store:           st,
-		Dial:            dial,
+		Dial:            dialer(100),
 		Static:          web.Static(),
 		Version:         "1.2.3-test",
 		LogBacklog:      100,
 		LogBacklogLevel: 7,
+		RecentCalls:     100,
 		Audit:           auditLog,
 		BackupDir:       filepath.Join(dir, "backups"),
 	}
@@ -356,6 +369,30 @@ func TestEndToEnd(t *testing.T) {
 	}
 	if code, body = c.do("DELETE", p+"/channels/abc-123", nil); code != http.StatusOK {
 		t.Fatalf("hangup: status %d: %s", code, body)
+	}
+	// The hang-up is recorded with its log line and masked variables.
+	var hangups struct {
+		Enabled  bool
+		Capacity int
+		Rows     []struct {
+			UUID, Cause string
+			SIPStatus   int
+			Answered    bool
+			LogLines    int
+		}
+	}
+	for deadline := time.Now().Add(5 * time.Second); len(hangups.Rows) == 0; time.Sleep(20 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("hang-up never recorded")
+		}
+		c.get(p+"/hangups", http.StatusOK, &hangups)
+	}
+	if r := hangups.Rows[0]; !hangups.Enabled || hangups.Capacity != 100 || r.UUID != "abc-123" || r.Cause != "NORMAL_CLEARING" || r.SIPStatus != 200 || !r.Answered || r.LogLines != 1 {
+		t.Fatalf("hangups %+v", hangups)
+	}
+	body = c.get(p+"/hangups/abc-123", http.StatusOK, nil)
+	if !bytes.Contains(body, []byte(`"uuid":"abc-123"`)) || !bytes.Contains(body, []byte(`"sip_auth_password":"********"`)) || !bytes.Contains(body, []byte(`"text":"Hangup sofia/internal`)) {
+		t.Fatalf("hang-up detail %s", body)
 	}
 
 	// The backlog level is applied when the instance is created, so the

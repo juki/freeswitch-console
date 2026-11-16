@@ -25,6 +25,7 @@ type actionRequest struct {
 	Module  string    `json:"module"`
 	Name    string    `json:"name"`
 	Value   textValue `json:"value"`
+	On      *bool     `json:"on"`
 }
 
 // textValue takes a JSON string or number, so {"value":7} and {"value":"7"}
@@ -48,14 +49,15 @@ func (v *textValue) UnmarshalJSON(b []byte) error {
 // actionCaps says who may run each operation: action, then op ("" for the
 // actions without one), then the capability it needs.
 var actionCaps = map[string]map[string]capability{
-	"reloadxml":     {"": capOperate},
-	"reloadacl":     {"": capOperate},
-	"sofia_rescan":  {"": capOperate},
-	"sofia_profile": {"rescan": capOperate, "start": capControl, "stop": capControl, "restart": capControl, "flush_inbound_reg": capControl},
-	"sofia_gateway": {"register": capOperate, "unregister": capOperate, "kill": capControl},
-	"module":        {"load": capControl, "unload": capControl, "reload": capControl},
-	"fsctl":         {"loglevel": capControl, "max_sessions": capControl, "sps": capControl, "pause": capControl, "resume": capControl},
-	"setvar":        {"": capControl},
+	"reloadxml":      {"": capOperate},
+	"reloadacl":      {"": capOperate},
+	"sofia_rescan":   {"": capOperate},
+	"sofia_profile":  {"rescan": capOperate, "start": capControl, "stop": capControl, "restart": capControl, "flush_inbound_reg": capControl},
+	"sofia_gateway":  {"register": capOperate, "unregister": capOperate, "kill": capControl},
+	"sofia_siptrace": {"": capControl},
+	"module":         {"load": capControl, "unload": capControl, "reload": capControl},
+	"fsctl":          {"loglevel": capControl, "max_sessions": capControl, "sps": capControl, "pause": capControl, "resume": capControl},
+	"setvar":         {"": capControl},
 }
 
 var (
@@ -88,6 +90,18 @@ func actionCommand(req actionRequest) (command, detail string, err error) {
 			return "", "", err
 		}
 		return "sofia profile " + req.Profile + " " + req.Op, "op=" + req.Op + " profile=" + req.Profile, nil
+	case "sofia_siptrace":
+		if err := name("profile", req.Profile); err != nil {
+			return "", "", err
+		}
+		if req.On == nil {
+			return "", "", errors.New("on must be true or false")
+		}
+		state := "off"
+		if *req.On {
+			state = "on"
+		}
+		return "sofia profile " + req.Profile + " siptrace " + state, "profile=" + req.Profile + " siptrace=" + state, nil
 	case "sofia_gateway":
 		if err := name("profile", req.Profile); err != nil {
 			return "", "", err

@@ -37,14 +37,18 @@ func maskInline(s string) string {
 func MaskVars(vars []Var) []Var {
 	out := make([]Var, len(vars))
 	for i, v := range vars {
-		if sensitiveRe.MatchString(v.Name) {
-			v.Value = Mask
-		} else {
-			v.Value = maskInline(v.Value)
-		}
+		v.Value = MaskValue(v.Name, v.Value)
 		out[i] = v
 	}
 	return out
+}
+
+// MaskValue masks the value of one variable as MaskVars does.
+func MaskValue(name, value string) string {
+	if sensitiveRe.MatchString(name) {
+		return Mask
+	}
+	return maskInline(value)
 }
 
 // maskNode is an element, or a text node when name is empty.
