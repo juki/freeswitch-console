@@ -1,63 +1,76 @@
 # fsdeck
 
-A web console for operating FreeSWITCH. Point it at the Event Socket of any
-running FreeSWITCH and get status, SIP, calls, effective configuration, live
-logs and a command console in the browser.
+**A web console for operating FreeSWITCH.** Point it at the Event Socket of any
+running FreeSWITCH and see what the switch is doing, change what it does, and
+keep a record of who changed what.
 
-- Nothing to install on the FreeSWITCH side: only `mod_event_socket`, which
-  the stock configuration already loads.
-- Does not own your configuration. fsdeck reads what FreeSWITCH reports; it
-  has no database schema and no XML generator. When you edit a file, it is
-  your file, with the previous version kept.
-- One static binary, standard library only, frontend embedded.
-- Several FreeSWITCH instances in one console.
+English | [简体中文](README.zh-CN.md)
 
-## Features
+![Overview of one FreeSWITCH instance](assets/screenshots/overview.png)
 
-| Area | What you get | ESL command behind it |
+- **Nothing to install on FreeSWITCH.** fsdeck connects to `mod_event_socket`,
+  which the stock configuration already loads.
+- **It does not take over your configuration.** There is no database schema and
+  no XML generator. fsdeck shows what FreeSWITCH has loaded; when you edit a
+  file, it is your file, with the previous version kept.
+- **One binary.** Go standard library only, the web interface is embedded, no
+  build step for the frontend.
+- **Many switches, one console**, in English and Simplified Chinese.
+
+## What you get
+
+| Area | What it does | Behind it |
 |---|---|---|
-| Instances | one card per FreeSWITCH: connection, sessions, idle CPU, uptime, version | `json status` |
-| Overview | sessions, session rate, idle CPU and capacity over the last two hours as a chart, SIP and call summary | `json status`, `HEARTBEAT` events |
-| SIP | profiles, gateways, aliases, registrations; profile rescan | `sofia xmlstatus`, `show registrations` |
+| Instances | one card per FreeSWITCH: connection, sessions, idle CPU, uptime, version; a plain-language reason when a switch cannot be reached | `json status` |
+| Overview | sessions, session rate, idle CPU and capacity over the last two hours, SIP and call summary | `json status`, `HEARTBEAT` events |
+| SIP | profiles, gateways, aliases, registrations; start, stop, restart and rescan profiles; register, unregister and remove gateways | `sofia xmlstatus`, `sofia profile …` |
 | Calls | channels and bridged calls with live durations, every field in a side panel, hang up | `show channels`, `show calls`, `uuid_kill` |
-| Configuration | effective configuration as FreeSWITCH parsed it (highlighted XML with find), global variables, modules | `xml_locate`, `global_getvar`, `show modules` |
-| Dialplan | contexts and their extensions read as "if this matches, run these actions", or as XML | `xml_locate dialplan` |
-| Directory | domains with a users table (groups, caller id, context, whether a password is set), or as XML | `xml_locate directory` |
-| Logs | live log tail with level, severity and text filters | `log <level>` |
-| Console | any API command, like `fs_cli` | `api <command>` |
-| Runtime operations | start, stop, restart and rescan profiles; register, unregister and remove gateways; load and unload modules; log level, session limits, pause, global variables | `sofia profile`, `load`, `fsctl`, `global_setvar` |
-| Config files (paid) | file tree and XML editor, a diff to review before saving, history and restore, apply actions that show FreeSWITCH's answer | files on the host, directly or through `fsdeck-agent` |
-| Users and audit (paid) | accounts with the roles administrator, operator and read only; a searchable audit log of every sign-in and change | |
+| Configuration | the effective configuration as FreeSWITCH parsed it, global variables, modules (load, unload, reload) | `xml_locate`, `global_getvar`, `show modules` |
+| Dialplan | contexts and extensions read as "if this matches, run these actions", or as XML | `xml_locate dialplan` |
+| Directory | domains with a users table: groups, caller id, context, whether a password is set | `xml_locate directory` |
+| Config files | file tree and XML editor, search across files, a diff to review before saving, history and restore, apply actions that show FreeSWITCH's answer | files on the host, directly or through `fsdeck-agent` |
+| Runtime settings | log level, session limits, pause and resume, global variables, each confirmed and marked as lasting until restart | `fsctl`, `global_setvar` |
+| Logs | live tail with the recent backlog, level, severity and text filters | `log <level>` |
+| Console | any API command, with Tab completion and syntax hints like `fs_cli` | `api <command>`, `console_complete_xml` |
+| Accounts and audit | administrator, operator and read-only roles; a searchable record of every sign-in and change | |
 
-The interface is in English and Simplified Chinese and follows the browser's
-language; the account menu switches it.
-
-Tables sort by any column and filter as you type. Light and dark themes; the
-toggle in the sidebar cycles system, light, dark. When an instance cannot
-connect, the card says why in plain words (wrong password, ACL, nothing
-listening) next to the raw error.
+The read-only views lead to the source: from a configuration, a dialplan
+extension, a directory user or a global variable, "Edit source" opens the file
+that defines it at the right line.
 
 Passwords, DSNs and similar values are masked in the configuration, dialplan,
 directory and variable views, including secrets assigned inside a value such
-as `sip_auth_password=...` in a dial string. The load history is kept in
-memory, one sample per FreeSWITCH heartbeat (every 20 seconds by default).
+as `sip_auth_password=…` in a dial string.
+
+| | |
+|---|---|
+| ![Config file editor](assets/screenshots/files.png) | ![Dialplan read as conditions and actions](assets/screenshots/dialplan.png) |
+| ![Console with Tab completion](assets/screenshots/console.png) | ![Instances in Chinese, dark theme](assets/screenshots/fleet-zh.png) |
 
 ## Quick start
 
 ```sh
-go build -o fsdeck ./cmd/fsdeck
-FSDECK_ADMIN_PASSWORD='choose-one' ./fsdeck
+go install github.com/juki/fsdeck/cmd/fsdeck@latest
+FSDECK_ADMIN_PASSWORD='choose-a-long-one' fsdeck
 ```
 
-Open <http://127.0.0.1:8080>, log in as `admin`, add an instance (host, ESL
-port, ESL password).
+or from a checkout:
+
+```sh
+go build -o fsdeck ./cmd/fsdeck
+FSDECK_ADMIN_PASSWORD='choose-a-long-one' ./fsdeck
+```
+
+Open <http://127.0.0.1:8080>, sign in as `admin`, add an instance (host, Event
+Socket port, Event Socket password). Without `FSDECK_ADMIN_PASSWORD` the first
+start creates `admin` with a random password and prints it once.
 
 With Docker:
 
 ```sh
 docker build -t fsdeck .
 docker run --rm -p 127.0.0.1:8080:8080 -v fsdeck-data:/data \
-  -e FSDECK_ADMIN_PASSWORD='choose-one' fsdeck
+  -e FSDECK_ADMIN_PASSWORD='choose-a-long-one' fsdeck
 ```
 
 ## Connecting FreeSWITCH
@@ -91,93 +104,21 @@ before the port is reachable from anywhere else: the Event Socket gives full
 control of the switch. An SSH tunnel to `127.0.0.1:8021` works without any of
 these changes.
 
-## Configuration
-
-| Flag | Environment | Default | Purpose |
-|---|---|---|---|
-| `-listen` | `FSDECK_LISTEN` | `127.0.0.1:8080` | listen address |
-| `-data` | `FSDECK_DATA` | `fsdeck.json` | data file: instances with their ESL passwords and agent tokens, and accounts (mode 0600) |
-| `-audit` | `FSDECK_AUDIT` | `fsdeck-audit.log` beside the data file | audit log; an empty value disables it |
-| `-log-backlog` | `FSDECK_LOG_BACKLOG` | `2000` | log lines kept per instance and replayed when the Logs view opens; `0` disables |
-| `-log-backlog-level` | `FSDECK_LOG_BACKLOG_LEVEL` | `6` (INFO) | highest log level kept in the backlog, `0` to `7` |
-| `-tls-cert`, `-tls-key` | `FSDECK_TLS_CERT`, `FSDECK_TLS_KEY` | unset | serve HTTPS with this PEM certificate and key; both or neither |
-| `-license` | `FSDECK_LICENSE_FILE` | unset | file holding the licence key |
-| | `FSDECK_LICENSE` | unset | the licence key itself, when no file is given |
-| | `FSDECK_SECRET_KEY` | unset | encrypt the ESL passwords and agent tokens in the data file; at least 16 characters |
-| | `FSDECK_ADMIN_PASSWORD` | unset | password of the managed `admin` account |
-| | `FSDECK_VIEWER_PASSWORD` | unset | password of the managed `viewer` account |
-| `-version` | | | print the version and exit |
-
-With a backlog, fsdeck keeps the ESL log level of every instance at least at
-`-log-backlog-level`, so FreeSWITCH sends INFO lines even while nobody watches
-the Logs view. `GET /healthz` answers `{"status":"ok"}` without signing in, for
-load balancers and container health checks. Backups of config files edited in
-local mode go to `backups/` beside the data file.
-
-## Accounts
-
-| | `viewer` | `operator` | `admin` |
-|---|---|---|---|
-| Status, SIP, calls, configuration, dialplan, directory (masked), load history | yes | yes | yes |
-| Logs | no | yes | yes |
-| Hang up, reloadxml, reloadacl, profile rescan, gateway register and unregister | no | yes | yes |
-| Profile start, stop, restart and flush; gateway kill; load, unload and reload modules; `fsctl` loglevel, max_sessions, sps, pause, resume; global variables | no | no | yes |
-| Console | no | no | yes |
-| Manage instances | no | no | yes |
-| Manage accounts, read the audit log, edit config files | no | no | yes |
-
-Accounts live in the data file. Usernames are 2 to 32 lowercase letters,
-digits, `.`, `_` or `-`; passwords are 10 to 256 characters and stored as
-PBKDF2-SHA256 hashes (600000 iterations). Everyone can change their own
-password. Changing an account's role, password or disabled flag, or deleting
-it, signs it out everywhere. Nobody can delete, disable or demote the account
-they are signed in with, and the last enabled admin stays.
-
-Managing accounts and the `operator` role need a licence (see Editions).
-Without one, only `admin` (role admin) and `viewer` (role viewer) can sign in.
-
-On the first start without accounts and without `FSDECK_ADMIN_PASSWORD`,
-fsdeck creates `admin` with a random password and prints it once.
-
-`FSDECK_ADMIN_PASSWORD` and `FSDECK_VIEWER_PASSWORD` keep the accounts `admin`
-(role admin) and `viewer` (role viewer) with that password, whatever the data
-file says. The console shows them as managed and cannot change or delete
-them; unset the variable to remove the account.
-
-## Editions
-
-fsdeck Community is everything except three paid features, which a licence
-key unlocks:
-
-| Feature | Licence name | Without it |
-|---|---|---|
-| Accounts and the `operator` role | `users` | only `admin` and `viewer` sign in; account changes answer 402 |
-| Audit log search | `audit` | the audit file is still written; the console cannot query it |
-| Config file editing | `config-edit` | the file routes answer 402 |
-
-A licence key is verified offline against the public key built into fsdeck.
-An invalid or expired key never stops fsdeck: it runs as Community and
-`GET /api/license` reports why. `go build -tags community ./cmd/fsdeck` builds
-a binary without any of the paid code (see `ee/LICENSE`).
-
-Licences are issued with `cmd/fsdeck-license`: `keygen -out private.key`
-creates a signing key pair, `sign -key private.key -licensee NAME -plan PLAN
--features users,audit,config-edit -days 365` prints a key, and
-`verify [-pub KEY] LICENCE` checks one.
-
 ## Editing configuration
 
-With the `config-edit` licence an admin can browse, edit, delete and restore
-the FreeSWITCH configuration files of an instance. Set it up when adding or
-editing the instance:
+An administrator can browse, search, edit, delete and restore the
+configuration files of an instance. The Event Socket has no file access, so
+fsdeck needs one of two ways to reach the files; choose it when adding or
+editing the instance.
 
-- Local mode (`configMode` `local`): fsdeck runs on the FreeSWITCH host and
-  `configPath` is the conf directory, for example `/etc/freeswitch`. The fsdeck
-  user needs write access to it.
-- Agent mode (`configMode` `agent`): run `fsdeck-agent` on the FreeSWITCH host
-  and give fsdeck its URL and token:
+- **On this server.** fsdeck runs on the FreeSWITCH host (or shares its conf
+  directory); give it the path, for example `/etc/freeswitch`. The fsdeck user
+  needs write access.
+- **Through an agent.** Run `fsdeck-agent` on the FreeSWITCH host and give
+  fsdeck its URL and token:
 
   ```sh
+  go install github.com/juki/fsdeck/cmd/fsdeck-agent@latest
   head -c 32 /dev/urandom | base64 > /etc/fsdeck-agent.token
   chmod 600 /etc/fsdeck-agent.token
   fsdeck-agent -root /etc/freeswitch -backups /var/lib/fsdeck-agent/backups \
@@ -186,66 +127,87 @@ editing the instance:
   ```
 
   Without `-tls-cert` the token and the files cross the network in clear; keep
-  the agent on `127.0.0.1` and use an SSH tunnel then. fsdeck verifies the
-  agent's certificate against the system roots.
+  the agent on `127.0.0.1` and use an SSH tunnel then.
 
-Only `.xml .lua .conf .tpl .txt .json .cfg .ini` files up to 1 MiB of UTF-8
-text can be read and written, and nothing outside the conf directory, also not
-through a symbolic link. An `.xml` file must be well-formed to be saved.
-Saving checks that nobody changed the file since it was opened. Before a file
-is overwritten, deleted or restored, its previous content is backed up (the
-last 50 versions per file, outside the conf directory: `backups/<instance
-id>/` beside the data file in local mode, `-backups` on the agent host).
+What a save does: it checks the XML is well-formed, checks nobody changed the
+file since you opened it, keeps the previous version (the last 50 per file,
+outside the conf directory), then writes atomically. Saving does not apply
+anything: the page then offers the actions that fit the file (Reload XML, a
+profile rescan, Reload ACL, a module reload) and shows FreeSWITCH's answer. If
+the answer is an error, one click restores the previous version.
 
-Search finds a literal text in every file the editor can open, at most 500
-matches from 5000 files within 5 seconds.
+Limits: `.xml .lua .conf .tpl .txt .json .cfg .ini` files up to 1 MiB of UTF-8
+text, nothing outside the conf directory, also not through a symbolic link.
+Configuration served by `mod_xml_curl` or a database is not in files and has
+to be changed at its source. Changes to a profile's ports, addresses or TLS
+need a profile restart, which drops its calls; fsdeck says so and asks first.
 
-Saving does not apply anything. Run `reloadxml` afterwards (and `reloadacl`
-for ACLs); changes to a SIP profile need a profile rescan or restart, and some
-modules need a reload. If `reloadxml` reports an error, restore the previous
-version.
+## Accounts
+
+| | Read only | Operator | Administrator |
+|---|---|---|---|
+| Status, SIP, calls, configuration, dialplan, directory (masked), load history | yes | yes | yes |
+| Logs | no | yes | yes |
+| Hang up, Reload XML, Reload ACL, profile rescan, gateway register and unregister | no | yes | yes |
+| Profile start, stop, restart; remove gateways; modules; runtime settings | no | no | yes |
+| Console | no | no | yes |
+| Manage instances and accounts, read the audit log, edit config files | no | no | yes |
+
+Accounts live in the data file. Passwords are 10 to 256 characters, stored as
+PBKDF2-SHA256 hashes. Changing an account's role or password, disabling or
+deleting it signs it out everywhere. Nobody can delete, disable or demote the
+account they are signed in with, and the last enabled administrator stays.
+
+`FSDECK_ADMIN_PASSWORD` and `FSDECK_VIEWER_PASSWORD` keep the accounts `admin`
+and `viewer` with that password, whatever the data file says. The console
+shows them as managed by the environment and cannot change them.
+
+## Configuration
+
+| Flag | Environment | Default | Purpose |
+|---|---|---|---|
+| `-listen` | `FSDECK_LISTEN` | `127.0.0.1:8080` | listen address |
+| `-data` | `FSDECK_DATA` | `fsdeck.json` | data file: instances with their Event Socket passwords and agent tokens, and accounts (mode 0600) |
+| `-audit` | `FSDECK_AUDIT` | `fsdeck-audit.log` beside the data file | audit log; an empty value disables it |
+| `-log-backlog` | `FSDECK_LOG_BACKLOG` | `2000` | log lines kept per instance and replayed when the Logs view opens; `0` disables |
+| `-log-backlog-level` | `FSDECK_LOG_BACKLOG_LEVEL` | `6` (INFO) | highest log level kept in the backlog, `0` to `7` |
+| `-tls-cert`, `-tls-key` | `FSDECK_TLS_CERT`, `FSDECK_TLS_KEY` | unset | serve HTTPS with this PEM certificate and key; both or neither |
+| | `FSDECK_SECRET_KEY` | unset | encrypt the Event Socket passwords and agent tokens in the data file; at least 16 characters |
+| | `FSDECK_ADMIN_PASSWORD` | unset | password of the managed `admin` account |
+| | `FSDECK_VIEWER_PASSWORD` | unset | password of the managed `viewer` account |
+| `-static` | | unset | serve the frontend from this directory instead of the embedded copy (development) |
+| `-version` | | | print the version and exit |
+
+With a backlog, fsdeck keeps the log level of every instance's Event Socket
+connection at least at `-log-backlog-level`, so FreeSWITCH sends INFO lines
+even while nobody watches the Logs view. `GET /healthz` answers
+`{"status":"ok"}` without signing in, for load balancers and container health
+checks. The load history is kept in memory, one sample per FreeSWITCH
+heartbeat (every 20 seconds by default).
 
 ## Security notes
 
-- The `admin` role can run any FreeSWITCH API command. Treat it like shell
-  access to the switch.
-- Without `-tls-cert` and `-tls-key` fsdeck serves plain HTTP. Then keep it on
-  a trusted network or behind a TLS-terminating reverse proxy that sets
-  `X-Forwarded-Proto: https`, so the session cookie is marked `Secure`. With
-  built-in TLS fsdeck also sends `Strict-Transport-Security`.
-- ESL passwords and agent tokens are stored in clear in the data file unless
-  `FSDECK_SECRET_KEY` is set; fsdeck warns at start when it is not. With the
-  key they are encrypted with AES-256-GCM; existing clear values are encrypted
-  at the next change to the data file. fsdeck refuses to start when the file
-  holds encrypted values and the key is missing or wrong. Keep the key outside
-  the data directory, and protect the data file either way: it also holds the
-  password hashes.
+- An administrator can run any FreeSWITCH API command and edit its
+  configuration. Treat the role like shell access to the switch.
+- Without `-tls-cert` and `-tls-key` fsdeck serves plain HTTP. Keep it on a
+  trusted network or behind a TLS-terminating reverse proxy that sets
+  `X-Forwarded-Proto: https`, so the session cookie is marked `Secure`.
+- Event Socket passwords and agent tokens are stored in clear in the data file
+  unless `FSDECK_SECRET_KEY` is set; with it they are encrypted with
+  AES-256-GCM. fsdeck refuses to start when the file holds encrypted values
+  and the key is missing or wrong. Protect the data file either way: it also
+  holds the password hashes.
 - Five failed sign-ins for an account from one address within five minutes
-  block that pair for a minute; wrong current passwords when changing a
-  password count the same way. Behind a reverse proxy every client shares the
-  proxy's address, so the block then applies to the account as a whole. At
-  most four password checks run at once; more answer 503 with `Retry-After`.
+  block that pair for a minute. Behind a reverse proxy every client shares the
+  proxy's address, so the block then applies to the account as a whole.
 - The audit log records sign-ins (also failed and blocked ones), sign-outs,
-  instance and account changes, password changes, hang-ups, runtime
-  operations, config file changes (path and hashes, not the content), refused
-  requests and every console command in full, with the account and client
-  address. It never records passwords, tokens or session cookies, but console
-  commands can carry secrets: the file has mode 0600 and only admins can read
-  it in the console. At 10 MiB it is renamed to `<name>.1` and a new file
-  starts.
-- Config files are shown and edited as they are, secrets included; that is
-  why editing is admin-only. The agent token gives full access to the conf
-  directory: keep its file at mode 0600.
-- Log lines are not masked and can contain secrets; that is why logs need the
-  `operator` or `admin` role.
-
-## Not in scope (yet)
-
-- Configuration that is not in files: what `mod_xml_curl` or a database serves
-  has to be changed at its source.
-- Files that are not UTF-8 (a few language files in the stock set are Latin-1)
-  cannot be edited in the browser.
-- SIP capture and long-term metrics. Homer and Prometheus cover those.
+  instance and account changes, hang-ups, runtime operations, config file
+  changes (path and hashes, not the content), refused requests and every
+  console command in full. It never records passwords, tokens or session
+  cookies, but console commands can carry secrets: the file has mode 0600 and
+  only administrators can read it in the console.
+- Config files are shown and edited as they are, secrets included, and log
+  lines are not masked; that is why both are limited to the roles above.
 
 ## Trying it against a stock FreeSWITCH in Docker
 
@@ -277,25 +239,30 @@ some traffic to look at:
 docker exec dev-fsdeck-freeswitch fs_cli -x 'bgapi originate loopback/9196/default &park()'
 ```
 
-The image is amd64 only; on Apple silicon add `--platform linux/amd64`.
+The image is amd64 only; on Apple silicon add `--platform linux/amd64`. To try
+the file editor as well, mount a host directory at `/etc/freeswitch` and give
+fsdeck that path.
+
+## Not in scope
+
+- Call history and SIP capture. Homer and CDR tools cover those.
+- Long-term metrics. Prometheus and Grafana cover those.
+- Generating configuration. fsdeck edits the files you have.
 
 ## Development
 
 ```sh
 go vet ./... && go test -race ./...
-go test -race -tags community ./...   # the build without the paid code
+./fsdeck -static web/static     # serve the frontend from disk while working on it
 ```
 
-No third-party Go modules and no frontend build step: `web/static` is served
-as is. While working on the frontend, `./fsdeck -static web/static` serves the
-files from disk, so a browser reload shows the change without rebuilding.
+No third-party Go modules and no frontend build step: `web/static` is plain
+ES modules, served as is. Interface text lives in
+`web/static/js/locales/`; a test keeps the languages in step.
 
 ## License
 
-The core is licensed under the GNU Affero General Public License, version 3
-(`LICENSE`). The paid features, which are the files under `ee/` and the files
-named `ee_*.go`, are under separate terms (`ee/LICENSE`); `go build -tags
-community ./cmd/fsdeck` produces a binary that contains none of them.
+GNU Affero General Public License, version 3 (`LICENSE`).
 
 FreeSWITCH is a trademark of its owner; fsdeck is an independent project and
 is not affiliated with or endorsed by the FreeSWITCH project or SignalWire.
