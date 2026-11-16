@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"fsdeck/internal/store"
+	"github.com/juki/fsdeck/internal/store"
 )
 
 func TestVerifySlotsCap(t *testing.T) {

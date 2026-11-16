@@ -212,20 +212,3 @@ func TestBootstrapAndAuditDefault(t *testing.T) {
 		}
 	}
 }
-
-// TestLicenceNeverStopsTheStart: a bad, missing or absent key runs as
-// Community and says so.
-func TestLicenceNeverStopsTheStart(t *testing.T) {
-	dir := t.TempDir()
-	base := []string{"FSDECK_DATA=" + filepath.Join(dir, "d.json"), "FSDECK_LISTEN=127.0.0.1:0", "FSDECK_ADMIN_PASSWORD=admin-password", "FSDECK_AUDIT=", "FSDECK_SECRET_KEY=0123456789abcdef-key"}
-	for _, extra := range [][]string{
-		nil,
-		{"FSDECK_LICENSE=not.a-key"},
-		{"FSDECK_LICENSE_FILE=" + filepath.Join(dir, "missing.key")},
-	} {
-		out, ok := startupOutput(t, append(base, extra...))
-		if !ok || !strings.Contains(out, "running as Community") {
-			t.Errorf("%q:\n%s", extra, out)
-		}
-	}
-}

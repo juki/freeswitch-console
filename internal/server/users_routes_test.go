@@ -1,7 +1,3 @@
-//go:build !community
-
-// Licensed under the fsdeck paid-feature terms, see ee/LICENSE.
-
 package server
 
 import (
@@ -11,11 +7,11 @@ import (
 	"testing"
 	"time"
 
-	"fsdeck/internal/store"
+	"github.com/juki/fsdeck/internal/store"
 )
 
 func TestManagedAccounts(t *testing.T) {
-	h := newHarness(t, licensed(t))
+	h := newHarness(t)
 	// A file account named like a managed one is hidden and cannot sign in.
 	hidden := h.addUser("admin", store.RoleViewer)
 	expect(t, h.loginAs("admin", userPW), 401, "")
@@ -53,7 +49,7 @@ func TestManagedAccounts(t *testing.T) {
 }
 
 func TestUserCRUD(t *testing.T) {
-	h := newHarness(t, licensed(t))
+	h := newHarness(t)
 	admin := h.login("admin", adminPW)
 
 	r := h.do("POST", "/api/users", admin, `{"username":"bob.ops","role":"operator","password":"`+userPW+`"}`)
@@ -134,7 +130,7 @@ func TestUserCRUD(t *testing.T) {
 }
 
 func TestAdminGuards(t *testing.T) {
-	h := newHarness(t, licensed(t), noEnvAccounts)
+	h := newHarness(t, noEnvAccounts)
 	root := h.addUser("root", store.RoleAdmin)
 	ops := h.addUser("ops", store.RoleAdmin)
 	rootTok := h.login("root", userPW)
@@ -185,7 +181,7 @@ func TestAdminGuards(t *testing.T) {
 // TestAdminGuardsConcurrent has two admins demote each other at the same
 // time, over and over: one admin always stays.
 func TestAdminGuardsConcurrent(t *testing.T) {
-	h := newHarness(t, licensed(t), noEnvAccounts)
+	h := newHarness(t, noEnvAccounts)
 	a := h.addUser("aa", store.RoleAdmin)
 	b := h.addUser("bb", store.RoleAdmin)
 	for round := 0; round < 20; round++ {
@@ -216,7 +212,7 @@ func TestAdminGuardsConcurrent(t *testing.T) {
 }
 
 func TestLogsNeedOperator(t *testing.T) {
-	h := newHarness(t, licensed(t), noEnvAccounts)
+	h := newHarness(t, noEnvAccounts)
 	f := h.fake(0)
 	for _, role := range []string{store.RoleViewer, store.RoleOperator, store.RoleAdmin} {
 		h.addUser("u-"+role, role)

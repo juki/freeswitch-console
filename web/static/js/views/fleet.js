@@ -178,8 +178,7 @@ export function mountFleet({ scope, root, ctx }) {
 
 // instanceDialog adds or edits an instance: the Event Socket connection and,
 // optionally, access to its configuration files (on this server or through
-// the fsdeck agent). Config access needs the config-edit licence feature; the
-// section is shown locked without it and left untouched on save.
+// the fsdeck agent).
 export function instanceDialog(ctx, inst, { focusConfig = false, onSaved } = {}) {
   const editing = Boolean(inst);
   const name = h('input', { id: 'f-name', class: 'input', type: 'text', required: true, maxLength: 64, autocomplete: 'off', value: editing ? inst.name : '', placeholder: 'fs-prod-01' });
@@ -193,7 +192,6 @@ export function instanceDialog(ctx, inst, { focusConfig = false, onSaved } = {})
   const field = (id, label, input, hint) => h('div', { class: 'field' }, h('label', { for: id, text: label }), input, hint ? h('span', { class: 'hint', text: hint }) : null);
 
   // ---- configuration files ----
-  const licensed = ctx.licensed('config-edit');
   const mode0 = (inst && inst.configMode) || '';
   const path = h('input', { id: 'f-cpath', class: 'input mono', type: 'text', autocomplete: 'off', spellcheck: false, value: (inst && inst.configPath) || '', placeholder: '/etc/freeswitch' });
   const url = h('input', { id: 'f-curl', class: 'input mono', type: 'url', autocomplete: 'off', spellcheck: false, value: (inst && inst.agentURL) || '', placeholder: 'agent.example:8022' });
@@ -217,19 +215,18 @@ export function instanceDialog(ctx, inst, { focusConfig = false, onSaved } = {})
     return mode;
   };
   const picker = h('div', { class: 'mode-picker', role: 'radiogroup', 'aria-label': t('fleet.cfg.title') }, modes.map((m) => {
-    const r = h('input', { type: 'radio', name: 'f-cmode', value: m.key, checked: m.key === mode0, disabled: !licensed });
+    const r = h('input', { type: 'radio', name: 'f-cmode', value: m.key, checked: m.key === mode0 });
     r.addEventListener('change', choose);
     radios.push(r);
     return h('label', { class: 'mode-opt' }, r, h('span', { text: m.label }));
   }));
-  const section = h('fieldset', { class: licensed ? 'cfg-access' : 'cfg-access locked' },
-    h('legend', null, icon('file'), t('fleet.cfg.title'), licensed ? null : h('span', { class: 'lock-pill' }, icon('lock'), t('paid.kicker'))),
-    licensed ? null : h('p', { class: 'cfg-explain', text: t('fleet.cfg.locked') }),
-    licensed ? picker : null,
-    licensed ? explain : null,
-    licensed ? localFields : null,
-    licensed ? agentFields : null);
-  if (licensed) choose();
+  const section = h('fieldset', { class: 'cfg-access' },
+    h('legend', null, icon('file'), t('fleet.cfg.title')),
+    picker,
+    explain,
+    localFields,
+    agentFields);
+  choose();
 
   const form = h('form', { id: 'inst-form', class: 'modal-form' },
     field('f-name', t('fleet.form.name'), name),
@@ -243,14 +240,12 @@ export function instanceDialog(ctx, inst, { focusConfig = false, onSaved } = {})
   form.addEventListener('submit', async (ev) => {
     ev.preventDefault();
     const body = { name: name.value.trim(), host: host.value.trim(), port: Number(port.value), password: pass.value };
-    if (licensed) {
-      const mode = choose();
-      body.configMode = mode;
-      if (mode === 'local') body.configPath = path.value.trim();
-      if (mode === 'agent') {
-        body.agentURL = url.value.trim();
-        body.agentToken = token.value; // empty keeps the stored token
-      }
+    const mode = choose();
+    body.configMode = mode;
+    if (mode === 'local') body.configPath = path.value.trim();
+    if (mode === 'agent') {
+      body.agentURL = url.value.trim();
+      body.agentToken = token.value; // empty keeps the stored token
     }
     submit.disabled = true;
     error.hidden = true;
@@ -267,6 +262,6 @@ export function instanceDialog(ctx, inst, { focusConfig = false, onSaved } = {})
       submit.disabled = false;
     }
   });
-  if (focusConfig && licensed) (radios.find((r) => r.checked) || radios[0]).focus();
+  if (focusConfig) (radios.find((r) => r.checked) || radios[0]).focus();
   else name.focus();
 }

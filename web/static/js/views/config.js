@@ -6,7 +6,7 @@ import { api, instPath, isAbort, rowsOf } from '../api.js';
 import { h, cellText, fmtInt } from '../dom.js';
 import { t } from '../i18n.js';
 import { icon } from '../icons.js';
-import { confirmLeave, dataTable, emptyState, panel, paidState, rowMatches, rowMenu, searchBox, segmented, sortState, tableHost, tag } from '../ui.js';
+import { confirmLeave, dataTable, emptyState, panel, rowMatches, rowMenu, searchBox, segmented, sortState, tableHost, tag } from '../ui.js';
 import { operate } from '../actions.js';
 import { mountXmlBrowser } from './xmlbrowser.js';
 import { mountFiles } from './files.js';
@@ -20,7 +20,7 @@ const SUBS = {
   directory: (o) => mountXmlBrowser({ ...o, kind: 'directory', label: t('cfg.sub.directory') }),
   vars: mountVars,
   modules: mountModules,
-  files: (o) => (o.ctx.access('files') === 'licence' ? o.root.append(paidState('config-edit')) : mountFiles(o)),
+  files: mountFiles,
   runtime: mountRuntime,
 };
 
@@ -59,8 +59,6 @@ export function mountConfig({ id, scope, root, ctx, nav = {} }) {
     }
     show(key);
   });
-  const lockBtn = seg.el.querySelector('button:nth-child(' + (options.findIndex((o) => o.key === 'files') + 1) + ')');
-  if (lockBtn && ctx.access('files') === 'licence') lockBtn.append(icon('lock', 'seg-lock'));
   const note = h('span', { class: 'faint toolbar-note', text: t('cfg.note') });
   const reload = (action, label) => h('button', {
     type: 'button', class: 'btn btn-sm', title: action === 'reloadxml' ? t('cfg.reloadxmlTitle') : t('cfg.reloadaclTitle'),

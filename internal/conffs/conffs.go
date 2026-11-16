@@ -1,7 +1,3 @@
-//go:build !community
-
-// Licensed under the fsdeck paid-feature terms, see ee/LICENSE.
-
 // Package conffs reads and writes the FreeSWITCH configuration files below
 // one root directory, on this host (Local) or through the fsdeck agent
 // (Client), with optimistic concurrency and a backup of every overwritten

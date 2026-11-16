@@ -1,6 +1,6 @@
 package server
 
-import "fsdeck/internal/store"
+import "github.com/juki/fsdeck/internal/store"
 
 // capability is what a route requires of the signed-in account.
 type capability int
@@ -17,11 +17,11 @@ const (
 	capFiles                       // config files: raw, with secrets in clear
 )
 
-// roleCaps holds the roles of the core; the operator role comes with the
-// paid user management (ee_register.go).
+// roleCaps holds the capabilities of each role.
 var roleCaps = map[string]map[capability]bool{
-	store.RoleViewer: {capRead: true},
-	store.RoleAdmin:  {capRead: true, capLogs: true, capOperate: true, capControl: true, capConsole: true, capInstances: true, capUsers: true, capFiles: true},
+	store.RoleViewer:   {capRead: true},
+	store.RoleOperator: {capRead: true, capLogs: true, capOperate: true},
+	store.RoleAdmin:    {capRead: true, capLogs: true, capOperate: true, capControl: true, capConsole: true, capInstances: true, capUsers: true, capFiles: true},
 }
 
 // allowed reports whether role has c; an unknown role has nothing.

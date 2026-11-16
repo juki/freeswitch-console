@@ -1,7 +1,3 @@
-//go:build !community
-
-// Licensed under the fsdeck paid-feature terms, see ee/LICENSE.
-
 package server
 
 import (
@@ -13,8 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"fsdeck/ee/conffs"
-	"fsdeck/internal/license"
+	"github.com/juki/fsdeck/internal/conffs"
 )
 
 const agentToken = "agent-token-0123456789"
@@ -35,7 +30,7 @@ func withBackups(t *testing.T) func(*Config) {
 }
 
 func TestInstanceConfigAccess(t *testing.T) {
-	h := newHarness(t, licensed(t))
+	h := newHarness(t)
 	admin := h.login("admin", adminPW)
 	p := "/api/instances/" + h.id
 
@@ -97,7 +92,7 @@ func TestInstanceConfigAccess(t *testing.T) {
 
 func TestFilesLocal(t *testing.T) {
 	var auditPath string
-	h := newHarness(t, licensed(t), withBackups(t), withAudit(t, &auditPath))
+	h := newHarness(t, withBackups(t), withAudit(t, &auditPath))
 	admin := h.login("admin", adminPW)
 	p := "/api/instances/" + h.id
 	expect(t, h.do("GET", p+"/files?path=", admin, ""), 409, `{"error":"config access is not set up for this instance"}`)
@@ -214,14 +209,12 @@ func TestFilesLocal(t *testing.T) {
 		t.Error("audit holds file content")
 	}
 
-	// Without the licence: 402; a viewer: 403.
-	h.srv.cfg.License = license.Key{}
-	expect(t, h.do("GET", p+"/files?path=", admin, ""), 402, `{"error":"this feature needs a licence","feature":"config-edit"}`)
+	// A viewer: 403.
 	expect(t, h.do("GET", p+"/files?path=", h.login("viewer", viewerPW), ""), 403, "")
 }
 
 func TestFilesAgent(t *testing.T) {
-	h := newHarness(t, licensed(t))
+	h := newHarness(t)
 	admin := h.login("admin", adminPW)
 	p := "/api/instances/" + h.id
 	root := confDir(t)
@@ -262,7 +255,7 @@ func TestFilesAgent(t *testing.T) {
 
 func TestFilesSearch(t *testing.T) {
 	var auditPath string
-	h := newHarness(t, licensed(t), withBackups(t), withAudit(t, &auditPath))
+	h := newHarness(t, withBackups(t), withAudit(t, &auditPath))
 	admin := h.login("admin", adminPW)
 	p := "/api/instances/" + h.id + "/files/search"
 	expect(t, h.do("GET", p+"?q=password", admin, ""), 409, `{"error":"config access is not set up for this instance"}`)
@@ -300,6 +293,4 @@ func TestFilesSearch(t *testing.T) {
 	if !strings.Contains(data, `"user":"viewer","ip":"127.0.0.1","action":"config.search","target":"","detail":"GET `+p+`","result":"denied"`) || strings.Contains(data, `"user":"admin","ip":"127.0.0.1","action":"config.search"`) {
 		t.Fatalf("audit %s", data)
 	}
-	h.srv.cfg.License = license.Key{}
-	expect(t, h.do("GET", p+"?q=profile", admin, ""), 402, `{"error":"this feature needs a licence","feature":"config-edit"}`)
 }

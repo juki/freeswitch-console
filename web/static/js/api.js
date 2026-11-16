@@ -3,14 +3,12 @@
 
 import { t } from './i18n.js';
 
-// ApiError carries the HTTP status and, for a 402 (a licensed feature), the
-// "feature" the server named, plus the extra fields of a 422 or 409.
+// ApiError carries the HTTP status, plus the extra fields of a 422 or 409.
 export class ApiError extends Error {
   constructor(status, message, data) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
-    this.feature = data && typeof data.feature === 'string' ? data.feature : '';
     // extra fields some answers carry: the line of a 422, the current hash of a 409
     this.line = data && Number.isFinite(Number(data.line)) ? Number(data.line) : 0;
     this.currentSha256 = data && typeof data.currentSha256 === 'string' ? data.currentSha256 : '';

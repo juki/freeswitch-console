@@ -1,7 +1,3 @@
-//go:build !community
-
-// Licensed under the fsdeck paid-feature terms, see ee/LICENSE.
-
 package server
 
 import (
@@ -10,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"fsdeck/internal/audit"
-	"fsdeck/internal/store"
+	"github.com/juki/fsdeck/internal/audit"
+	"github.com/juki/fsdeck/internal/store"
 )
 
 func brief(e audit.Entry) string {
@@ -20,7 +16,7 @@ func brief(e audit.Entry) string {
 
 func TestAuditEvents(t *testing.T) {
 	var path string
-	h := newHarness(t, licensed(t), withAudit(t, &path))
+	h := newHarness(t, withAudit(t, &path))
 	p := "/api/instances/" + h.id
 	h.addUser("dana", store.RoleOperator)
 
@@ -109,7 +105,7 @@ func TestAuditEvents(t *testing.T) {
 
 func TestAuditRoute(t *testing.T) {
 	var path string
-	h := newHarness(t, licensed(t), withAudit(t, &path))
+	h := newHarness(t, withAudit(t, &path))
 	admin := h.login("admin", adminPW)
 	for i := 0; i < 1005; i++ {
 		h.srv.cfg.Audit.Write(audit.Entry{User: "x", Action: "console.run", Detail: fmt.Sprintf("cmd %d", i), Result: audit.OK})
@@ -157,7 +153,7 @@ func TestAuditRoute(t *testing.T) {
 }
 
 func TestAuditDisabled(t *testing.T) {
-	h := newHarness(t, licensed(t))
+	h := newHarness(t)
 	admin := h.login("admin", adminPW)
 	expect(t, h.do("POST", "/api/instances/"+h.id+"/console", admin, `{"command":"status"}`), 200, "")
 	expect(t, h.do("GET", "/api/audit", admin, ""), 200, `{"enabled":false,"rows":[]}`)

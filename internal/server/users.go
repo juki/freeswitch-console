@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"time"
 
-	"fsdeck/internal/audit"
-	"fsdeck/internal/store"
+	"github.com/juki/fsdeck/internal/audit"
+	"github.com/juki/fsdeck/internal/store"
 )
 
 const errManaged = "this account is set by the environment and cannot be changed here"

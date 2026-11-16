@@ -1,5 +1,5 @@
-// Files (admin, licence feature config-edit): the FreeSWITCH configuration
-// files of one instance, as they are on disk.
+// Files (admin): the FreeSWITCH configuration files of one instance, as they
+// are on disk.
 //
 // Left: a lazily loaded tree. Right: the editor (editor.js), with find, live
 // XML well-formedness, and a status bar. Saving always goes through a review
@@ -13,7 +13,7 @@ import { api, instPath, isAbort, rowsOf } from '../api.js';
 import { h, fmtBytes, fmtClock, fmtDateTime, fmtInt } from '../dom.js';
 import { icon } from '../icons.js';
 import { plural, t } from '../i18n.js';
-import { actionDialog, confirmLeave, emptyState, errorState, openDrawer, closeDrawer, openModal, paidState, searchBox, segmented, setLeaveGuard, skeleton, toast } from '../ui.js';
+import { actionDialog, confirmLeave, emptyState, errorState, openDrawer, closeDrawer, openModal, searchBox, segmented, setLeaveGuard, skeleton, toast } from '../ui.js';
 import { createEditor } from '../editor.js';
 import { diffLines, diffSummary, renderDiff } from '../diff.js';
 import { wellFormed } from '../xml.js';
@@ -133,7 +133,7 @@ export function mountFiles({ id, ctx, scope, root, params = new URLSearchParams(
     } catch (err) {
       clearTimeout(sTimer);
       if (isAbort(err)) return;
-      sResults.replaceChildren(err.status === 402 || err.status === 404 ? paidState('config-edit') : errorState(err));
+      sResults.replaceChildren(errorState(err));
     }
   }
 
@@ -318,8 +318,6 @@ export function mountFiles({ id, ctx, scope, root, params = new URLSearchParams(
       if (isAbort(err)) return;
       if (err.status === 409) {
         root.replaceChildren(setupState(ctx, inst || { id }));
-      } else if (err.status === 402 || err.status === 404) {
-        root.replaceChildren(paidState('config-edit', err.status === 402 ? err.message : ''));
       } else {
         treeEl.replaceChildren(errorState(err));
         main.replaceChildren(errorState(err));

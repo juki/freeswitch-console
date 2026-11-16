@@ -16,11 +16,10 @@ import (
 	"sync"
 	"time"
 
-	"fsdeck/internal/audit"
-	"fsdeck/internal/esl"
-	"fsdeck/internal/fsapi"
-	"fsdeck/internal/license"
-	"fsdeck/internal/store"
+	"github.com/juki/fsdeck/internal/audit"
+	"github.com/juki/fsdeck/internal/esl"
+	"github.com/juki/fsdeck/internal/fsapi"
+	"github.com/juki/fsdeck/internal/store"
 )
 
 // Switch is one ESL connection to a FreeSWITCH. *esl.Client satisfies it.
@@ -45,8 +44,7 @@ type Config struct {
 
 	Audit *audit.Log // nil disables the audit log
 
-	License   license.Key // the paid features it grants; ignored by a community build
-	BackupDir string      // config file backups of local-mode instances, one directory per instance
+	BackupDir string // config file backups of local-mode instances, one directory per instance
 }
 
 const (
@@ -75,9 +73,7 @@ type Server struct {
 	verifySlots chan struct{} // one token per password hash or check in progress
 	verifyWait  time.Duration // how long a request waits for a slot before 503
 
-	// pattern -> capability and paid feature, for the route table test
-	routeCaps     map[string]capability
-	routeFeatures map[string]string
+	routeCaps map[string]capability // pattern -> capability, for the route table test
 
 	// loginMaxFails failures within loginWindow block a key for loginBlock;
 	// the table holds at most loginMaxKeys keys.
@@ -162,7 +158,6 @@ func New(cfg Config) (*Server, error) {
 		loginBlock:    time.Minute,
 		loginMaxKeys:  10000,
 		routeCaps:     map[string]capability{},
-		routeFeatures: map[string]string{},
 		verifySlots:   make(chan struct{}, 4),
 		verifyWait:    2 * time.Second,
 	}
@@ -237,9 +232,12 @@ func (s *Server) routes() {
 		writeJSON(w, http.StatusOK, map[string]string{"version": s.cfg.Version})
 	})
 
-	s.handle(m, "GET /api/license", capRead, "", s.handleLicense)
-	// Users, the audit query and config files: absent from a community build.
-	s.registerPaid(m)
+	s.handle(m, "GET /api/users", capUsers, "user.list", s.handleListUsers)
+	s.handle(m, "POST /api/users", capUsers, "user.create", s.handleCreateUser)
+	s.handle(m, "PUT /api/users/{id}", capUsers, "user.update", s.handleUpdateUser)
+	s.handle(m, "DELETE /api/users/{id}", capUsers, "user.delete", s.handleDeleteUser)
+	s.handle(m, "GET /api/audit", capUsers, "audit.read", s.handleAudit)
+	s.registerFiles(m)
 
 	s.handle(m, "GET /api/instances", capRead, "", s.handleListInstances)
 	s.handle(m, "POST /api/instances", capInstances, "instance.create", s.handleCreateInstance)

@@ -1,7 +1,3 @@
-//go:build !community
-
-// Licensed under the fsdeck paid-feature terms, see ee/LICENSE.
-
 // Command fsdeck-agent runs on a FreeSWITCH host and lets fsdeck read and
 // write the configuration files below one directory, with backups kept on
 // that host. It serves only /v1/ and every request needs the bearer token.
@@ -22,7 +18,7 @@ import (
 	"syscall"
 	"time"
 
-	"fsdeck/ee/conffs"
+	"github.com/juki/fsdeck/internal/conffs"
 )
 
 func main() {

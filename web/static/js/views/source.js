@@ -5,15 +5,15 @@
 // The defining line is found with the files search (GET .../files/search,
 // case-sensitive, literal). One match opens the file at that line; several
 // open a chooser; none says where else the value may come from and offers a
-// search. The action needs the admin role, the config-edit licence feature
-// and config access for the instance; without the licence or the access it
-// is shown in its locked or "set up" form, without the role not at all.
+// search. The action needs the admin role and config access for the
+// instance; without the access it is shown in its "set up" form, without the
+// role not at all.
 
 import { api, instPath, isAbort, rowsOf } from '../api.js';
 import { h, fmtInt } from '../dom.js';
 import { icon } from '../icons.js';
 import { plural, t } from '../i18n.js';
-import { openModal, paidState, toast } from '../ui.js';
+import { openModal, toast } from '../ui.js';
 import { fileHash, instHash, setBack } from '../nav.js';
 import { instanceDialog } from './fleet.js';
 
@@ -86,9 +86,9 @@ export function sourceAction(ctx, { id, scope, kind, name, hint, label, back, co
   const access = ctx.access('files');
   if (access === 'role' || !name) return null;
   const inst = ctx.instances().find((i) => i.id === id);
-  const state = access === 'licence' ? 'licence' : inst && !inst.configMode ? 'setup' : 'ok';
-  const title = state === 'licence' ? t('src.lockedTitle') : state === 'setup' ? t('src.setupTitle') : t('src.title');
-  const glyph = { ok: 'file', licence: 'lock', setup: 'sliders' }[state];
+  const state = inst && !inst.configMode ? 'setup' : 'ok';
+  const title = state === 'setup' ? t('src.setupTitle') : t('src.title');
+  const glyph = { ok: 'file', setup: 'sliders' }[state];
   const content = compact ? [icon(glyph)] : [icon(glyph), t('src.action')];
   const btn = h('button', {
     type: 'button', class: (compact ? 'btn btn-ghost btn-icon btn-sm' : 'btn btn-sm') + ' src-btn' + (state === 'ok' ? '' : ' locked'),
@@ -96,23 +96,13 @@ export function sourceAction(ctx, { id, scope, kind, name, hint, label, back, co
   }, content);
   btn.addEventListener('click', (ev) => {
     ev.stopPropagation();
-    if (state === 'licence') {
-      lockedDialog();
-    } else if (state === 'setup') {
+    if (state === 'setup') {
       if (ctx.can('manage')) instanceDialog(ctx, inst, { focusConfig: true });
     } else {
       editSource({ id, scope, kind, name, hint, label, back, btn });
     }
   });
   return btn;
-}
-
-function lockedDialog() {
-  const close = h('button', { type: 'button', class: 'btn', text: t('common.close') });
-  const m = openModal({ title: t('src.action'), body: paidState('config-edit'), footer: [close] });
-  m.dialog.classList.add('wide');
-  close.addEventListener('click', m.close);
-  close.focus();
 }
 
 function go(id, row, { label, back }) {

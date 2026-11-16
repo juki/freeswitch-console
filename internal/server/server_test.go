@@ -17,8 +17,8 @@ import (
 	"testing/fstest"
 	"time"
 
-	"fsdeck/internal/esl"
-	"fsdeck/internal/store"
+	"github.com/juki/fsdeck/internal/esl"
+	"github.com/juki/fsdeck/internal/store"
 )
 
 const (

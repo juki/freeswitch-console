@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"fsdeck/internal/esl"
+	"github.com/juki/fsdeck/internal/esl"
 )
 
 type logEvent struct {

@@ -14,16 +14,14 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"syscall"
 	"time"
 
-	"fsdeck/internal/audit"
-	"fsdeck/internal/esl"
-	"fsdeck/internal/license"
-	"fsdeck/internal/server"
-	"fsdeck/internal/store"
-	"fsdeck/web"
+	"github.com/juki/fsdeck/internal/audit"
+	"github.com/juki/fsdeck/internal/esl"
+	"github.com/juki/fsdeck/internal/server"
+	"github.com/juki/fsdeck/internal/store"
+	"github.com/juki/fsdeck/web"
 )
 
 // version is set at build time with -ldflags "-X main.version=...".
@@ -37,7 +35,6 @@ func main() {
 	tlsKey := flag.String("tls-key", os.Getenv("FSDECK_TLS_KEY"), "TLS private key file (PEM)")
 	backlog := flag.Int("log-backlog", envInt("FSDECK_LOG_BACKLOG", 2000), "log lines kept per instance and replayed when the Logs view opens; 0 disables")
 	backlogLevel := flag.Int("log-backlog-level", envInt("FSDECK_LOG_BACKLOG_LEVEL", 6), "highest log level kept in the backlog, 0 (console) to 7 (debug)")
-	licenseFile := flag.String("license", os.Getenv("FSDECK_LICENSE_FILE"), "licence key file (or the key itself in FSDECK_LICENSE)")
 	auditPath := flag.String("audit", "", "audit log file (default fsdeck-audit.log beside the data file; empty disables)")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
@@ -93,8 +90,6 @@ func main() {
 		defer auditLog.Close()
 	}
 
-	lic := loadLicense(*licenseFile)
-
 	app, err := server.New(server.Config{
 		AdminPassword:   adminPassword,
 		ViewerPassword:  os.Getenv("FSDECK_VIEWER_PASSWORD"),
@@ -105,13 +100,11 @@ func main() {
 		LogBacklog:      *backlog,
 		LogBacklogLevel: *backlogLevel,
 		Audit:           auditLog,
-		License:         lic,
 		BackupDir:       filepath.Join(filepath.Dir(*data), "backups"),
 	})
 	if err != nil {
 		log.Fatal(err)
 	}
-	logLicense(app.License(), lic)
 
 	// No WriteTimeout: the event stream is a long-lived response.
 	srv := &http.Server{
@@ -174,40 +167,6 @@ func envOr(name, fallback string) string {
 		return v
 	}
 	return fallback
-}
-
-// loadLicense reads the key from file, else from FSDECK_LICENSE. A key that
-// cannot be read or verified never stops fsdeck: it runs as Community.
-func loadLicense(file string) license.Key {
-	if file == "" {
-		return license.Load(os.Getenv("FSDECK_LICENSE"))
-	}
-	data, err := os.ReadFile(file)
-	if err != nil {
-		return license.Invalid(err)
-	}
-	return license.Load(string(data))
-}
-
-func logLicense(info server.LicenseInfo, key license.Key) {
-	switch info.Status {
-	case "valid":
-		until := "no expiry"
-		if info.Expires != nil {
-			until = "expires " + info.Expires.Format(time.DateOnly)
-		}
-		log.Printf("licence: %s edition for %s (%s), features %s, %s", info.Edition, info.Licensee, info.Plan, strings.Join(info.Features, ", "), until)
-	case "expired":
-		log.Printf("warning: the licence for %s expired on %s; running as Community", info.Licensee, info.Expires.Format(time.DateOnly))
-	case "invalid":
-		log.Printf("warning: the licence key is invalid (%v); running as Community", key.Err())
-	default:
-		if key.Status(time.Now()) != "none" {
-			log.Printf("community build: running as Community; the licence key has no effect")
-			return
-		}
-		log.Printf("no licence: running as Community")
-	}
 }
 
 // envInt reads an integer from the environment; a value that is not one

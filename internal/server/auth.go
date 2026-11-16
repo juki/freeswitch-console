@@ -11,8 +11,8 @@ import (
 	"strconv"
 	"time"
 
-	"fsdeck/internal/audit"
-	"fsdeck/internal/store"
+	"github.com/juki/fsdeck/internal/audit"
+	"github.com/juki/fsdeck/internal/store"
 )
 
 const (
@@ -209,8 +209,7 @@ func (s *Server) auth(c capability, action string, h func(http.ResponseWriter, *
 }
 
 // sessionUser resolves the session cookie to the account as it is now: a
-// disabled, deleted or re-passworded account, or one the licence no longer
-// covers, has no session.
+// disabled, deleted or re-passworded account has no session.
 func (s *Server) sessionUser(r *http.Request) (user, bool) {
 	c, err := r.Cookie(cookieName)
 	if err != nil {
@@ -227,7 +226,7 @@ func (s *Server) sessionUser(r *http.Request) (user, bool) {
 		return user{}, false
 	}
 	acc, found := s.accountByID(sess.userID)
-	if !found || acc.Disabled || !s.licensed(acc) || subtle.ConstantTimeCompare([]byte(acc.PasswordHash), []byte(sess.hash)) != 1 {
+	if !found || acc.Disabled || subtle.ConstantTimeCompare([]byte(acc.PasswordHash), []byte(sess.hash)) != 1 {
 		s.sessMu.Lock()
 		delete(s.sessions, c.Value)
 		s.sessMu.Unlock()
@@ -366,13 +365,6 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		case <-r.Context().Done():
 		}
 		writeError(w, http.StatusUnauthorized, "invalid username or password")
-		return
-	}
-	if !s.licensed(acc) {
-		// The password was right, so saying why is no oracle for guessing;
-		// the attempt stays charged to the rate limit.
-		s.audit(r, audit.Entry{User: acc.Username, Action: "login.failed", Target: acc.Username, Detail: "not covered by the licence", Result: audit.Denied})
-		writeError(w, http.StatusForbidden, errUnlicensedAccount)
 		return
 	}
 	s.loginSucceeded(key)

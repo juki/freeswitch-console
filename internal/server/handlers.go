@@ -7,10 +7,10 @@ import (
 	"net/http"
 	"strings"
 
-	"fsdeck/internal/audit"
-	"fsdeck/internal/esl"
-	"fsdeck/internal/fsapi"
-	"fsdeck/internal/store"
+	"github.com/juki/fsdeck/internal/audit"
+	"github.com/juki/fsdeck/internal/esl"
+	"github.com/juki/fsdeck/internal/fsapi"
+	"github.com/juki/fsdeck/internal/store"
 )
 
 // instanceView is what the API exposes of an instance: never the ESL

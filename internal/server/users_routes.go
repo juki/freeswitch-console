@@ -1,7 +1,3 @@
-//go:build !community
-
-// Licensed under the fsdeck paid-feature terms, see ee/LICENSE.
-
 package server
 
 import (
@@ -10,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"fsdeck/internal/audit"
-	"fsdeck/internal/store"
+	"github.com/juki/fsdeck/internal/audit"
+	"github.com/juki/fsdeck/internal/store"
 )
 
 // userView is what the API exposes of an account: never the hash.

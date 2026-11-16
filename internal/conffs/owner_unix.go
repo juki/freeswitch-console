@@ -1,6 +1,4 @@
-//go:build !community && unix
-
-// Licensed under the fsdeck paid-feature terms, see ee/LICENSE.
+//go:build unix
 
 package conffs
 

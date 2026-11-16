@@ -7,7 +7,7 @@ import { api, isAbort } from '../api.js';
 import { h, cellText, fmtDateTime, fmtInt, fmtStamp } from '../dom.js';
 import { icon } from '../icons.js';
 import { t } from '../i18n.js';
-import { clip, dataTable, detailBody, emptyState, errorState, openDrawer, paidState, panel, pill, searchBox, segmented, skeleton, sortState } from '../ui.js';
+import { clip, dataTable, detailBody, emptyState, errorState, openDrawer, panel, pill, searchBox, segmented, skeleton, sortState } from '../ui.js';
 
 const LIMITS = [200, 500, 1000];
 const RESULT_TONE = { ok: 'ok', denied: 'warn', error: 'bad' };
@@ -56,7 +56,7 @@ function resultLabel(r) {
   return ({ ok: t('audit.result.ok'), denied: t('audit.result.denied'), error: t('audit.result.error') })[r] || String(r || '');
 }
 
-export function mountAudit({ scope, root, ctx }) {
+export function mountAudit({ scope, root }) {
   document.title = t('audit.docTitle');
   let rows = null;
   let enabled = true;
@@ -149,12 +149,6 @@ export function mountAudit({ scope, root, ctx }) {
   }
 
   function load() {
-    // without the licence feature there is nothing to ask the server
-    if (ctx && ctx.access('audit') === 'licence') {
-      refreshBtn.hidden = true;
-      body.replaceChildren(paidState('audit'));
-      return;
-    }
     if (loadScope) loadScope.dispose();
     loadScope = scope.child();
     refreshBtn.disabled = true;
@@ -179,11 +173,6 @@ export function mountAudit({ scope, root, ctx }) {
       rows = null;
       p.setCount(null);
       note.textContent = '';
-      if (err.status === 402 || err.status === 404) {
-        refreshBtn.hidden = true;
-        body.replaceChildren(paidState('audit', err.status === 402 ? err.message : ''));
-        return;
-      }
       host.replaceChildren(errorState(err));
     });
   }

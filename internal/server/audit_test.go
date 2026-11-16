@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"fsdeck/internal/audit"
+	"github.com/juki/fsdeck/internal/audit"
 )
 
 // withAudit gives the harness an audit log; its path is returned through

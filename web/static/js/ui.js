@@ -354,41 +354,12 @@ export function emptyState({ icon: name = 'box', title, text, action, tone }) {
     action || null);
 }
 
-// PAID describes the licensed features for the "needs a licence" state.
-const PAID = {
-  users: () => ({ icon: 'users', title: t('paid.users.title'), text: t('paid.users.text') }),
-  audit: () => ({ icon: 'shield', title: t('paid.audit.title'), text: t('paid.audit.text') }),
-  'config-edit': () => ({ icon: 'sliders', title: t('paid.config.title'), text: t('paid.config.text') }),
-};
-
-// paidState is what a screen shows when the server answers 402: what the
-// feature does and that this server has no licence for it.
-export function paidState(feature, serverText) {
-  const f = (PAID[feature] || PAID.users)();
-  if (serverText === 'compact') {
-    // a banner above a screen that still works in part (Users without the feature)
-    return h('div', { class: 'paid-banner' },
-      h('span', { class: 'paid-icon sm' }, icon(f.icon), h('span', { class: 'paid-lock' }, icon('lock'))),
-      h('div', { class: 'spacer' }, h('div', { class: 'paid-banner-title', text: f.title }), h('div', { class: 'paid-banner-text', text: f.text })),
-      h('span', { class: 'paid-kicker', text: t('paid.kicker') }));
-  }
-  return h('div', { class: 'paid' },
-    h('div', { class: 'paid-card' },
-      h('span', { class: 'paid-icon' }, icon(f.icon), h('span', { class: 'paid-lock' }, icon('lock'))),
-      h('span', { class: 'paid-kicker', text: t('paid.kicker') }),
-      h('h2', { class: 'paid-title', text: f.title }),
-      h('p', { class: 'paid-text', text: f.text }),
-      h('p', { class: 'paid-note', text: t('paid.note') }),
-      serverText ? h('code', { class: 'raw-error', text: serverText }) : null));
-}
-
 // errorState renders an API error. 503 (instance not connected) is a calm
-// state, 402 the licence state, everything else an error.
+// state, everything else an error.
 export function errorState(err) {
   if (err && err.status === 503) {
     return emptyState({ icon: 'plug', tone: 'calm', title: t('error.notConnected'), text: t('error.notConnectedText') });
   }
-  if (err && err.status === 402) return paidState(err.feature, err.message);
   const msg = err && err.message ? err.message : String(err);
   return emptyState({ icon: 'alert', tone: 'error', title: err && err.status === 403 ? t('error.forbidden') : t('error.loadFailed'), text: msg });
 }

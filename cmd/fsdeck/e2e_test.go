@@ -17,10 +17,11 @@ import (
 	"testing"
 	"time"
 
-	"fsdeck/internal/audit"
-	"fsdeck/internal/server"
-	"fsdeck/internal/store"
-	"fsdeck/web"
+	"github.com/juki/fsdeck/internal/audit"
+	"github.com/juki/fsdeck/internal/conffs"
+	"github.com/juki/fsdeck/internal/server"
+	"github.com/juki/fsdeck/internal/store"
+	"github.com/juki/fsdeck/web"
 )
 
 const eslPassword = "s3cret-esl"
@@ -209,7 +210,7 @@ type stack struct {
 
 // startStack wires the real ESL client and the real HTTP server to a fake
 // FreeSWITCH, as main does; edit adjusts the configuration.
-func startStack(t *testing.T, edit func(*server.Config)) stack {
+func startStack(t *testing.T) stack {
 	t.Helper()
 	host, port := fakeFreeSWITCH(t)
 	dir := t.TempDir()
@@ -233,9 +234,6 @@ func startStack(t *testing.T, edit func(*server.Config)) stack {
 		LogBacklogLevel: 7,
 		Audit:           auditLog,
 		BackupDir:       filepath.Join(dir, "backups"),
-	}
-	if edit != nil {
-		edit(&cfg)
 	}
 	app, err := server.New(cfg)
 	if err != nil {
@@ -264,7 +262,7 @@ func (sk stack) client(t *testing.T, username, password string) *testClient {
 // TestEndToEnd runs the real ESL client and the real HTTP server against a
 // fake FreeSWITCH, through the same wiring main uses.
 func TestEndToEnd(t *testing.T) {
-	sk := startStack(t, nil)
+	sk := startStack(t)
 	host, port, dir, ts := sk.host, sk.port, sk.dir, sk.ts
 
 	jar, _ := cookiejar.New(nil)
@@ -468,10 +466,6 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatalf("commands %+v", commands)
 	}
 
-	if body := c.get("/api/license", http.StatusOK, nil); strings.TrimSpace(string(body)) != `{"edition":"community","status":"none","licensee":"","plan":"","features":[],"expires":null}` {
-		t.Fatalf("licence: %s", body)
-	}
-
 	// The viewer account reads but cannot act.
 	vjar, _ := cookiejar.New(nil)
 	v := &testClient{t: t, base: ts.URL, http: &http.Client{Jar: vjar}}
@@ -491,5 +485,143 @@ func TestEndToEnd(t *testing.T) {
 	// The frontend is embedded and served from the root.
 	if code, body := c.do("GET", "/", nil); code != http.StatusOK || !bytes.Contains(body, []byte("<html")) {
 		t.Fatalf("GET /: status %d", code)
+	}
+}
+
+func confTree(t *testing.T) string {
+	t.Helper()
+	root := filepath.Join(t.TempDir(), "freeswitch")
+	os.MkdirAll(filepath.Join(root, "sip_profiles"), 0o755)
+	os.WriteFile(filepath.Join(root, "vars.xml"), []byte("<include>\n  <X-PRE-PROCESS cmd=\"set\" data=\"domain=$${local_ip_v4}\"/>\n</include>\n"), 0o644)
+	return root
+}
+
+// TestEndToEndConfigFiles covers through the real wiring config editing in
+// local and agent mode, search, the audit query and the operator role.
+func TestEndToEndConfigFiles(t *testing.T) {
+	sk := startStack(t)
+	c := sk.client(t, "admin", "admin-pw")
+
+	root := confTree(t)
+	code, body := c.do("POST", "/api/instances", map[string]any{"name": "test", "host": sk.host, "port": sk.port, "password": eslPassword, "configMode": "local", "configPath": root})
+	if code != http.StatusCreated {
+		t.Fatalf("create: %d %s", code, body)
+	}
+	var inst struct{ ID, ConfigMode, ConfigPath string }
+	json.Unmarshal(body, &inst)
+	if inst.ConfigMode != "local" || inst.ConfigPath != root {
+		t.Fatalf("instance %s", body)
+	}
+	p := "/api/instances/" + inst.ID
+
+	// Local mode: read, write, 409 on a stale hash, 422 on broken XML,
+	// history, restore.
+	var f conffs.File
+	c.get(p+"/files/content?path=vars.xml", http.StatusOK, &f)
+	write := func(content, base string) (int, []byte) {
+		return c.do("PUT", p+"/files/content", map[string]string{"path": "vars.xml", "content": content, "baseSha256": base})
+	}
+	edited := strings.Replace(f.Content, "local_ip_v4", "local_ip_v6", 1)
+	code, body = write(edited, f.SHA256)
+	var w conffs.Written
+	if code != http.StatusOK || json.Unmarshal(body, &w) != nil || w.Size != int64(len(edited)) {
+		t.Fatalf("write: %d %s", code, body)
+	}
+	if code, body = write("<include/>", f.SHA256); code != http.StatusConflict || !bytes.Contains(body, []byte(`"currentSha256":"`+w.SHA256+`"`)) {
+		t.Fatalf("stale write: %d %s", code, body)
+	}
+	if code, body = write("<include>\n<oops>\n</include>\n", w.SHA256); code != http.StatusUnprocessableEntity || !bytes.Contains(body, []byte(`"line":3`)) {
+		t.Fatalf("broken XML: %d %s", code, body)
+	}
+	if data, _ := os.ReadFile(filepath.Join(root, "vars.xml")); string(data) != edited {
+		t.Fatalf("file on disk: %s", data)
+	}
+	var hist struct{ Rows []conffs.Backup }
+	c.get(p+"/files/history?path=vars.xml", http.StatusOK, &hist)
+	if len(hist.Rows) != 1 || hist.Rows[0].SHA256 != f.SHA256 || hist.Rows[0].User != "admin" {
+		t.Fatalf("history %+v", hist)
+	}
+	code, body = c.do("POST", p+"/files/restore", map[string]string{"path": "vars.xml", "id": hist.Rows[0].ID, "baseSha256": w.SHA256})
+	if code != http.StatusOK {
+		t.Fatalf("restore: %d %s", code, body)
+	}
+	if data, _ := os.ReadFile(filepath.Join(root, "vars.xml")); string(data) != f.Content {
+		t.Fatalf("restored file: %s", data)
+	}
+	var found conffs.SearchResult
+	c.get(p+"/files/search?q=LOCAL_IP", http.StatusOK, &found)
+	if len(found.Rows) != 1 || found.Rows[0].Path != "vars.xml" || found.Rows[0].Line != 2 || found.Truncated || !strings.HasPrefix(found.Rows[0].Text, "<X-PRE-PROCESS") {
+		t.Fatalf("search %+v", found)
+	}
+	c.get(p+"/files/search?q=x", http.StatusBadRequest, nil)
+	if _, err := os.Stat(filepath.Join(sk.dir, "backups", inst.ID)); err != nil {
+		t.Fatalf("backups not beside the data file: %v", err)
+	}
+
+	// The audit query: the config changes are in it.
+	var audit struct {
+		Rows []struct{ Action, Target, Result string }
+	}
+	c.get("/api/audit?q=config.&limit=10", http.StatusOK, &audit)
+	if len(audit.Rows) != 4 || audit.Rows[0].Action != "config.restore" || audit.Rows[3].Action != "config.write" || audit.Rows[3].Target != "test" {
+		t.Fatalf("audit %+v", audit.Rows)
+	}
+
+	// Agent mode: the agent handler on a loopback listener, its own backups.
+	agentRoot := confTree(t)
+	store, err := conffs.NewLocal(agentRoot, filepath.Join(t.TempDir(), "agent-backups"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent := httptest.NewServer(conffs.NewAgentHandler(store, "e2e-agent-token-1234"))
+	defer agent.Close()
+	code, body = c.do("PUT", p, map[string]any{"name": "test", "host": sk.host, "port": sk.port, "password": "", "configMode": "agent", "agentURL": agent.URL, "agentToken": "e2e-agent-token-1234"})
+	if code != http.StatusOK || bytes.Contains(body, []byte("e2e-agent-token")) {
+		t.Fatalf("switch to agent: %d %s", code, body)
+	}
+	c.get(p+"/files/content?path=vars.xml", http.StatusOK, &f)
+	if code, body = write("<include/>\n", f.SHA256); code != http.StatusOK {
+		t.Fatalf("write through the agent: %d %s", code, body)
+	}
+	if data, _ := os.ReadFile(filepath.Join(agentRoot, "vars.xml")); string(data) != "<include/>\n" {
+		t.Fatalf("agent file: %s", data)
+	}
+	c.get(p+"/files/history?path=vars.xml", http.StatusOK, &hist)
+	if len(hist.Rows) != 1 {
+		t.Fatalf("agent history %+v", hist)
+	}
+	c.get(p+"/files/search?q=include&case=1", http.StatusOK, &found)
+	if len(found.Rows) != 1 || found.Rows[0].Text != "<include/>" {
+		t.Fatalf("search through the agent %+v", found)
+	}
+
+	// An operator: hang up and rescan yes; console, admin operations, user
+	// management and config files no.
+	code, body = c.do("POST", "/api/users", map[string]string{"username": "op1", "role": "operator", "password": "operator-password"})
+	if code != http.StatusCreated || bytes.Contains(body, []byte("operator-password")) {
+		t.Fatalf("create operator: %d %s", code, body)
+	}
+	o := sk.client(t, "op1", "operator-password")
+	if code, body := o.do("DELETE", p+"/channels/abc-123", nil); code != http.StatusOK {
+		t.Fatalf("operator hangup: %d %s", code, body)
+	}
+	if code, _ := o.do("POST", p+"/actions", map[string]string{"action": "reloadxml"}); code == http.StatusForbidden {
+		t.Fatal("operator reloadxml refused")
+	}
+	for _, rq := range []struct {
+		method, path string
+		body         any
+	}{
+		{"POST", p + "/console", map[string]string{"command": "status"}},
+		{"POST", p + "/actions", map[string]any{"action": "fsctl", "op": "loglevel", "value": 6}},
+		{"GET", "/api/users", nil},
+		{"POST", "/api/users", map[string]string{"username": "op2", "role": "admin", "password": "operator-password"}},
+		{"GET", "/api/audit", nil},
+		{"GET", p + "/files?path=", nil},
+		{"POST", "/api/instances", map[string]any{"name": "x", "host": "h", "port": 1, "password": "p"}},
+	} {
+		if code, body := o.do(rq.method, rq.path, rq.body); code != http.StatusForbidden {
+			t.Fatalf("operator %s %s: %d %s", rq.method, rq.path, code, body)
+		}
 	}
 }

@@ -1,7 +1,3 @@
-//go:build !community
-
-// Licensed under the fsdeck paid-feature terms, see ee/LICENSE.
-
 package server
 
 import (
@@ -11,10 +7,9 @@ import (
 	"sync"
 	"time"
 
-	"fsdeck/ee/conffs"
-	"fsdeck/internal/audit"
-	"fsdeck/internal/license"
-	"fsdeck/internal/store"
+	"github.com/juki/fsdeck/internal/audit"
+	"github.com/juki/fsdeck/internal/conffs"
+	"github.com/juki/fsdeck/internal/store"
 )
 
 // filesTimeout bounds one config file operation; the agent client has its
@@ -22,19 +17,17 @@ import (
 const filesTimeout = 30 * time.Second
 
 // registerFiles adds the config file routes: admin only, since raw files
-// hold secrets that cannot be masked, and only with the config-edit
-// licence.
+// hold secrets that cannot be masked.
 func (s *Server) registerFiles(m *http.ServeMux) {
-	f := license.FeatureConfigEdit
 	p := "/api/instances/{id}/files"
-	s.handlePaid(m, "GET "+p, capFiles, f, "config.list", s.handleFilesList)
-	s.handlePaid(m, "GET "+p+"/content", capFiles, f, "config.read", s.handleFileRead)
-	s.handlePaid(m, "PUT "+p+"/content", capFiles, f, "config.write", s.handleFileWrite)
-	s.handlePaid(m, "DELETE "+p+"/content", capFiles, f, "config.delete", s.handleFileDelete)
-	s.handlePaid(m, "GET "+p+"/history", capFiles, f, "config.history", s.handleFileHistory)
-	s.handlePaid(m, "GET "+p+"/backup", capFiles, f, "config.backup", s.handleFileBackup)
-	s.handlePaid(m, "POST "+p+"/restore", capFiles, f, "config.restore", s.handleFileRestore)
-	s.handlePaid(m, "GET "+p+"/search", capFiles, f, "config.search", s.handleFileSearch)
+	s.handle(m, "GET "+p, capFiles, "config.list", s.handleFilesList)
+	s.handle(m, "GET "+p+"/content", capFiles, "config.read", s.handleFileRead)
+	s.handle(m, "PUT "+p+"/content", capFiles, "config.write", s.handleFileWrite)
+	s.handle(m, "DELETE "+p+"/content", capFiles, "config.delete", s.handleFileDelete)
+	s.handle(m, "GET "+p+"/history", capFiles, "config.history", s.handleFileHistory)
+	s.handle(m, "GET "+p+"/backup", capFiles, "config.backup", s.handleFileBackup)
+	s.handle(m, "POST "+p+"/restore", capFiles, "config.restore", s.handleFileRestore)
+	s.handle(m, "GET "+p+"/search", capFiles, "config.search", s.handleFileSearch)
 }
 
 // locals holds one Local per configuration and backup directory, so writers

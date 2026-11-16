@@ -11,7 +11,7 @@ import (
 	"testing/fstest"
 	"time"
 
-	"fsdeck/internal/store"
+	"github.com/juki/fsdeck/internal/store"
 )
 
 func TestPasswordHash(t *testing.T) {
@@ -192,53 +192,65 @@ type routeCase struct {
 	method, path string
 	body         string
 	cap          capability
-	feature      string // paid feature, "" for none
 }
 
-// routeTable lists every route of this build: the core routes here, the
-// paid ones from paidRoutes (empty in a community build). A route
-// registered without an entry fails TestRouteTable.
+// routeTable lists every route. A route registered without an entry fails
+// TestRouteTable.
 func routeTable(id string) []routeCase {
 	p := "/api/instances/" + id
+	files := p + "/files"
 	unknownInstance := "/api/instances/0000000000000000"
-	core := []routeCase{
-		{"GET /healthz", "GET", "/healthz", "", capPublic, ""},
-		{"POST /api/login", "POST", "/api/login", `{"username":"nobody","password":"x"}`, capPublic, ""},
-		{"/", "GET", "/", "", capPublic, ""},
-		{"GET /api/me", "GET", "/api/me", "", capRead, ""},
-		{"POST /api/me/password", "POST", "/api/me/password", `{"current":"x","new":"short"}`, capRead, ""},
-		{"GET /api/version", "GET", "/api/version", "", capRead, ""},
-		{"GET /api/license", "GET", "/api/license", "", capRead, ""},
-		{"GET /api/instances", "GET", "/api/instances", "", capRead, ""},
-		{"GET /api/instances/{id}/status", "GET", p + "/status", "", capRead, ""},
-		{"GET /api/instances/{id}/sofia", "GET", p + "/sofia", "", capRead, ""},
-		{"GET /api/instances/{id}/gateways", "GET", p + "/gateways", "", capRead, ""},
-		{"GET /api/instances/{id}/registrations", "GET", p + "/registrations", "", capRead, ""},
-		{"GET /api/instances/{id}/channels", "GET", p + "/channels", "", capRead, ""},
-		{"GET /api/instances/{id}/calls", "GET", p + "/calls", "", capRead, ""},
-		{"GET /api/instances/{id}/modules", "GET", p + "/modules", "", capRead, ""},
-		{"GET /api/instances/{id}/vars", "GET", p + "/vars", "", capRead, ""},
-		{"GET /api/instances/{id}/config", "GET", p + "/config", "", capRead, ""},
-		{"GET /api/instances/{id}/config/{name}", "GET", p + "/config/sofia.conf", "", capRead, ""},
-		{"GET /api/instances/{id}/dialplan", "GET", p + "/dialplan", "", capRead, ""},
-		{"GET /api/instances/{id}/dialplan/{name}", "GET", p + "/dialplan/default", "", capRead, ""},
-		{"GET /api/instances/{id}/directory", "GET", p + "/directory", "", capRead, ""},
-		{"GET /api/instances/{id}/directory/{name}", "GET", p + "/directory/10.0.0.1", "", capRead, ""},
-		{"GET /api/instances/{id}/history", "GET", p + "/history", "", capRead, ""},
-		{"GET /api/instances/{id}/stream", "GET", p + "/stream?loglevel=7", "", capRead, ""},
-		{"/api/", "GET", "/api/nope", "", capRead, ""},
-		{"DELETE /api/instances/{id}/channels/{uuid}", "DELETE", p + "/channels/abc-123", "", capOperate, ""},
-		{"POST /api/instances/{id}/actions", "POST", p + "/actions", `{"action":"reloadxml"}`, capOperate, ""},
-		{"POST /api/instances/{id}/console", "POST", p + "/console", `{"command":"status"}`, capConsole, ""},
-		{"POST /api/instances/{id}/console/complete", "POST", p + "/console/complete", `{"line":"show ch"}`, capConsole, ""},
-		{"GET /api/instances/{id}/console/commands", "GET", p + "/console/commands", "", capConsole, ""},
-		{"POST /api/instances", "POST", "/api/instances", `{"name":"x","host":"h","port":1,"password":"p"}`, capInstances, ""},
-		{"PUT /api/instances/{id}", "PUT", unknownInstance, `{"name":"x","host":"h","port":1,"password":""}`, capInstances, ""},
-		{"DELETE /api/instances/{id}", "DELETE", unknownInstance, "", capInstances, ""},
+	unknownUser := "/api/users/0000000000000000"
+	return []routeCase{
+		{"GET /healthz", "GET", "/healthz", "", capPublic},
+		{"POST /api/login", "POST", "/api/login", `{"username":"nobody","password":"x"}`, capPublic},
+		{"/", "GET", "/", "", capPublic},
+		{"GET /api/me", "GET", "/api/me", "", capRead},
+		{"POST /api/me/password", "POST", "/api/me/password", `{"current":"x","new":"short"}`, capRead},
+		{"GET /api/version", "GET", "/api/version", "", capRead},
+		{"GET /api/instances", "GET", "/api/instances", "", capRead},
+		{"GET /api/instances/{id}/status", "GET", p + "/status", "", capRead},
+		{"GET /api/instances/{id}/sofia", "GET", p + "/sofia", "", capRead},
+		{"GET /api/instances/{id}/gateways", "GET", p + "/gateways", "", capRead},
+		{"GET /api/instances/{id}/registrations", "GET", p + "/registrations", "", capRead},
+		{"GET /api/instances/{id}/channels", "GET", p + "/channels", "", capRead},
+		{"GET /api/instances/{id}/calls", "GET", p + "/calls", "", capRead},
+		{"GET /api/instances/{id}/modules", "GET", p + "/modules", "", capRead},
+		{"GET /api/instances/{id}/vars", "GET", p + "/vars", "", capRead},
+		{"GET /api/instances/{id}/config", "GET", p + "/config", "", capRead},
+		{"GET /api/instances/{id}/config/{name}", "GET", p + "/config/sofia.conf", "", capRead},
+		{"GET /api/instances/{id}/dialplan", "GET", p + "/dialplan", "", capRead},
+		{"GET /api/instances/{id}/dialplan/{name}", "GET", p + "/dialplan/default", "", capRead},
+		{"GET /api/instances/{id}/directory", "GET", p + "/directory", "", capRead},
+		{"GET /api/instances/{id}/directory/{name}", "GET", p + "/directory/10.0.0.1", "", capRead},
+		{"GET /api/instances/{id}/history", "GET", p + "/history", "", capRead},
+		{"GET /api/instances/{id}/stream", "GET", p + "/stream?loglevel=7", "", capRead},
+		{"/api/", "GET", "/api/nope", "", capRead},
+		{"DELETE /api/instances/{id}/channels/{uuid}", "DELETE", p + "/channels/abc-123", "", capOperate},
+		{"POST /api/instances/{id}/actions", "POST", p + "/actions", `{"action":"reloadxml"}`, capOperate},
+		{"POST /api/instances/{id}/console", "POST", p + "/console", `{"command":"status"}`, capConsole},
+		{"POST /api/instances/{id}/console/complete", "POST", p + "/console/complete", `{"line":"show ch"}`, capConsole},
+		{"GET /api/instances/{id}/console/commands", "GET", p + "/console/commands", "", capConsole},
+		{"POST /api/instances", "POST", "/api/instances", `{"name":"x","host":"h","port":1,"password":"p"}`, capInstances},
+		{"PUT /api/instances/{id}", "PUT", unknownInstance, `{"name":"x","host":"h","port":1,"password":""}`, capInstances},
+		{"DELETE /api/instances/{id}", "DELETE", unknownInstance, "", capInstances},
+		{"GET /api/users", "GET", "/api/users", "", capUsers},
+		{"POST /api/users", "POST", "/api/users", `{"username":"new.user","role":"viewer","password":"` + userPW + `"}`, capUsers},
+		{"PUT /api/users/{id}", "PUT", unknownUser, `{"role":"viewer"}`, capUsers},
+		{"DELETE /api/users/{id}", "DELETE", unknownUser, "", capUsers},
+		{"GET /api/audit", "GET", "/api/audit", "", capUsers},
+		// The harness instance has no config access: 409 once past the checks.
+		{"GET /api/instances/{id}/files", "GET", files + "?path=", "", capFiles},
+		{"GET /api/instances/{id}/files/content", "GET", files + "/content?path=a.xml", "", capFiles},
+		{"PUT /api/instances/{id}/files/content", "PUT", files + "/content", `{"path":"a.xml","content":"<a/>","baseSha256":""}`, capFiles},
+		{"DELETE /api/instances/{id}/files/content", "DELETE", files + "/content?path=a.xml&baseSha256=x", "", capFiles},
+		{"GET /api/instances/{id}/files/history", "GET", files + "/history?path=a.xml", "", capFiles},
+		{"GET /api/instances/{id}/files/backup", "GET", files + "/backup?path=a.xml&id=x", "", capFiles},
+		{"GET /api/instances/{id}/files/search", "GET", files + "/search?q=ab", "", capFiles},
+		{"POST /api/instances/{id}/files/restore", "POST", files + "/restore", `{"path":"a.xml","id":"x","baseSha256":""}`, capFiles},
+		// Last: it ends the session.
+		{"POST /api/logout", "POST", "/api/logout", "", capRead},
 	}
-	// Last: it ends the session.
-	logout := routeCase{"POST /api/logout", "POST", "/api/logout", "", capRead, ""}
-	return append(append(core, paidRoutes(id)...), logout)
 }
 
 func TestRouteTable(t *testing.T) {
@@ -257,30 +269,19 @@ func TestRouteTable(t *testing.T) {
 		t.Fatalf("registered routes differ from the test table:\n got %q\nwant %q", got, want)
 	}
 	for _, rc := range table {
-		if h.srv.routeCaps[rc.pattern] != rc.cap || h.srv.routeFeatures[rc.pattern] != rc.feature {
-			t.Errorf("%s: capability %d feature %q, want %d %q", rc.pattern, h.srv.routeCaps[rc.pattern], h.srv.routeFeatures[rc.pattern], rc.cap, rc.feature)
+		if h.srv.routeCaps[rc.pattern] != rc.cap {
+			t.Errorf("%s: capability %d, want %d", rc.pattern, h.srv.routeCaps[rc.pattern], rc.cap)
 		}
 	}
 }
 
-// matrixRun is one licence situation of the role matrix.
-type matrixRun struct {
-	name     string
-	opts     []func(*Config)
-	features bool // the licence grants every feature
-}
-
-// TestRoleMatrix walks every route with no session and with each role, in
-// every licence situation of this build (matrixRuns).
+// TestRoleMatrix walks every route with no session and with each role.
 func TestRoleMatrix(t *testing.T) {
 	// Capabilities per role, straight from the contract.
 	contract := map[string][]capability{
 		store.RoleViewer:   {capRead},
 		store.RoleOperator: {capRead, capLogs, capOperate},
 		store.RoleAdmin:    {capRead, capLogs, capOperate, capControl, capConsole, capInstances, capUsers, capFiles},
-	}
-	if !paidBuild {
-		delete(contract, store.RoleOperator)
 	}
 	for role, caps := range contract {
 		for c := capRead; c <= capFiles; c++ {
@@ -293,78 +294,67 @@ func TestRoleMatrix(t *testing.T) {
 			}
 		}
 	}
-	if allowed("root", capRead) || allowed("", capRead) || !paidBuild && allowed(store.RoleOperator, capRead) {
+	if allowed("root", capRead) || allowed("", capRead) {
 		t.Error("unknown role has a capability")
 	}
 
-	for _, run := range matrixRuns(t) {
-		for _, role := range []string{"", store.RoleViewer, store.RoleOperator, store.RoleAdmin} {
-			t.Run(run.name+"/role="+role, func(t *testing.T) {
-				h := newHarness(t, append([]func(*Config){noEnvAccounts}, run.opts...)...)
-				tok := ""
-				if role != "" {
-					// File accounts named after their role: admin and viewer
-					// sign in without a licence too.
-					h.addUser(role, role)
-					if role == store.RoleOperator && !run.features {
-						expect(t, h.loginAs(role, userPW), 403, `{"error":"`+errUnlicensedAccount+`"}`)
-						return
-					}
-					tok = h.login(role, userPW)
+	for _, role := range []string{"", store.RoleViewer, store.RoleOperator, store.RoleAdmin} {
+		t.Run("role="+role, func(t *testing.T) {
+			h := newHarness(t, noEnvAccounts)
+			tok := ""
+			if role != "" {
+				// File accounts named after their role.
+				h.addUser(role, role)
+				tok = h.login(role, userPW)
+			}
+			for _, rc := range routeTable(h.id) {
+				var r response
+				if strings.HasSuffix(rc.pattern, "/stream") {
+					r = h.streamStatus(tok, rc.path)
+				} else {
+					r = h.do(rc.method, rc.path, tok, rc.body)
 				}
-				for _, rc := range routeTable(h.id) {
-					var r response
-					if strings.HasSuffix(rc.pattern, "/stream") {
-						r = h.streamStatus(tok, rc.path)
-					} else {
-						r = h.do(rc.method, rc.path, tok, rc.body)
+				switch {
+				case rc.cap == capPublic:
+					// The sign-in answers for the credentials, not a session.
+					if r.code != 200 && strings.TrimSpace(r.body) != `{"error":"invalid username or password"}` {
+						t.Errorf("%s: %d %s", rc.pattern, r.code, r.body)
 					}
-					switch {
-					case rc.cap == capPublic:
-						// The sign-in answers for the credentials, not a session.
-						if r.code != 200 && strings.TrimSpace(r.body) != `{"error":"invalid username or password"}` {
-							t.Errorf("%s: %d %s", rc.pattern, r.code, r.body)
-						}
-					case role == "":
-						if r.code != 401 {
-							t.Errorf("%s without session: %d", rc.pattern, r.code)
-						}
-					case !allowed(role, rc.cap):
-						if r.code != 403 || strings.TrimSpace(r.body) != `{"error":"permission denied"}` {
-							t.Errorf("%s as %s: %d %s, want 403", rc.pattern, role, r.code, r.body)
-						}
-					case rc.feature != "" && !run.features:
-						if r.code != 402 || strings.TrimSpace(r.body) != `{"error":"this feature needs a licence","feature":"`+rc.feature+`"}` {
-							t.Errorf("%s as %s: %d %s, want 402", rc.pattern, role, r.code, r.body)
-						}
-					default:
-						if r.code == 401 || r.code == 402 || r.code == 403 {
-							t.Errorf("%s as %s: %d %s", rc.pattern, role, r.code, r.body)
-						}
+				case role == "":
+					if r.code != 401 {
+						t.Errorf("%s without session: %d", rc.pattern, r.code)
+					}
+				case !allowed(role, rc.cap):
+					if r.code != 403 || strings.TrimSpace(r.body) != `{"error":"permission denied"}` {
+						t.Errorf("%s as %s: %d %s, want 403", rc.pattern, role, r.code, r.body)
+					}
+				default:
+					if r.code == 401 || r.code == 403 {
+						t.Errorf("%s as %s: %d %s", rc.pattern, role, r.code, r.body)
 					}
 				}
-				// Refused requests changed nothing.
-				sent, _, _, _ := h.fake(0).snapshot()
-				for _, cmd := range sent {
-					switch {
-					case cmd == "uuid_kill abc-123" || cmd == "reloadxml":
-						if !allowed(role, capOperate) {
-							t.Errorf("%s caused %q", role, cmd)
-						}
-					case cmd == "status":
-						if !allowed(role, capConsole) {
-							t.Errorf("%s caused %q", role, cmd)
-						}
+			}
+			// Refused requests changed nothing.
+			sent, _, _, _ := h.fake(0).snapshot()
+			for _, cmd := range sent {
+				switch {
+				case cmd == "uuid_kill abc-123" || cmd == "reloadxml":
+					if !allowed(role, capOperate) {
+						t.Errorf("%s caused %q", role, cmd)
+					}
+				case cmd == "status":
+					if !allowed(role, capConsole) {
+						t.Errorf("%s caused %q", role, cmd)
 					}
 				}
-				if _, ok := h.st.UserByName("new.user"); ok != (allowed(role, capUsers) && run.features) {
-					t.Errorf("%s: user created %v", role, ok)
-				}
-				if n := len(h.st.List()); (n == 2) != allowed(role, capInstances) {
-					t.Errorf("%s: %d instances", role, n)
-				}
-			})
-		}
+			}
+			if _, ok := h.st.UserByName("new.user"); ok != allowed(role, capUsers) {
+				t.Errorf("%s: user created %v", role, ok)
+			}
+			if n := len(h.st.List()); (n == 2) != allowed(role, capInstances) {
+				t.Errorf("%s: %d instances", role, n)
+			}
+		})
 	}
 }
 

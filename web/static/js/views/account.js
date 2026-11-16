@@ -1,11 +1,12 @@
 // The account menu of the shell (who is signed in, change password, language,
-// theme, sign out, version) and the change-password dialog.
+// theme, about, sign out, version), the change-password dialog and the About
+// dialog.
 
 import { api } from '../api.js';
-import { h, fmtDate } from '../dom.js';
-import { icon } from '../icons.js';
+import { h } from '../dom.js';
+import { brandMark, icon } from '../icons.js';
 import { t } from '../i18n.js';
-import { kv, langItems, openModal, pill, popover, toast } from '../ui.js';
+import { kv, langItems, openModal, popover, toast } from '../ui.js';
 
 export const PASSWORD_MIN = 10;
 export const PASSWORD_MAX = 256;
@@ -28,7 +29,7 @@ const THEMES = [
 ];
 
 // accountMenu is the user chip at the foot of the sidebar and its menu.
-export function accountMenu({ me, version, license, onSignOut }) {
+export function accountMenu({ me, version, onSignOut }) {
   const chip = h('button', { type: 'button', class: 'account-chip', title: t('account.menu') },
     h('span', { class: 'avatar', text: me.username.slice(0, 1) }),
     h('span', { class: 'who' }, h('span', { class: 'who-name', text: me.username }), h('span', { class: 'who-role', text: roleLabel(me.role) })),
@@ -70,8 +71,8 @@ export function accountMenu({ me, version, license, onSignOut }) {
     h('div', { class: 'menu-label', text: t('account.theme') }),
     h('div', { class: 'theme-opts', role: 'group' }, themeButtons),
     h('div', { class: 'menu-sep' }),
-    h('button', { type: 'button', class: 'menu-item', role: 'menuitem', on: { click: () => { pop.close(); aboutDialog({ version, license }); } } },
-      icon('info'), h('span', { class: 'menu-text' }, t('about.title'), h('span', { class: 'menu-sub', text: editionLine(license) }))),
+    h('button', { type: 'button', class: 'menu-item', role: 'menuitem', on: { click: () => { pop.close(); aboutDialog({ version }); } } },
+      icon('info'), h('span', { class: 'menu-text' }, t('about.title'), h('span', { class: 'menu-sub', text: t('about.menuSub') }))),
     h('button', { type: 'button', class: 'menu-item', role: 'menuitem', on: { click: () => { pop.close(); onSignOut(); } } },
       icon('logout'), h('span', { class: 'menu-text', text: t('nav.signOut') })),
     h('div', { class: 'menu-foot' }, h('span', { text: 'fsdeck' }), version ? h('span', { class: 'mono', text: version }) : null));
@@ -145,62 +146,27 @@ export function changePasswordDialog() {
   cur.focus();
 }
 
-// ---------- edition and licence ----------
+// ---------- about ----------
 
-const FEATURE_NAMES = {
-  users: () => t('lic.f.users'),
-  audit: () => t('lic.f.audit'),
-  'config-edit': () => t('lic.f.config'),
-};
+// SOURCE_URL is where the source code of fsdeck is published. The AGPL asks
+// that users of the console be offered it, so the About dialog links to it.
+const SOURCE_URL = 'https://github.com/juki/fsdeck';
 
-// editionLine is the one-line edition summary of the account menu.
-export function editionLine(license) {
-  if (!license) return '';
-  if (license.edition === 'enterprise') return t('lic.line.enterprise', { plan: license.plan || t('lic.enterprise') });
-  if (license.status === 'expired') return t('lic.line.expired');
-  if (license.status === 'invalid') return t('lic.line.invalid');
-  return t('lic.line.community');
-}
-
-function statusPill(license) {
-  const map = {
-    valid: () => pill(t('lic.status.valid'), 'ok'),
-    none: () => pill(t('lic.status.none'), ''),
-    expired: () => pill(t('lic.status.expired'), 'bad'),
-    invalid: () => pill(t('lic.status.invalid'), 'bad'),
-  };
-  return (map[license.status] || (() => pill(String(license.status || ''), '')))();
-}
-
-// aboutDialog shows the version, the edition and what the licence covers.
-export function aboutDialog({ version, license }) {
-  const lic = license || { edition: 'community', status: 'none', features: [] };
-  const on = Array.isArray(lic.features) ? lic.features : [];
-  const features = h('ul', { class: 'feature-list' }, Object.keys(FEATURE_NAMES).map((f) => {
-    const yes = on.includes(f);
-    return h('li', { class: yes ? 'on' : 'off' }, icon(yes ? 'check' : 'lock'), h('span', { text: FEATURE_NAMES[f]() }),
-      h('span', { class: 'feature-state', text: yes ? t('lic.included') : t('lic.notIncluded') }));
-  }));
-  const enterprise = lic.edition === 'enterprise';
-  const note = enterprise
-    ? null
-    : h('p', { class: 'modal-text', text: lic.status === 'expired' ? t('lic.about.expiredNote') : lic.status === 'invalid' ? t('lic.about.invalidNote') : t('lic.about.communityNote') });
+// aboutDialog shows what fsdeck is, its version, the terms it is published
+// under and where its source code is.
+export function aboutDialog({ version }) {
   const close = h('button', { type: 'button', class: 'btn btn-primary', text: t('common.close') });
   const m = openModal({
     title: t('about.title'),
     body: [
       h('div', { class: 'about-head' },
-        h('span', { class: enterprise ? 'edition-mark ent' : 'edition-mark', text: enterprise ? t('lic.enterprise') : t('lic.community') }),
-        h('span', { class: 'mono faint', text: version ? 'fsdeck ' + version : 'fsdeck' })),
+        brandMark(),
+        h('div', { class: 'about-who' }, h('div', { class: 'about-name', text: 'fsdeck' }), h('p', { class: 'modal-text', text: t('about.text') }))),
       kv([
-        [t('lic.k.status'), statusPill(lic)],
-        [t('lic.k.licensee'), lic.licensee || ''],
-        [t('lic.k.plan'), lic.plan || ''],
-        [t('lic.k.expires'), lic.expires ? fmtDate(lic.expires) : ''],
+        [t('about.k.version'), version ? h('span', { class: 'mono', text: version }) : ''],
+        [t('about.k.licence'), 'GNU AGPL-3.0'],
+        [t('about.k.source'), h('a', { href: SOURCE_URL, target: '_blank', rel: 'noopener noreferrer', text: SOURCE_URL })],
       ]),
-      h('div', { class: 'field-label', text: t('lic.k.features') }),
-      features,
-      note,
     ],
     footer: [close],
   });
