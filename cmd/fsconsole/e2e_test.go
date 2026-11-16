@@ -51,9 +51,10 @@ var cannedAPI = map[string]string{
 }
 
 // fakeFreeSWITCH speaks enough inbound ESL for the whole stack to run:
-// auth, api with canned bodies, HEARTBEAT events and log lines, and for a
-// client subscribed to CHANNEL_HANGUP_COMPLETE a log line and that event
-// when abc-123 is hung up.
+// auth, api with canned bodies, bgapi with the canned body in a
+// BACKGROUND_JOB event, HEARTBEAT events and log lines, and for a client
+// subscribed to CHANNEL_HANGUP_COMPLETE a log line and that event when
+// abc-123 is hung up.
 func fakeFreeSWITCH(t *testing.T) (host string, port int) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -109,9 +110,9 @@ func serveESL(conn net.Conn) {
 
 	write("Content-Type: auth/request\n\n")
 	r := bufio.NewReader(conn)
-	hangups := false
+	hangups, jobs := false, false
 	for {
-		var cmd string
+		var cmd, jobUUID string
 		for {
 			line, err := r.ReadString('\n')
 			if err != nil {
@@ -126,6 +127,8 @@ func serveESL(conn net.Conn) {
 			}
 			if cmd == "" {
 				cmd = line
+			} else if v, ok := strings.CutPrefix(line, "Job-UUID: "); ok {
+				jobUUID = v
 			}
 		}
 		switch {
@@ -148,6 +151,16 @@ func serveESL(conn net.Conn) {
 				ev := `{"Event-Name":"CHANNEL_HANGUP_COMPLETE","Unique-ID":"abc-123","Hangup-Cause":"NORMAL_CLEARING","Caller-Destination-Number":"9196","variable_billsec":"7","variable_sip_term_status":"200","variable_sip_auth_password":"` + eslPassword + `"}`
 				write(fmt.Sprintf("Content-Length: %d\nContent-Type: text/event-json\n\n%s", len(ev), ev))
 			}
+		case strings.HasPrefix(cmd, "bgapi "):
+			body, ok := cannedAPI[strings.TrimPrefix(cmd, "bgapi ")]
+			if !ok {
+				body = "-ERR no such command\n"
+			}
+			write("Content-Type: command/reply\nReply-Text: +OK Job-UUID: " + jobUUID + "\nJob-UUID: " + jobUUID + "\n\n")
+			if jobs {
+				ev, _ := json.Marshal(map[string]string{"Event-Name": "BACKGROUND_JOB", "Job-UUID": jobUUID, "_body": body})
+				write(fmt.Sprintf("Content-Length: %d\nContent-Type: text/event-json\n\n%s", len(ev), ev))
+			}
 		case strings.HasPrefix(cmd, "log "):
 			logging <- true
 			reply("+OK log level " + strings.TrimPrefix(cmd, "log "))
@@ -156,6 +169,7 @@ func serveESL(conn net.Conn) {
 			reply("+OK no longer logging")
 		case strings.HasPrefix(cmd, "event json "):
 			hangups = strings.Contains(cmd, " CHANNEL_HANGUP_COMPLETE")
+			jobs = strings.Contains(cmd, " BACKGROUND_JOB")
 			reply("+OK event listener enabled json")
 		default:
 			reply("+OK")
@@ -225,6 +239,15 @@ type stack struct {
 func startStack(t *testing.T, edit ...func(*http.Server)) stack {
 	t.Helper()
 	host, port := fakeFreeSWITCH(t)
+	sk := startConsole(t, nil, edit...)
+	sk.host, sk.port = host, port
+	return sk
+}
+
+// startConsole is startStack without the fake: no instance is known yet.
+// configure adjusts the server configuration before the server is built.
+func startConsole(t *testing.T, configure func(*server.Config), edit ...func(*http.Server)) stack {
+	t.Helper()
 	dir := t.TempDir()
 	st, err := store.Open(filepath.Join(dir, "fsconsole.json"), store.WithSecretKey("an-e2e-secret-key-value"))
 	if err != nil {
@@ -248,6 +271,9 @@ func startStack(t *testing.T, edit ...func(*http.Server)) stack {
 		Audit:           auditLog,
 		BackupDir:       filepath.Join(dir, "backups"),
 	}
+	if configure != nil {
+		configure(&cfg)
+	}
 	app, err := server.New(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -263,7 +289,7 @@ func startStack(t *testing.T, edit ...func(*http.Server)) stack {
 		ts.Close()
 		auditLog.Close()
 	})
-	return stack{host: host, port: port, dir: dir, ts: ts}
+	return stack{dir: dir, ts: ts}
 }
 
 // client signs in and returns a client with the session.

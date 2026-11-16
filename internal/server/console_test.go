@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -58,5 +59,32 @@ func TestConsoleCompletion(t *testing.T) {
 	expect(t, h.do("POST", "/api/instances/0000000000000000/console/complete", admin, `{"line":""}`), 404, `{"error":"instance not found"}`)
 	if sent, _, _, _ := f.snapshot(); len(sent) != 0 {
 		t.Fatalf("sent while disconnected %q", sent)
+	}
+}
+
+// TestBackgroundDeadline: a console command or an action that passes its
+// deadline answers 504 and is audited as failed; the instance stays up.
+func TestBackgroundDeadline(t *testing.T) {
+	var auditPath string
+	h := newHarness(t, withAudit(t, &auditPath))
+	admin := h.login("admin", adminPW)
+	p := "/api/instances/" + h.id
+	f := h.fake(0)
+	f.set(func(f *fakeSwitch) { f.apiErr = context.DeadlineExceeded })
+	const console = "the command is still running on FreeSWITCH after 60s; its result will not be shown"
+	const action = "the command is still running on FreeSWITCH after 15s; its result will not be shown"
+	expect(t, h.do("POST", p+"/console", admin, `{"command":"originate x &park()"}`), 504, `{"error":"`+console+`"}`)
+	expect(t, h.do("POST", p+"/actions", admin, `{"action":"reloadxml"}`), 504, `{"error":"`+action+`"}`)
+	if !f.State().Connected {
+		t.Fatal("disconnected")
+	}
+	data := string(must(t, auditPath))
+	for _, want := range []string{
+		`"action":"console.run","target":"fs01","detail":"originate x &park()","result":"error","error":"` + console + `"`,
+		`"action":"action.reloadxml","target":"fs01","detail":"","result":"error","error":"` + action + `"`,
+	} {
+		if !strings.Contains(data, want) {
+			t.Errorf("audit lacks %s:\n%s", want, data)
+		}
 	}
 }

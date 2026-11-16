@@ -226,7 +226,7 @@ func TestBootstrapAndAuditDefault(t *testing.T) {
 // TestDialerEvents checks the subscription the clients of main send: the
 // hang-up event only while recent calls are kept.
 func TestDialerEvents(t *testing.T) {
-	for n, want := range map[int]string{500: "event json HEARTBEAT CHANNEL_HANGUP_COMPLETE", 0: "event json HEARTBEAT"} {
+	for n, want := range map[int]string{500: "event json BACKGROUND_JOB HEARTBEAT CHANNEL_HANGUP_COMPLETE", 0: "event json BACKGROUND_JOB HEARTBEAT"} {
 		ln, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
 			t.Fatal(err)

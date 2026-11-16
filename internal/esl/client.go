@@ -3,6 +3,7 @@ package esl
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
@@ -56,8 +57,9 @@ type Client struct {
 }
 
 // NewClient returns a client for addr ("host:port") that subscribes to the
-// named events ("HEARTBEAT", ...) on every connection; with none it receives
-// no events. It does not connect.
+// named events ("HEARTBEAT", ...) on every connection. It also subscribes to
+// BACKGROUND_JOB, whose events carry the results of Background and are not
+// delivered to subscribers. It does not connect.
 func NewClient(addr, password string, events ...string) *Client {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Client{
@@ -78,9 +80,9 @@ func NewClient(addr, password string, events ...string) *Client {
 }
 
 // Start launches the background connect loop: dial, authenticate, send
-// "event json <events>", re-apply the log level, then read frames until the
-// connection drops; reconnect with backoff (1s doubling to 30s, reset after a
-// successful auth). Calling Start twice is a no-op.
+// "event json BACKGROUND_JOB <events>", re-apply the log level, then read
+// frames until the connection drops; reconnect with backoff (1s doubling to
+// 30s, reset after a successful auth). Calling Start twice is a no-op.
 func (c *Client) Start() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -144,20 +146,67 @@ func (c *Client) API(ctx context.Context, command string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	return cn.await(ctx, ch)
+}
+
+// Background runs "bgapi <command>": FreeSWITCH runs the command in a thread
+// of its own, answers at once and sends the command's output later in a
+// BACKGROUND_JOB event, so a slow command does not hold the connection. The
+// output is returned like an API body; a bgapi reply other than +OK (such as
+// "-ERR permission denied") is returned as the body. Errors are those of API.
+// If ctx ends while the job runs, Background returns the ctx error and the
+// connection stays: the result is matched by its Job-UUID and is discarded
+// when it arrives. If ctx ends before FreeSWITCH has answered the bgapi
+// command itself, the connection is closed as in API. Losing the connection
+// fails every job still waiting.
+func (c *Client) Background(ctx context.Context, command string) (string, error) {
+	if strings.ContainsAny(command, "\r\n") {
+		return "", ErrInvalidCommand
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	c.mu.Lock()
+	cn := c.cur
+	c.mu.Unlock()
+	if cn == nil {
+		return "", ErrNotConnected
+	}
+	id := newJobUUID()
+	// Registered before sending: the result can arrive right after the reply.
+	job, err := cn.addJob(id)
+	if err != nil {
+		return "", err
+	}
+	defer cn.dropJob(id)
+	ch, err := cn.send(ctx, "bgapi "+command+"\nJob-UUID: "+id, sendCall)
+	if err != nil {
+		return "", err
+	}
+	reply, err := cn.await(ctx, ch)
+	if err != nil || !strings.HasPrefix(reply, "+OK") {
+		return reply, err
+	}
 	select {
-	case r := <-ch:
+	case r := <-job:
 		return r.body, r.err
 	case <-ctx.Done():
 		select {
-		case r := <-ch:
+		case r := <-job:
 			return r.body, r.err
 		default:
 		}
-		// The late reply would be matched to the next caller, so the
-		// connection cannot be reused.
-		cn.fail(fmt.Errorf("esl: api reply not received: %w", ctx.Err()))
 		return "", ctx.Err()
 	}
+}
+
+// newJobUUID returns a random (version 4) uuid.
+func newJobUUID() string {
+	var b [16]byte
+	rand.Read(b[:]) // never returns an error
+	b[6] = b[6]&0x0f | 0x40
+	b[8] = b[8]&0x3f | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
 }
 
 // SetLogLevel sets the ESL log level for this connection: -1 turns logging
@@ -281,7 +330,7 @@ func (c *Client) session() bool {
 		return false
 	}
 
-	cn := &conn{nc: nc, start: time.Now(), wsem: make(chan struct{}, 1), dead: make(chan struct{})}
+	cn := &conn{nc: nc, start: time.Now(), wsem: make(chan struct{}, 1), dead: make(chan struct{}), jobs: map[string]chan result{}}
 	select {
 	case <-c.logCh: // the level read below already covers it
 	default:
@@ -290,10 +339,9 @@ func (c *Client) session() bool {
 	level := c.logLevel
 	c.mu.Unlock()
 	// Replies to setup commands are consumed by the reader and ignored.
-	var cmds []string
-	if len(c.events) > 0 {
-		cmds = append(cmds, "event json "+strings.Join(c.events, " "))
-	}
+	// BACKGROUND_JOB comes first: FreeSWITCH reads every name after CUSTOM
+	// as an event subclass.
+	cmds := []string{"event json " + strings.Join(append([]string{"BACKGROUND_JOB"}, c.events...), " ")}
 	if level >= 0 {
 		cmds = append(cmds, logCommand(level))
 	}
@@ -406,7 +454,14 @@ func (c *Client) readLoop(cn *conn, r *bufio.Reader) error {
 			cn.complete(result{body: f.header["Reply-Text"]})
 		case "text/event-json":
 			// A malformed event is dropped rather than killing the connection.
-			if h, body, err := decodeEvent(f.body); err == nil {
+			h, body, err := decodeEvent(f.body)
+			switch {
+			case err != nil:
+			case h["Event-Name"] == "BACKGROUND_JOB":
+				// The jobs of other ESL clients come here too; finishJob
+				// ignores them.
+				cn.finishJob(h["Job-UUID"], body)
+			default:
 				c.publish(Message{Kind: KindEvent, Headers: h, Body: body})
 			}
 		case "log/data":
@@ -434,8 +489,9 @@ type conn struct {
 	dead   chan struct{} // closed by fail
 
 	mu      sync.Mutex
-	pending []chan result // nil entries hold the place of ignored replies
-	err     error         // why the connection ended
+	pending []chan result          // nil entries hold the place of ignored replies
+	jobs    map[string]chan result // Background calls waiting, by Job-UUID
+	err     error                  // why the connection ended
 }
 
 type sendMode int
@@ -491,6 +547,50 @@ func (cn *conn) send(ctx context.Context, cmd string, mode sendMode) (<-chan res
 	return ch, nil
 }
 
+// await waits for the reply on ch. If ctx ends first the connection is
+// closed: the late reply would be matched to the next caller.
+func (cn *conn) await(ctx context.Context, ch <-chan result) (string, error) {
+	select {
+	case r := <-ch:
+		return r.body, r.err
+	case <-ctx.Done():
+		select {
+		case r := <-ch:
+			return r.body, r.err
+		default:
+		}
+		cn.fail(fmt.Errorf("esl: api reply not received: %w", ctx.Err()))
+		return "", ctx.Err()
+	}
+}
+
+func (cn *conn) addJob(id string) (<-chan result, error) {
+	cn.mu.Lock()
+	defer cn.mu.Unlock()
+	if cn.err != nil {
+		return nil, ErrNotConnected
+	}
+	ch := make(chan result, 1)
+	cn.jobs[id] = ch
+	return ch, nil
+}
+
+func (cn *conn) dropJob(id string) {
+	cn.mu.Lock()
+	defer cn.mu.Unlock()
+	delete(cn.jobs, id)
+}
+
+// finishJob hands body to the Background call waiting for job id, if any.
+func (cn *conn) finishJob(id, body string) {
+	cn.mu.Lock()
+	defer cn.mu.Unlock()
+	if ch, ok := cn.jobs[id]; ok {
+		delete(cn.jobs, id)
+		ch <- result{body: body}
+	}
+}
+
 func (cn *conn) complete(r result) {
 	cn.mu.Lock()
 	defer cn.mu.Unlock()
@@ -504,19 +604,24 @@ func (cn *conn) complete(r result) {
 	}
 }
 
-// fail closes the connection and fails every pending reply; only the first
-// reason is kept.
+// fail closes the connection and fails every pending reply and waiting job;
+// only the first reason is kept.
 func (cn *conn) fail(reason error) {
 	cn.mu.Lock()
 	if cn.err == nil {
 		cn.err = reason
 		close(cn.dead)
+		err := fmt.Errorf("%w: %v", ErrNotConnected, reason)
 		for _, ch := range cn.pending {
 			if ch != nil {
-				ch <- result{err: fmt.Errorf("%w: %v", ErrNotConnected, reason)}
+				ch <- result{err: err}
 			}
 		}
 		cn.pending = nil
+		for _, ch := range cn.jobs {
+			ch <- result{err: err}
+		}
+		cn.jobs = nil
 	}
 	cn.mu.Unlock()
 	cn.nc.Close()

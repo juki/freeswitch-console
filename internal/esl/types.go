@@ -36,8 +36,8 @@ type State struct {
 }
 
 var (
-	// ErrNotConnected is returned by API while the client has no
-	// authenticated connection.
+	// ErrNotConnected is returned by API and Background while the client
+	// has no authenticated connection.
 	ErrNotConnected = errors.New("esl: not connected")
 
 	// ErrInvalidCommand is returned for a command that contains a line break,

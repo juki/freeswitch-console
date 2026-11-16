@@ -192,7 +192,7 @@ func (s *Server) handleAction(w http.ResponseWriter, r *http.Request, u user) {
 	}
 	ctx, cancel := eslContext(r, eslTimeout)
 	defer cancel()
-	out, err := fsapi.Run(ctx, inst.sw, command)
+	out, err := fsapi.Run(ctx, inBackground{inst.sw, eslTimeout}, command)
 	s.record(r, entry, err)
 	writeOutput(w)(out, err)
 }

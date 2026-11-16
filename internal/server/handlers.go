@@ -265,8 +265,10 @@ func (s *Server) handleHangup(w http.ResponseWriter, r *http.Request, u user) {
 	writeOutput(w)(out, err)
 }
 
-// handleConsole returns the raw reply, "-ERR" included. The audit entry
-// carries the command text; the audit log is admin-only, like the console.
+// handleConsole returns the raw reply, "-ERR" included. The command runs
+// with Background, since a console command can be slow (originate). The
+// audit entry carries the command text; the audit log is admin-only, like
+// the console.
 func (s *Server) handleConsole(w http.ResponseWriter, r *http.Request, u user) {
 	inst := s.lookup(w, r)
 	if inst == nil {
@@ -294,10 +296,10 @@ func (s *Server) handleConsole(w http.ResponseWriter, r *http.Request, u user) {
 	}
 	ctx, cancel := eslContext(r, consoleTimeout)
 	defer cancel()
-	out, err := inst.sw.API(ctx, cmd)
+	out, err := inBackground{inst.sw, consoleTimeout}.API(ctx, cmd)
 	if err != nil {
 		s.record(r, entry, err)
-		writeError(w, http.StatusServiceUnavailable, err.Error())
+		writeAPIError(w, err)
 		return
 	}
 	if strings.HasPrefix(out, "-ERR") {

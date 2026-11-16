@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"mime"
@@ -26,6 +27,9 @@ import (
 type Switch interface {
 	State() esl.State
 	API(ctx context.Context, command string) (string, error)
+	// Background runs a command that can be slow in a thread of its own on
+	// the switch, so it does not hold the connection.
+	Background(ctx context.Context, command string) (string, error)
 	SetLogLevel(level int)
 	Subscribe(buffer int) (<-chan esl.Message, func())
 	Close()
@@ -260,40 +264,79 @@ func eslContext(r *http.Request, d time.Duration) (context.Context, context.Canc
 // limiter.
 func (s *Server) newInstance(in store.Instance) *instance {
 	sw := s.cfg.Dial(net.JoinHostPort(in.Host, strconv.Itoa(in.Port)), in.Password)
-	return newInstance(&limitedSwitch{Switch: sw, slots: make(chan struct{}, apiSlots), wait: apiWait}, s.cfg.LogBacklog, s.cfg.LogBacklogLevel, s.cfg.RecentCalls)
+	return newInstance(&limitedSwitch{Switch: sw, slots: make(chan struct{}, apiSlots), bgSlots: make(chan struct{}, backgroundSlots), wait: apiWait}, s.cfg.LogBacklog, s.cfg.LogBacklogLevel, s.cfg.RecentCalls)
 }
 
 // The API calls of one instance share one ESL connection, and a call that
 // passes its deadline drops that connection for everyone. So at most
-// apiSlots calls from handlers are in flight per instance; a call waits at
-// most apiWait for a slot.
+// apiSlots calls from handlers are in flight per instance. Background
+// commands do not hold the connection but each runs in a thread of the
+// switch; at most backgroundSlots of them are in flight per instance. A call
+// waits at most apiWait for a slot.
 const (
-	apiSlots = 16
-	apiWait  = 5 * time.Second
+	apiSlots        = 16
+	backgroundSlots = 8
+	apiWait         = 5 * time.Second
 )
 
 var errInstanceBusy = errors.New("too many requests to this instance at once; try again in a moment")
 
-// limitedSwitch bounds the API calls in flight. The ESL client's own
-// commands (probe, log level) and the collector do not go through API.
+// limitedSwitch bounds the API and Background calls in flight. The ESL
+// client's own commands (probe, log level) and the collector do not go
+// through them.
 type limitedSwitch struct {
 	Switch
-	slots chan struct{}
-	wait  time.Duration
+	slots   chan struct{} // API calls
+	bgSlots chan struct{} // Background calls
+	wait    time.Duration
 }
 
 func (l *limitedSwitch) API(ctx context.Context, command string) (string, error) {
-	t := time.NewTimer(l.wait)
-	defer t.Stop()
-	select {
-	case l.slots <- struct{}{}:
-	case <-t.C:
-		return "", errInstanceBusy
-	case <-ctx.Done():
-		return "", ctx.Err()
+	if err := l.acquire(ctx, l.slots); err != nil {
+		return "", err
 	}
 	defer func() { <-l.slots }()
 	return l.Switch.API(ctx, command)
+}
+
+func (l *limitedSwitch) Background(ctx context.Context, command string) (string, error) {
+	if err := l.acquire(ctx, l.bgSlots); err != nil {
+		return "", err
+	}
+	defer func() { <-l.bgSlots }()
+	return l.Switch.Background(ctx, command)
+}
+
+// acquire takes a slot of slots, waiting at most l.wait.
+func (l *limitedSwitch) acquire(ctx context.Context, slots chan struct{}) error {
+	t := time.NewTimer(l.wait)
+	defer t.Stop()
+	select {
+	case slots <- struct{}{}:
+		return nil
+	case <-t.C:
+		return errInstanceBusy
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+var errStillRunning = errors.New("the command is still running on FreeSWITCH")
+
+// inBackground is the fsapi.Commander of a route that runs its command with
+// Background under the deadline d. When d passes, the command keeps running
+// on the switch, and the error says so.
+type inBackground struct {
+	sw Switch
+	d  time.Duration
+}
+
+func (b inBackground) API(ctx context.Context, command string) (string, error) {
+	out, err := b.sw.Background(ctx, command)
+	if errors.Is(err, context.DeadlineExceeded) {
+		err = fmt.Errorf("%w after %ds; its result will not be shown", errStillRunning, int(b.d/time.Second))
+	}
+	return out, err
 }
 
 func (s *Server) routes() {
@@ -476,6 +519,8 @@ func writeAPIError(w http.ResponseWriter, err error) {
 		code = http.StatusNotFound
 	case errors.As(err, &ce), errors.Is(err, fsapi.ErrBadReply):
 		code = http.StatusBadGateway
+	case errors.Is(err, errStillRunning):
+		code = http.StatusGatewayTimeout
 	}
 	writeError(w, code, err.Error())
 }

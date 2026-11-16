@@ -3,10 +3,12 @@ package esl
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
+	"regexp"
 	"runtime"
 	"slices"
 	"strconv"
@@ -19,7 +21,7 @@ import (
 
 const (
 	testPassword = "ClueCon"
-	slowReply    = 250 * time.Millisecond // delay of "api slow"
+	slowReply    = 250 * time.Millisecond // delay of "api slow" and of the "bgapi slow" result
 )
 
 // fakeServer speaks enough of mod_event_socket's inbound protocol for tests.
@@ -35,6 +37,7 @@ type fakeServer struct {
 	conns        chan *fakeConn // every authenticated connection
 	authAttempts atomic.Int32
 	accepted     atomic.Int32
+	lateSent     atomic.Bool // the result of "bgapi late" has been written
 
 	mu   sync.Mutex
 	open map[net.Conn]struct{}
@@ -147,6 +150,12 @@ func eventFrame(json string) string {
 	return fmt.Sprintf("Content-Length: %d\nContent-Type: text/event-json\n\n%s", len(json), json)
 }
 
+// jobEvent is the BACKGROUND_JOB event FreeSWITCH fires when job id ends.
+func jobEvent(id, command, body string) string {
+	b, _ := json.Marshal(map[string]string{"Event-Name": "BACKGROUND_JOB", "Job-UUID": id, "Job-Command": command, "_body": body})
+	return eventFrame(string(b))
+}
+
 func logFrame(level int, text string) string {
 	return fmt.Sprintf("Content-Type: log/data\nContent-Length: %d\nLog-Level: %d\nText-Channel: 3\n"+
 		"Log-File: switch_core.c\nLog-Func: test_func\nLog-Line: 42\nUser-Data: \n\n%s", len(text), level, text)
@@ -207,6 +216,8 @@ func (s *fakeServer) handle(fc *fakeConn, cmd string) {
 	case cmd == "api event-first":
 		fc.write(eventFrame(`{"Event-Name":"CUSTOM","_body":"not a reply"}`))
 		fc.write(apiResponse("after event"))
+	case strings.HasPrefix(cmd, "bgapi "):
+		s.background(fc, cmd)
 	case strings.HasPrefix(cmd, "event json "):
 		fc.write(reply("+OK event listener enabled json"))
 	case strings.HasPrefix(cmd, "log "):
@@ -216,6 +227,46 @@ func (s *fakeServer) handle(fc *fakeConn, cmd string) {
 		fc.write(reply("+OK no longer logging"))
 	default:
 		fc.write(reply("-ERR command not found"))
+	}
+}
+
+// background answers "bgapi <job>" with a Job-UUID header line like
+// FreeSWITCH: the reply at once, then the job's result as a BACKGROUND_JOB
+// event. Slow jobs end in a goroutine, so the connection keeps being read.
+func (s *fakeServer) background(fc *fakeConn, cmd string) {
+	line, header, _ := strings.Cut(cmd, "\n")
+	job := strings.TrimPrefix(line, "bgapi ")
+	id, ok := strings.CutPrefix(header, "Job-UUID: ")
+	switch {
+	case !ok:
+		fc.write(reply("-ERR no Job-UUID"))
+		return
+	case job == "denied":
+		fc.write(reply("-ERR permission denied"))
+		return
+	}
+	fc.write("Content-Type: command/reply\nReply-Text: +OK Job-UUID: " + id + "\nJob-UUID: " + id + "\n\n")
+	switch {
+	case strings.HasPrefix(job, "echo "):
+		fc.write(jobEvent(id, "echo", strings.TrimPrefix(job, "echo ")))
+	case job == "multi":
+		fc.write(jobEvent(id, "multi", "line one\nline two\n\nline four\n"))
+	case job == "slow":
+		go func() {
+			time.Sleep(slowReply)
+			fc.write(jobEvent(id, "slow", "slow done"))
+		}()
+	case job == "late":
+		go func() {
+			time.Sleep(slowReply)
+			fc.write(jobEvent(id, "late", "too late"))
+			s.lateSent.Store(true)
+		}()
+	case job == "other-first":
+		// Another ESL client's job ends first.
+		fc.write(jobEvent("00000000-0000-4000-8000-000000000000", "status", "not mine"))
+		fc.write(jobEvent(id, "other-first", "mine"))
+	case job == "never":
 	}
 }
 
@@ -321,7 +372,7 @@ func TestAuthSuccess(t *testing.T) {
 	if m.Headers["error"] != "" {
 		t.Errorf("error header = %q, want empty", m.Headers["error"])
 	}
-	s.expectCmds("event json HEARTBEAT")
+	s.expectCmds("event json BACKGROUND_JOB HEARTBEAT")
 	st := c.State()
 	if !st.Connected || st.LastError != "" || st.Since.IsZero() {
 		t.Errorf("state = %+v", st)
@@ -331,8 +382,8 @@ func TestAuthSuccess(t *testing.T) {
 	}
 }
 
-// TestEventSubscription checks the subscription line: the events given to
-// NewClient, and none without them.
+// TestEventSubscription checks the subscription line: BACKGROUND_JOB, then
+// the events given to NewClient.
 func TestEventSubscription(t *testing.T) {
 	for _, events := range [][]string{{"HEARTBEAT", "CHANNEL_HANGUP_COMPLETE"}, {"HEARTBEAT"}, nil} {
 		s := newFakeServer(t, nil)
@@ -345,10 +396,7 @@ func TestEventSubscription(t *testing.T) {
 		for range len(s.cmds) {
 			got = append(got, <-s.cmds)
 		}
-		want := []string{"api echo done"}
-		if events != nil {
-			want = append([]string{"event json " + strings.Join(events, " ")}, want...)
-		}
+		want := []string{"event json " + strings.Join(append([]string{"BACKGROUND_JOB"}, events...), " "), "api echo done"}
 		if !slices.Equal(got, want) {
 			t.Errorf("events %q: commands %q, want %q", events, got, want)
 		}
@@ -517,7 +565,7 @@ func TestReconnectReappliesSetup(t *testing.T) {
 	c.Start()
 	s.nextConn()
 	waitMsg(t, msgs, "first connect", isState(true))
-	s.expectCmds("event json HEARTBEAT")
+	s.expectCmds("event json BACKGROUND_JOB HEARTBEAT")
 	c.SetLogLevel(6)
 	s.expectCmds("log 6")
 
@@ -528,7 +576,7 @@ func TestReconnectReappliesSetup(t *testing.T) {
 	}
 	s.nextConn()
 	waitMsg(t, msgs, "reconnect", isState(true))
-	s.expectCmds("event json HEARTBEAT", "log 6")
+	s.expectCmds("event json BACKGROUND_JOB HEARTBEAT", "log 6")
 	if got := api(t, c, "echo again"); got != "again" {
 		t.Errorf("got %q", got)
 	}
@@ -583,7 +631,7 @@ func TestInvalidCommand(t *testing.T) {
 
 	s := newFakeServer(t, nil)
 	c = startConnected(t, s)
-	s.expectCmds("event json HEARTBEAT")
+	s.expectCmds("event json BACKGROUND_JOB HEARTBEAT")
 	for _, cmd := range []string{"status\n\nexit", "status\rexit", "\n"} {
 		if _, err := c.API(context.Background(), cmd); !errors.Is(err, ErrInvalidCommand) {
 			t.Errorf("API(%q) err = %v, want ErrInvalidCommand", cmd, err)
@@ -744,7 +792,7 @@ func TestProbeSilentPeer(t *testing.T) {
 	if elapsed < after || elapsed > after+timeout+time.Second {
 		t.Errorf("disconnected after %v, want about %v", elapsed, after+timeout)
 	}
-	s.expectCmds("event json HEARTBEAT", "api uptime")
+	s.expectCmds("event json BACKGROUND_JOB HEARTBEAT", "api uptime")
 
 	waitMsg(t, msgs, "reconnect", isState(true))
 	if got := api(t, c, "echo alive"); got != "alive" {
@@ -817,5 +865,212 @@ func TestProbeWaitsForPendingAPI(t *testing.T) {
 	noDisconnect(t, msgs)
 	if n := s.accepted.Load(); n != 1 || !c.State().Connected {
 		t.Errorf("accepted %d connections, state %+v", n, c.State())
+	}
+}
+
+func background(t *testing.T, c *Client, cmd string) string {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := c.Background(ctx, cmd)
+	if err != nil {
+		t.Fatalf("Background(%q): %v", cmd, err)
+	}
+	return out
+}
+
+// jobsWaiting returns the number of Background calls the current connection
+// holds a waiter for.
+func jobsWaiting(c *Client) int {
+	c.mu.Lock()
+	cn := c.cur
+	c.mu.Unlock()
+	cn.mu.Lock()
+	defer cn.mu.Unlock()
+	return len(cn.jobs)
+}
+
+var bgapiLine = regexp.MustCompile(`^bgapi echo hello world\nJob-UUID: [0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+
+func TestBackgroundRoundTrip(t *testing.T) {
+	s := newFakeServer(t, nil)
+	c := startConnected(t, s)
+	s.expectCmds("event json BACKGROUND_JOB HEARTBEAT")
+	if got := background(t, c, "echo hello world"); got != "hello world" {
+		t.Errorf("got %q", got)
+	}
+	if got := <-s.cmds; !bgapiLine.MatchString(got) {
+		t.Errorf("server received %q", got)
+	}
+	if got := background(t, c, "multi"); got != "line one\nline two\n\nline four\n" {
+		t.Errorf("multi-line body = %q", got)
+	}
+	// A refused bgapi is returned like an -ERR body.
+	if got := background(t, c, "denied"); got != "-ERR permission denied" {
+		t.Errorf("denied: got %q", got)
+	}
+	if n := jobsWaiting(c); n != 0 {
+		t.Errorf("%d waiters left", n)
+	}
+}
+
+// TestBackgroundConcurrent runs two slow jobs and an API call at once: the
+// API call does not wait for the jobs.
+func TestBackgroundConcurrent(t *testing.T) {
+	s := newFakeServer(t, nil)
+	c := startConnected(t, s)
+	start := time.Now()
+	var wg sync.WaitGroup
+	outs := make([]string, 2)
+	for i := range outs {
+		wg.Go(func() {
+			out, err := c.Background(context.Background(), "slow")
+			outs[i] = fmt.Sprint(out, err)
+		})
+	}
+	waitFor(t, "both jobs sent", func() bool { return jobsWaiting(c) == 2 })
+	apiStart := time.Now()
+	if got := api(t, c, "echo quick"); got != "quick" {
+		t.Errorf("API got %q", got)
+	}
+	if d := time.Since(apiStart); d > slowReply/2 {
+		t.Errorf("API call took %v behind two background jobs", d)
+	}
+	wg.Wait()
+	for i, out := range outs {
+		if out != "slow done<nil>" {
+			t.Errorf("job %d: %q", i, out)
+		}
+	}
+	if d := time.Since(start); d > 2*slowReply {
+		t.Errorf("two jobs took %v, want about %v", d, slowReply)
+	}
+}
+
+func TestBackgroundDeadlineKeepsConnection(t *testing.T) {
+	s := newFakeServer(t, nil)
+	c := newTestClient(t, s)
+	msgs, cancel := c.Subscribe(64)
+	defer cancel()
+	c.Start()
+	waitMsg(t, msgs, "connect", isState(true))
+
+	ctx, cancelCtx := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancelCtx()
+	if _, err := c.Background(ctx, "never"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want deadline exceeded", err)
+	}
+	if n := jobsWaiting(c); n != 0 {
+		t.Errorf("%d waiters left after the deadline", n)
+	}
+	if got := api(t, c, "echo still here"); got != "still here" {
+		t.Errorf("API got %q", got)
+	}
+	if got := background(t, c, "echo again"); got != "again" {
+		t.Errorf("Background got %q", got)
+	}
+	noDisconnect(t, msgs)
+	if n := s.accepted.Load(); n != 1 {
+		t.Errorf("accepted %d connections, want 1", n)
+	}
+}
+
+// TestBackgroundLateResult gives up on a job whose result arrives later: the
+// result is dropped, not delivered to the next call or to subscribers.
+func TestBackgroundLateResult(t *testing.T) {
+	s := newFakeServer(t, nil)
+	c := newTestClient(t, s)
+	msgs, cancel := c.Subscribe(64)
+	defer cancel()
+	c.Start()
+	waitMsg(t, msgs, "connect", isState(true))
+
+	ctx, cancelCtx := context.WithTimeout(context.Background(), slowReply/5)
+	defer cancelCtx()
+	if _, err := c.Background(ctx, "late"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want deadline exceeded", err)
+	}
+	waitFor(t, "the late result", s.lateSent.Load)
+	// The reply to this call comes after the late result on the wire.
+	if got := api(t, c, "echo after"); got != "after" {
+		t.Errorf("API got %q", got)
+	}
+	if got := background(t, c, "echo next"); got != "next" {
+		t.Errorf("next Background got %q", got)
+	}
+	for len(msgs) > 0 {
+		if m := <-msgs; m.Kind == KindEvent || isState(false)(m) {
+			t.Errorf("subscriber got %+v", m)
+		}
+	}
+	if n := s.accepted.Load(); n != 1 || !c.State().Connected {
+		t.Errorf("accepted %d connections, state %+v", n, c.State())
+	}
+}
+
+// TestBackgroundOtherJobs ignores the results of other clients' jobs and
+// delivers no BACKGROUND_JOB event to subscribers.
+func TestBackgroundOtherJobs(t *testing.T) {
+	s := newFakeServer(t, nil)
+	c := startConnected(t, s)
+	fc := s.nextConn()
+	msgs, cancel := c.Subscribe(64)
+	defer cancel()
+	if got := background(t, c, "other-first"); got != "mine" {
+		t.Errorf("got %q", got)
+	}
+	fc.write(jobEvent("11111111-1111-4111-8111-111111111111", "status", "nobody waits"))
+	fc.write(eventFrame(`{"Event-Name":"HEARTBEAT"}`))
+	m := waitMsg(t, msgs, "event", func(m Message) bool { return m.Kind == KindEvent })
+	if m.Headers["Event-Name"] != "HEARTBEAT" {
+		t.Errorf("subscriber got %+v before the heartbeat", m)
+	}
+	if !c.State().Connected {
+		t.Errorf("state %+v", c.State())
+	}
+}
+
+func TestBackgroundConnectionLoss(t *testing.T) {
+	s := newFakeServer(t, nil)
+	c := startConnected(t, s)
+	errc := make(chan error, 2)
+	for range 2 {
+		go func() {
+			_, err := c.Background(context.Background(), "never")
+			errc <- err
+		}()
+	}
+	waitFor(t, "both jobs sent", func() bool { return jobsWaiting(c) == 2 })
+	s.dropAll()
+	for range 2 {
+		select {
+		case err := <-errc:
+			if !errors.Is(err, ErrNotConnected) {
+				t.Errorf("err = %v, want ErrNotConnected", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("waiting job not released by the connection loss")
+		}
+	}
+}
+
+func TestBackgroundInvalidCommand(t *testing.T) {
+	c := NewClient("127.0.0.1:1", testPassword)
+	defer c.Close()
+	if _, err := c.Background(context.Background(), "status"); !errors.Is(err, ErrNotConnected) {
+		t.Errorf("not connected: err = %v", err)
+	}
+
+	s := newFakeServer(t, nil)
+	c = startConnected(t, s)
+	s.expectCmds("event json BACKGROUND_JOB HEARTBEAT")
+	for _, cmd := range []string{"status\n\nexit", "status\rexit", "\n", "echo x\nJob-UUID: 1"} {
+		if _, err := c.Background(context.Background(), cmd); !errors.Is(err, ErrInvalidCommand) {
+			t.Errorf("Background(%q) err = %v, want ErrInvalidCommand", cmd, err)
+		}
+	}
+	api(t, c, "echo marker")
+	if got := <-s.cmds; got != "api echo marker" {
+		t.Errorf("server received %q before the marker", got)
 	}
 }

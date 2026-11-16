@@ -34,15 +34,16 @@ type fakeSwitch struct {
 	mu        sync.Mutex
 	state     esl.State
 	replies   map[string]string
-	apiErr    error
-	sent      []string
+	apiErr    error    // returned by API and Background
+	sent      []string // API commands; Background ones with the prefix "bgapi "
 	logLevels []int
 	subs      map[int]chan esl.Message
 	nextSub   int
 	closed    bool
 	// hold, when set, keeps API calls waiting until it is closed; a call
 	// whose context ends first drops the connection, as esl.Client does.
-	hold chan struct{}
+	// bgHold does the same for Background calls, which keep the connection.
+	hold, bgHold chan struct{}
 }
 
 const statusJSON = `{"command":"status","data":"","status":"success","response":{"systemStatus":"ready","uptime":{"days":1},"version":"1.10.12","sessions":{"count":{"total":5,"active":1,"peak":2,"peak5Min":1,"limit":1000},"rate":{"current":0,"max":30,"peak":1,"peak5Min":0}},"idleCPU":{"used":0,"allowed":99.1},"stackSizeKB":{"current":240,"max":8192}}}`
@@ -99,17 +100,31 @@ func (f *fakeSwitch) State() esl.State {
 }
 
 func (f *fakeSwitch) API(ctx context.Context, cmd string) (string, error) {
+	return f.call(ctx, cmd, false)
+}
+
+func (f *fakeSwitch) Background(ctx context.Context, cmd string) (string, error) {
+	return f.call(ctx, cmd, true)
+}
+
+func (f *fakeSwitch) call(ctx context.Context, cmd string, bg bool) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	hold := f.hold
+	if bg {
+		cmd, hold = "bgapi "+cmd, f.bgHold
+	}
 	f.sent = append(f.sent, cmd)
-	if hold := f.hold; hold != nil && f.state.Connected {
+	if hold != nil && f.state.Connected {
 		f.mu.Unlock()
 		select {
 		case <-hold:
 			f.mu.Lock()
 		case <-ctx.Done():
 			f.mu.Lock()
-			f.state.Connected = false
+			if !bg {
+				f.state.Connected = false
+			}
 			return "", ctx.Err()
 		}
 	}
@@ -119,7 +134,7 @@ func (f *fakeSwitch) API(ctx context.Context, cmd string) (string, error) {
 	case f.apiErr != nil:
 		return "", f.apiErr
 	}
-	if r, ok := f.replies[cmd]; ok {
+	if r, ok := f.replies[strings.TrimPrefix(cmd, "bgapi ")]; ok {
 		return r, nil
 	}
 	return "+OK\n", nil
@@ -642,7 +657,7 @@ func TestDataRoutes(t *testing.T) {
 	expect(t, h.do("POST", p+"/actions", admin, `{"action":"sofia_rescan","profile":"internal"}`), 200, `{"output":"+OK scan complete"}`)
 	expect(t, h.do("POST", p+"/console", admin, `{"command":"show calls count"}`), 200, `{"output":"\n0 total.\n\n"}`)
 	sent, _, _, _ := f.snapshot()
-	want := []string{"uuid_kill abc-123", "reloadxml", "reloadacl", "sofia profile internal rescan", "show calls count"}
+	want := []string{"uuid_kill abc-123", "bgapi reloadxml", "bgapi reloadacl", "bgapi sofia profile internal rescan", "bgapi show calls count"}
 	if !reflect.DeepEqual(sent, want) {
 		t.Fatalf("sent %q", sent)
 	}

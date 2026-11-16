@@ -77,8 +77,8 @@ func TestActions(t *testing.T) {
 	for body, cmd := range ok {
 		f.set(func(f *fakeSwitch) { f.sent = nil })
 		expect(t, h.do("POST", p, admin, body), 200, "")
-		if sent, _, _, _ := f.snapshot(); !reflect.DeepEqual(sent, []string{cmd}) {
-			t.Errorf("%s sent %q, want %q", body, sent, cmd)
+		if sent, _, _, _ := f.snapshot(); !reflect.DeepEqual(sent, []string{"bgapi " + cmd}) {
+			t.Errorf("%s sent %q, want %q with Background", body, sent, cmd)
 		}
 	}
 	f.set(func(f *fakeSwitch) { f.sent = nil })

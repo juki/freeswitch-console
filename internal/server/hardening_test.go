@@ -160,8 +160,6 @@ func TestInstanceAPILimit(t *testing.T) {
 		{"GET", p + "/channels", viewer, ""},
 		{"GET", p + "/status", viewer, ""},
 		{"GET", p + "/config/sofia.conf", viewer, ""},
-		{"POST", p + "/console", admin, `{"command":"status"}`},
-		{"POST", p + "/actions", admin, `{"action":"reloadxml"}`},
 	} {
 		start := time.Now()
 		expect(t, h.do(rq.method, rq.path, rq.token, rq.body), 503, busy)
@@ -172,6 +170,10 @@ func TestInstanceAPILimit(t *testing.T) {
 	if sent, _, _, _ := f.snapshot(); len(sent) != apiSlots || !f.State().Connected {
 		t.Fatalf("sent %d, connected %v", len(sent), f.State().Connected)
 	}
+	// The console and the actions run with Background, which has slots of
+	// its own.
+	expect(t, h.do("POST", p+"/console", admin, `{"command":"status"}`), 200, "")
+	expect(t, h.do("POST", p+"/actions", admin, `{"action":"reloadxml"}`), 200, "")
 	close(hold)
 	for i := 0; i < apiSlots; i++ {
 		if c := <-codes; c != 200 {
@@ -179,6 +181,47 @@ func TestInstanceAPILimit(t *testing.T) {
 		}
 	}
 	expect(t, h.do("GET", p+"/channels", viewer, ""), 200, "")
+}
+
+func TestInstanceBackgroundLimit(t *testing.T) {
+	h := newHarness(t)
+	viewer := h.login("viewer", viewerPW)
+	admin := h.login("admin", adminPW)
+	p := "/api/instances/" + h.id
+	f := h.fake(0)
+	hold := make(chan struct{})
+	f.set(func(f *fakeSwitch) { f.bgHold = hold })
+	h.instance(h.id).sw.(*limitedSwitch).wait = 100 * time.Millisecond
+
+	codes := make(chan int, backgroundSlots)
+	for i := range backgroundSlots {
+		rq := [2]string{"/console", `{"command":"originate x"}`}
+		if i%2 == 1 {
+			rq = [2]string{"/actions", `{"action":"reloadxml"}`}
+		}
+		go func() { codes <- h.do("POST", p+rq[0], admin, rq[1]).code }()
+	}
+	waitFor(t, "background calls in flight", func() bool { sent, _, _, _ := f.snapshot(); return len(sent) == backgroundSlots })
+	busy := `{"error":"too many requests to this instance at once; try again in a moment"}`
+	for _, rq := range [][2]string{{"/console", `{"command":"status"}`}, {"/actions", `{"action":"reloadacl"}`}} {
+		start := time.Now()
+		expect(t, h.do("POST", p+rq[0], admin, rq[1]), 503, busy)
+		if d := time.Since(start); d < 100*time.Millisecond {
+			t.Fatalf("%s refused after %v", rq[0], d)
+		}
+	}
+	// API calls have slots of their own.
+	expect(t, h.do("GET", p+"/channels", viewer, ""), 200, "")
+	if sent, _, _, _ := f.snapshot(); len(sent) != backgroundSlots+1 || !f.State().Connected {
+		t.Fatalf("sent %q, connected %v", sent, f.State().Connected)
+	}
+	close(hold)
+	for range backgroundSlots {
+		if c := <-codes; c != 200 {
+			t.Fatalf("held call: %d", c)
+		}
+	}
+	expect(t, h.do("POST", p+"/console", admin, `{"command":"status"}`), 200, "")
 }
 
 // ended reports whether the stream ends within d.
