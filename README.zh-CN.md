@@ -17,8 +17,9 @@
 |---|---|---|
 | 实例 | 每台 FreeSWITCH 一张卡片：连接状态、会话数、CPU 空闲、运行时长、版本；连不上时用大白话说明原因 | `json status` |
 | 概览 | 最近两小时的会话数、会话速率、CPU 空闲和容量占用，SIP 与通话速览 | `json status`、`HEARTBEAT` 事件 |
-| SIP | Profile、网关、别名、注册；启动、停止、重启、重扫 Profile；网关注册、注销、移除 | `sofia xmlstatus`、`sofia profile …` |
+| SIP | Profile、网关、别名、注册；启动、停止、重启、重扫 Profile；网关注册、注销、移除；开关某个 Profile 的 SIP 跟踪 | `sofia xmlstatus`、`sofia profile …` |
 | 通话 | 通道和桥接通话，实时时长，侧边栏查看全部字段，挂断 | `show channels`、`show calls`、`uuid_kill` |
+| 最近挂断 | 不装 CDR 模块也能看出一通电话为什么结束：最近 500 个挂断的通道，用大白话解释挂断原因，并给出 SIP 状态码、谁挂的、通话时长、MOS、这通电话自己的日志行和全部变量 | `CHANNEL_HANGUP_COMPLETE` 事件 |
 | 配置 | FreeSWITCH 解析后的生效配置、全局变量、模块（加载、卸载、重载） | `xml_locate`、`global_getvar`、`show modules` |
 | 拨号计划 | 按“如果匹配，则依次执行”的方式阅读各 context 和分机，也可看 XML | `xml_locate dialplan` |
 | 用户目录 | 各域的用户表：分组、主叫显示、上下文、是否设置了密码 | `xml_locate directory` |
@@ -35,6 +36,7 @@
 | | |
 |---|---|
 | ![配置文件编辑器](assets/screenshots/files.png) | ![按条件和动作阅读的拨号计划](assets/screenshots/dialplan.png) |
+| ![最近挂断：原因与 SIP 状态码](assets/screenshots/hangups.png) | ![一通电话为什么结束：解释、要点和它自己的日志](assets/screenshots/hangup-detail.png) |
 | ![带 Tab 补全的控制台](assets/screenshots/console.png) | ![中文界面、暗色主题下的实例页](assets/screenshots/fleet-zh.png) |
 
 ## 快速开始
@@ -132,6 +134,7 @@ fsconsole 连接 `mod_event_socket`（默认端口 8021）。原版 FreeSWITCH �
 | `-audit` | `FSCONSOLE_AUDIT` | 数据文件旁的 `fsconsole-audit.log` | 审计日志；设为空值则关闭 |
 | `-log-backlog` | `FSCONSOLE_LOG_BACKLOG` | `2000` | 每个实例保留并在打开日志页时回放的日志行数；`0` 关闭 |
 | `-log-backlog-level` | `FSCONSOLE_LOG_BACKLOG_LEVEL` | `6`（INFO） | 保留日志的最高级别，`0` 到 `7` |
+| `-recent-calls` | `FSCONSOLE_RECENT_CALLS` | `500` | 每个实例在内存中保留的挂断记录数，供“最近挂断”使用；`0` 表示关闭，且不订阅相关事件 |
 | `-tls-cert`、`-tls-key` | `FSCONSOLE_TLS_CERT`、`FSCONSOLE_TLS_KEY` | 未设置 | 用该 PEM 证书和私钥提供 HTTPS；必须同时设置或都不设置 |
 | | `FSCONSOLE_SECRET_KEY` | 未设置 | 加密数据文件中的 Event Socket 密码和代理令牌；至少 16 个字符 |
 | | `FSCONSOLE_ADMIN_PASSWORD` | 未设置 | 受管 `admin` 账号的密码 |
@@ -182,7 +185,7 @@ docker exec freeswitch-test fs_cli -x 'bgapi originate loopback/9196/default &pa
 
 ## 不在范围内
 
-- 通话记录和 SIP 抓包：Homer 和各类 CDR 工具已经覆盖。
+- 通话记录和 SIP 抓包：“最近挂断”只是保存在内存里的排障辅助，重启即清空；其余由 Homer 和各类 CDR 工具覆盖。
 - 长期指标：Prometheus 和 Grafana 已经覆盖。
 - 生成配置：fsconsole 只编辑你已有的文件。
 

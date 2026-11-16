@@ -24,8 +24,9 @@ English | [简体中文](README.zh-CN.md)
 |---|---|---|
 | Instances | one card per FreeSWITCH: connection, sessions, idle CPU, uptime, version; a plain-language reason when a switch cannot be reached | `json status` |
 | Overview | sessions, session rate, idle CPU and capacity over the last two hours, SIP and call summary | `json status`, `HEARTBEAT` events |
-| SIP | profiles, gateways, aliases, registrations; start, stop, restart and rescan profiles; register, unregister and remove gateways | `sofia xmlstatus`, `sofia profile …` |
+| SIP | profiles, gateways, aliases, registrations; start, stop, restart and rescan profiles; register, unregister and remove gateways; switch the SIP trace of a profile on and off | `sofia xmlstatus`, `sofia profile …` |
 | Calls | channels and bridged calls with live durations, every field in a side panel, hang up | `show channels`, `show calls`, `uuid_kill` |
+| Recent hang-ups | why a call ended, without a CDR module: the last 500 channels that hung up, with the cause explained in plain language, the SIP status, who hung up, talk time, MOS, the call's own log lines and all its variables | `CHANNEL_HANGUP_COMPLETE` events |
 | Configuration | the effective configuration as FreeSWITCH parsed it, global variables, modules (load, unload, reload) | `xml_locate`, `global_getvar`, `show modules` |
 | Dialplan | contexts and extensions read as "if this matches, run these actions", or as XML | `xml_locate dialplan` |
 | Directory | domains with a users table: groups, caller id, context, whether a password is set | `xml_locate directory` |
@@ -46,6 +47,7 @@ as `sip_auth_password=…` in a dial string.
 | | |
 |---|---|
 | ![Config file editor](assets/screenshots/files.png) | ![Dialplan read as conditions and actions](assets/screenshots/dialplan.png) |
+| ![Recent hang-ups with cause and SIP status](assets/screenshots/hangups.png) | ![Why a call ended: explanation, facts and its own log](assets/screenshots/hangup-detail.png) |
 | ![Console with Tab completion](assets/screenshots/console.png) | ![Instances in Chinese, dark theme](assets/screenshots/fleet-zh.png) |
 
 ## Quick start
@@ -172,6 +174,7 @@ shows them as managed by the environment and cannot change them.
 | `-audit` | `FSCONSOLE_AUDIT` | `fsconsole-audit.log` beside the data file | audit log; an empty value disables it |
 | `-log-backlog` | `FSCONSOLE_LOG_BACKLOG` | `2000` | log lines kept per instance and replayed when the Logs view opens; `0` disables |
 | `-log-backlog-level` | `FSCONSOLE_LOG_BACKLOG_LEVEL` | `6` (INFO) | highest log level kept in the backlog, `0` to `7` |
+| `-recent-calls` | `FSCONSOLE_RECENT_CALLS` | `500` | hang-ups kept in memory per instance for the Recent hang-ups view; `0` turns it off and does not subscribe to the events |
 | `-tls-cert`, `-tls-key` | `FSCONSOLE_TLS_CERT`, `FSCONSOLE_TLS_KEY` | unset | serve HTTPS with this PEM certificate and key; both or neither |
 | | `FSCONSOLE_SECRET_KEY` | unset | encrypt the Event Socket passwords and agent tokens in the data file; at least 16 characters |
 | | `FSCONSOLE_ADMIN_PASSWORD` | unset | password of the managed `admin` account |
@@ -250,7 +253,9 @@ fsconsole that path.
 
 ## Not in scope
 
-- Call history and SIP capture. Homer and CDR tools cover those.
+- Call history and SIP capture. The recent hang-ups are a troubleshooting
+  aid kept in memory and gone after a restart; Homer and CDR tools cover the
+  rest.
 - Long-term metrics. Prometheus and Grafana cover those.
 - Generating configuration. fsconsole edits the files you have.
 
