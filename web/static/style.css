@@ -881,6 +881,15 @@ dialog.modal::backdrop { background: rgba(8, 9, 16, 0.5); -webkit-backdrop-filte
 
 .main-col { display: flex; flex-direction: column; min-width: 0; height: 100vh; }
 .main-col > .main { flex: 1; height: auto; min-height: 0; }
+/* The demo banner is its own row above the scrolling page, so it never covers it. */
+.demo-banner {
+  flex: none; display: flex; align-items: flex-start; gap: 8px; padding: 7px 28px;
+  background: var(--info-soft); color: var(--info); border-bottom: 1px solid color-mix(in srgb, var(--info) 22%, transparent);
+  font-size: 12.5px; line-height: 1.45;
+}
+.demo-banner .icon { width: 15px; height: 15px; margin-top: 1px; }
+.demo-banner p { min-width: 0; }
+.demo-banner a { color: inherit; font-weight: 650; text-decoration: underline; text-underline-offset: 2px; white-space: nowrap; }
 .about-head { display: flex; align-items: center; gap: 12px; }
 .about-head .brand-mark { width: 40px; height: 40px; }
 .about-who { min-width: 0; }
@@ -1314,6 +1323,7 @@ mark.hit { padding: 0 1px; border-radius: 3px; background: color-mix(in srgb, va
   .fe-grid { grid-template-columns: 210px minmax(0, 1fr); height: max(480px, calc(100vh - 300px)); }
   .rt-grid, .mode-picker, .setup-modes { grid-template-columns: minmax(0, 1fr); }
   .main-col { height: auto; min-height: 0; }
+  .demo-banner { padding: 7px 16px; }
   .hu-tbl th:nth-child(6), .hu-tbl td:nth-child(6), .hu-tbl th:nth-child(8), .hu-tbl td:nth-child(8) { display: none; }
   .users-tbl th:nth-child(4), .users-tbl td:nth-child(4), .audit-tbl th:nth-child(5), .audit-tbl td:nth-child(5), .audit-tbl th:nth-child(7), .audit-tbl td:nth-child(7) { display: none; }
   .main { height: auto; }

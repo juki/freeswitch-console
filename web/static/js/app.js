@@ -12,7 +12,7 @@ import { mountFleet } from './views/fleet.js';
 import { mountInstance, normalizeTab } from './views/instance.js';
 import { mountUsers } from './views/users.js';
 import { mountAudit } from './views/audit.js';
-import { accountMenu } from './views/account.js';
+import { accountMenu, SOURCE_URL } from './views/account.js';
 
 const app = document.getElementById('app');
 
@@ -36,6 +36,7 @@ const CAPABILITIES = {
 
 let me = null; // {username, role, managed}
 let version = '';
+let demo = false; // api/version says so: simulated switches, nobody signs in
 let appScope = null; // lives while signed in
 let viewScope = null;
 let current = null; // {kind, id, tab, view}
@@ -106,7 +107,7 @@ function buildShell() {
     admin.push(adminLinks.audit);
   }
   const main = h('main', { class: 'main' });
-  const foot = h('div', { class: 'side-foot' }, accountMenu({ me, version, onSignOut: logout }));
+  const foot = h('div', { class: 'side-foot' }, accountMenu({ me, version, onSignOut: demo ? null : logout }));
   const side = h('aside', { class: 'side' },
     h('a', { class: 'brand', href: '#/' }, brandMark(), h('span', { text: 'FreeSWITCH' }), h('span', { class: 'brand-tag', text: t('brand.tag') })),
     h('nav', { class: 'side-scroll', 'aria-label': t('nav.main') },
@@ -116,8 +117,15 @@ function buildShell() {
       admin.length ? h('div', { class: 'side-label' }, t('nav.admin')) : null,
       admin.length ? h('div', { class: 'side-list admin-list' }, admin) : null),
     foot);
-  app.replaceChildren(h('div', { class: 'shell' }, side, h('div', { class: 'main-col' }, main)));
-  shell = { main, list, count, fleetLink, adminLinks, foot };
+  const col = h('div', { class: 'main-col' }, demo ? demoBanner() : null, main);
+  app.replaceChildren(h('div', { class: 'shell' }, side, col));
+  shell = { main, list, count, fleetLink, adminLinks, foot, col };
+}
+
+// demoBanner tops the main column on every page of the demo.
+function demoBanner() {
+  return h('div', { class: 'demo-banner', role: 'note' }, icon('info'),
+    h('p', null, t('demo.banner'), ' ', h('a', { href: SOURCE_URL, target: '_blank', rel: 'noopener noreferrer', text: t('demo.link') })));
 }
 
 function renderSide() {
@@ -283,12 +291,15 @@ async function start() {
       // keep the last known list; the next poll retries
     }
   }, 5000);
-  // The version only decorates the account menu; without it the menu says less.
+  // The version decorates the account menu (without it the menu says less)
+  // and tells whether this is the demo (banner, no Sign out).
   if (!version) {
     api('GET', 'version', { signal: appScope.signal }).then((data) => {
       if (!data || typeof data.version !== 'string' || !data.version || !shell) return;
       version = data.version;
-      shell.foot.replaceChildren(accountMenu({ me, version, onSignOut: logout }));
+      demo = data.demo === true;
+      if (demo) shell.col.prepend(demoBanner());
+      shell.foot.replaceChildren(accountMenu({ me, version, onSignOut: demo ? null : logout }));
     }, () => {});
   }
   lastHash = location.hash;

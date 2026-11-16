@@ -29,6 +29,7 @@ const THEMES = [
 ];
 
 // accountMenu is the user chip at the foot of the sidebar and its menu.
+// Without onSignOut (the demo, where nobody signs in) there is no Sign out.
 export function accountMenu({ me, version, onSignOut }) {
   const chip = h('button', { type: 'button', class: 'account-chip', title: t('account.menu') },
     h('span', { class: 'avatar', text: me.username.slice(0, 1) }),
@@ -73,8 +74,8 @@ export function accountMenu({ me, version, onSignOut }) {
     h('div', { class: 'menu-sep' }),
     h('button', { type: 'button', class: 'menu-item', role: 'menuitem', on: { click: () => { pop.close(); aboutDialog({ version }); } } },
       icon('info'), h('span', { class: 'menu-text' }, t('about.title'), h('span', { class: 'menu-sub', text: t('about.menuSub') }))),
-    h('button', { type: 'button', class: 'menu-item', role: 'menuitem', on: { click: () => { pop.close(); onSignOut(); } } },
-      icon('logout'), h('span', { class: 'menu-text', text: t('nav.signOut') })),
+    ...(onSignOut ? [h('button', { type: 'button', class: 'menu-item', role: 'menuitem', on: { click: () => { pop.close(); onSignOut(); } } },
+      icon('logout'), h('span', { class: 'menu-text', text: t('nav.signOut') }))] : []),
     h('div', { class: 'menu-foot' }, h('span', { text: 'fsconsole' }), version ? h('span', { class: 'mono', text: version }) : null));
   return pop.el;
 }
@@ -149,8 +150,9 @@ export function changePasswordDialog() {
 // ---------- about ----------
 
 // SOURCE_URL is where the source code of fsconsole is published. The AGPL asks
-// that users of the console be offered it, so the About dialog links to it.
-const SOURCE_URL = 'https://github.com/juki/freeswitch-console';
+// that users of the console be offered it, so the About dialog links to it
+// (and so does the demo banner of the shell).
+export const SOURCE_URL = 'https://github.com/juki/freeswitch-console';
 
 // aboutDialog shows what fsconsole is, its version, the terms it is published
 // under and where its source code is.

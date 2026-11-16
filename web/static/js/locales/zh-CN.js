@@ -231,6 +231,8 @@ export default {
   'con.title': 'API 控制台',
   'con.unknownCommand': '没有名为“{word}”的 API 命令。',
   'copy.denied': '浏览器不允许复制。',
+  'demo.banner': '演示环境，交换机均为模拟：这里没有任何真实数据，账号、实例和文件的修改已禁用。',
+  'demo.link': '获取 FreeSWITCH Console',
   'diff.folded.one': '{n} 行未改动',
   'diff.folded.other': '{n} 行未改动',
   'diff.same': '没有差异。',

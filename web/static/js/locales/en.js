@@ -231,6 +231,8 @@ export default {
   'con.title': 'API console',
   'con.unknownCommand': 'No API command is called “{word}”.',
   'copy.denied': 'The browser did not allow copying.',
+  'demo.banner': 'Demo with simulated switches: nothing here is real, and changes to accounts, instances and files are disabled.',
+  'demo.link': 'Get FreeSWITCH Console',
   'diff.folded.one': '{n} unchanged line',
   'diff.folded.other': '{n} unchanged lines',
   'diff.same': 'No differences.',
