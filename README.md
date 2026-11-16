@@ -77,7 +77,8 @@ and Windows; each holds `fsconsole` and `fsconsole-agent`, with
 FSCONSOLE_ADMIN_PASSWORD='choose-a-long-one' ./fsconsole
 ```
 
-Or with Go: `go install github.com/juki/freeswitch-console/cmd/fsconsole@latest`,
+Or with Homebrew on macOS and Linux: `brew install juki/tap/fsconsole`. Or
+with Go: `go install github.com/juki/freeswitch-console/cmd/fsconsole@latest`,
 or from a checkout `go build -o fsconsole ./cmd/fsconsole`.
 
 Open <http://127.0.0.1:8080>, sign in as `admin`, add an instance (host, Event

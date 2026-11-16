@@ -60,7 +60,7 @@ docker run --rm -p 127.0.0.1:8080:8080 -v fsconsole-data:/data \
 FSCONSOLE_ADMIN_PASSWORD='设一个足够长的密码' ./fsconsole
 ```
 
-也可以用 Go 安装：`go install github.com/juki/freeswitch-console/cmd/fsconsole@latest`，或在源码目录里 `go build -o fsconsole ./cmd/fsconsole`。
+macOS 和 Linux 上也可以用 Homebrew：`brew install juki/tap/fsconsole`。或者用 Go 安装：`go install github.com/juki/freeswitch-console/cmd/fsconsole@latest`，或在源码目录里 `go build -o fsconsole ./cmd/fsconsole`。
 
 打开 <http://127.0.0.1:8080>，用 `admin` 登录，添加一个实例（主机、Event Socket 端口、Event Socket 密码）。如果没有设置 `FSCONSOLE_ADMIN_PASSWORD`，首次启动会创建 `admin` 账号并打印一次随机密码。
 
