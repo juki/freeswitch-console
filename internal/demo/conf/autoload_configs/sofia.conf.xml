@@ -1,0 +1,11 @@
+<configuration name="sofia.conf" description="SIP endpoint">
+  <global_settings>
+    <param name="log-level" value="0"/>
+    <param name="debug-presence" value="0"/>
+  </global_settings>
+
+  <!-- One file per profile in sip_profiles/ -->
+  <profiles>
+    <X-PRE-PROCESS cmd="include" data="../sip_profiles/*.xml"/>
+  </profiles>
+</configuration>

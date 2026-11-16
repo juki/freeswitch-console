@@ -20,6 +20,13 @@ type sample struct {
 	Idle     float64 `json:"idle"`
 }
 
+// pastLoad is a Switch that knows the load of its heartbeats before it was
+// dialled: a simulated switch of demo mode (demo.Switch.History). add gets
+// them oldest first.
+type pastLoad interface {
+	History(add func(at time.Time, sessions, rate int, idle float64))
+}
+
 // collect is the only subscriber of the switch. It records a sample per
 // HEARTBEAT and a record per CHANNEL_HANGUP_COMPLETE, keeps the log backlog
 // and forwards state changes, heartbeats and log lines to the open streams,

@@ -1,0 +1,13 @@
+<include>
+  <!-- Main carrier: registers, carries most calls -->
+  <gateway name="carrier-a">
+    <param name="proxy" value="sip.carrier-a.example"/>
+    <param name="realm" value="sip.carrier-a.example"/>
+    <param name="username" value="pbx-demo-01"/>
+    <param name="password" value="$${carrier_a_password}"/>
+    <param name="register" value="true"/>
+    <param name="expire-seconds" value="3600"/>
+    <param name="ping" value="30"/>
+    <param name="caller-id-in-from" value="true"/>
+  </gateway>
+</include>

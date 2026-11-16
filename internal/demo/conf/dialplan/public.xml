@@ -1,0 +1,11 @@
+<include>
+  <!-- Calls from the carriers: +1 312 555 0101 to 0110 ring 1001 to 1010 -->
+  <context name="public">
+    <extension name="inbound_numbers">
+      <condition field="destination_number" expression="^\+?131255501(0[1-9]|10)$">
+        <action application="set" data="domain_name=$${domain}"/>
+        <action application="transfer" data="10$1 XML default"/>
+      </condition>
+    </extension>
+  </context>
+</include>

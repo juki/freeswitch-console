@@ -1,0 +1,20 @@
+<configuration name="acl.conf" description="Network lists">
+  <network-lists>
+    <list name="management" default="deny">
+      <node type="allow" cidr="192.0.2.0/24"/>
+      <node type="allow" cidr="198.51.100.0/24"/>
+    </list>
+
+    <!-- The office phones -->
+    <list name="phones" default="deny">
+      <node type="allow" cidr="10.20.0.0/16"/>
+    </list>
+
+    <!-- Signalling addresses of the carriers -->
+    <list name="carriers" default="deny">
+      <node type="allow" cidr="198.51.100.40/32" description="carrier-a"/>
+      <node type="allow" cidr="198.51.100.50/32" description="carrier-b"/>
+      <node type="allow" cidr="203.0.113.60/32" description="carrier-backup"/>
+    </list>
+  </network-lists>
+</configuration>

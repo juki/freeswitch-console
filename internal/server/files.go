@@ -9,6 +9,7 @@ import (
 
 	"github.com/juki/freeswitch-console/internal/audit"
 	"github.com/juki/freeswitch-console/internal/conffs"
+	"github.com/juki/freeswitch-console/internal/demo"
 	"github.com/juki/freeswitch-console/internal/store"
 )
 
@@ -44,6 +45,9 @@ func (s *Server) fileStore(w http.ResponseWriter, r *http.Request) (conffs.FileS
 	if !ok {
 		writeError(w, http.StatusNotFound, "instance not found")
 		return nil, in
+	}
+	if s.cfg.Demo {
+		return demo.Files{}, in
 	}
 	switch in.ConfigMode {
 	case store.ConfigLocal:

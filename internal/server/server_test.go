@@ -1376,7 +1376,7 @@ func TestHistory(t *testing.T) {
 }
 
 func TestHistoryRing(t *testing.T) {
-	inst := newInstance(newFake("a", "b"), 0, 0, 0)
+	inst := newInstance(newFake("a", "b"), 0, 0, 0, nil)
 	defer inst.close()
 	for i := 0; i < 3; i++ {
 		inst.addSample(sample{T: int64(i)})

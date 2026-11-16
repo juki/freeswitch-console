@@ -1,0 +1,13 @@
+<include>
+  <!-- Fallback carrier: currently unreachable -->
+  <gateway name="carrier-backup">
+    <param name="proxy" value="sip.carrier-backup.example"/>
+    <param name="realm" value="sip.carrier-backup.example"/>
+    <param name="username" value="pbx-demo-03"/>
+    <param name="password" value="$${carrier_backup_password}"/>
+    <param name="register" value="true"/>
+    <param name="expire-seconds" value="3600"/>
+    <param name="retry-seconds" value="60"/>
+    <param name="ping" value="30"/>
+  </gateway>
+</include>

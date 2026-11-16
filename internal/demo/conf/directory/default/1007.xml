@@ -1,0 +1,14 @@
+<include>
+  <user id="1007">
+    <params>
+      <param name="password" value="$${default_password}"/>
+      <param name="vm-password" value="1007"/>
+    </params>
+    <variables>
+      <variable name="effective_caller_id_name" value="Accounts"/>
+      <variable name="effective_caller_id_number" value="1007"/>
+      <variable name="callgroup" value="office"/>
+      <variable name="toll_allow" value="domestic,local"/>
+    </variables>
+  </user>
+</include>

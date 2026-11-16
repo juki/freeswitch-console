@@ -194,6 +194,9 @@ var (
 	// ErrAgent marks a failure to reach the agent or an answer it should
 	// not have given, such as a rejected token.
 	ErrAgent = errors.New("config agent")
+	// ErrForbidden marks a change the store never allows, such as one to
+	// the sample configuration of the demo.
+	ErrForbidden = errors.New("forbidden")
 )
 
 // kindError is an error message of a kind (ErrInvalid or ErrNotFound) that
@@ -291,9 +294,9 @@ type errorBody struct {
 	Line          *int    `json:"line,omitempty"`
 }
 
-// WriteError answers err with its status: 400 invalid, 404 not found,
-// 409 {"error","currentSha256"} conflict, 422 {"error","line"} not
-// well-formed, 502 agent trouble, 500 anything else.
+// WriteError answers err with its status: 400 invalid, 403 forbidden, 404
+// not found, 409 {"error","currentSha256"} conflict, 422 {"error","line"}
+// not well-formed, 502 agent trouble, 500 anything else.
 func WriteError(w http.ResponseWriter, err error) {
 	body := errorBody{Error: err.Error()}
 	code := http.StatusInternalServerError
@@ -306,6 +309,8 @@ func WriteError(w http.ResponseWriter, err error) {
 		code, body.Line = http.StatusUnprocessableEntity, &se.Line
 	case errors.Is(err, ErrInvalid):
 		code = http.StatusBadRequest
+	case errors.Is(err, ErrForbidden):
+		code = http.StatusForbidden
 	case errors.Is(err, ErrNotFound):
 		code = http.StatusNotFound
 	case errors.Is(err, ErrAgent):

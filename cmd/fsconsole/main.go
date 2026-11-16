@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/juki/freeswitch-console/internal/audit"
+	"github.com/juki/freeswitch-console/internal/demo"
 	"github.com/juki/freeswitch-console/internal/esl"
 	"github.com/juki/freeswitch-console/internal/server"
 	"github.com/juki/freeswitch-console/internal/store"
@@ -37,6 +38,7 @@ func main() {
 	backlogLevel := flag.Int("log-backlog-level", envInt("FSCONSOLE_LOG_BACKLOG_LEVEL", 6), "highest log level kept in the backlog, 0 (console) to 7 (debug)")
 	recentCalls := flag.Int("recent-calls", envInt("FSCONSOLE_RECENT_CALLS", 500), "hang-ups kept per instance for the recent calls list; 0 disables")
 	auditPath := flag.String("audit", "", "audit log file (default fsconsole-audit.log beside the data file; empty disables)")
+	demoMode := flag.Bool("demo", os.Getenv("FSCONSOLE_DEMO") == "1", "run with simulated switches for a demo: no sign-in, nothing saved, no real switch reachable")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
 
@@ -63,47 +65,54 @@ func main() {
 		assets = os.DirFS(*static)
 	}
 
-	var opts []store.Option
-	if key := os.Getenv("FSCONSOLE_SECRET_KEY"); key != "" {
-		opts = append(opts, store.WithSecretKey(key))
-	} else {
-		log.Printf("warning: FSCONSOLE_SECRET_KEY is not set; ESL passwords are stored in clear in %s", *data)
-	}
-	st, err := store.Open(*data, opts...)
-	if err != nil {
-		log.Fatalf("open %s: %v", *data, err)
-	}
-
-	adminPassword := os.Getenv("FSCONSOLE_ADMIN_PASSWORD")
-	password, err := server.Bootstrap(st, adminPassword != "")
-	if err != nil {
-		log.Fatalf("create the admin account: %v", err)
-	}
-	if password != "" {
-		log.Printf("created the account admin with password %s (shown only now; change it after signing in)", password)
-	}
-
-	var auditLog *audit.Log
-	if *auditPath != "" {
-		if auditLog, err = audit.Open(*auditPath); err != nil {
-			log.Fatalf("audit log: %v", err)
-		}
-		defer auditLog.Close()
-	}
-
-	app, err := server.New(server.Config{
-		AdminPassword:   adminPassword,
-		ViewerPassword:  os.Getenv("FSCONSOLE_VIEWER_PASSWORD"),
-		Store:           st,
-		Dial:            dialer(*recentCalls),
+	cfg := server.Config{
 		Static:          assets,
 		Version:         version,
 		LogBacklog:      *backlog,
 		LogBacklogLevel: *backlogLevel,
 		RecentCalls:     *recentCalls,
-		Audit:           auditLog,
-		BackupDir:       filepath.Join(filepath.Dir(*data), "backups"),
-	})
+	}
+	if *demoMode {
+		log.Print("demo mode: simulated switches, no sign-in, nothing is saved; -data, -audit, FSCONSOLE_SECRET_KEY, FSCONSOLE_ADMIN_PASSWORD and FSCONSOLE_VIEWER_PASSWORD are ignored")
+		cfg.Demo, cfg.Store = true, store.NewMemory()
+		if err := demo.Seed(cfg.Store); err != nil {
+			log.Fatal(err)
+		}
+		cfg.Dial = func(addr, password string) server.Switch { return demo.Dial(addr, password) }
+	} else {
+		var opts []store.Option
+		if key := os.Getenv("FSCONSOLE_SECRET_KEY"); key != "" {
+			opts = append(opts, store.WithSecretKey(key))
+		} else {
+			log.Printf("warning: FSCONSOLE_SECRET_KEY is not set; ESL passwords are stored in clear in %s", *data)
+		}
+		st, err := store.Open(*data, opts...)
+		if err != nil {
+			log.Fatalf("open %s: %v", *data, err)
+		}
+
+		adminPassword := os.Getenv("FSCONSOLE_ADMIN_PASSWORD")
+		password, err := server.Bootstrap(st, adminPassword != "")
+		if err != nil {
+			log.Fatalf("create the admin account: %v", err)
+		}
+		if password != "" {
+			log.Printf("created the account admin with password %s (shown only now; change it after signing in)", password)
+		}
+
+		var auditLog *audit.Log
+		if *auditPath != "" {
+			if auditLog, err = audit.Open(*auditPath); err != nil {
+				log.Fatalf("audit log: %v", err)
+			}
+			defer auditLog.Close()
+		}
+		cfg.AdminPassword, cfg.ViewerPassword = adminPassword, os.Getenv("FSCONSOLE_VIEWER_PASSWORD")
+		cfg.Store, cfg.Dial, cfg.Audit = st, dialer(*recentCalls), auditLog
+		cfg.BackupDir = filepath.Join(filepath.Dir(*data), "backups")
+	}
+
+	app, err := server.New(cfg)
 	if err != nil {
 		log.Fatal(err)
 	}

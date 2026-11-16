@@ -1,0 +1,11 @@
+<include>
+  <!-- Second carrier: trusts our address, so no registration -->
+  <gateway name="carrier-b">
+    <param name="proxy" value="sip.carrier-b.example"/>
+    <param name="realm" value="sip.carrier-b.example"/>
+    <param name="username" value="pbx-demo-02"/>
+    <param name="password" value="$${carrier_b_password}"/>
+    <param name="register" value="false"/>
+    <param name="ping" value="30"/>
+  </gateway>
+</include>

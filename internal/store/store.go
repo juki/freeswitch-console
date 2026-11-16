@@ -101,10 +101,17 @@ func CheckRole(role string) error {
 // Store is safe for concurrent use.
 type Store struct {
 	path      string
+	memory    bool        // nothing is written to path
 	aead      cipher.AEAD // nil: ESL passwords are written in clear
 	mu        sync.Mutex
 	instances []Instance
 	users     []User
+}
+
+// NewMemory returns an empty store that writes no file: what it holds is
+// gone when the process ends. Demo mode uses it.
+func NewMemory() *Store {
+	return &Store{memory: true}
 }
 
 // file is the on-disk shape. Users is omitted while there are none, so a file
@@ -408,6 +415,9 @@ func (s *Store) userIndex(match func(User) bool) int {
 // save writes a temp file in the target directory and renames it over the
 // store, so a crash never leaves a truncated file. CreateTemp uses mode 0600.
 func (s *Store) save(instances []Instance, users []User) error {
+	if s.memory {
+		return nil
+	}
 	out := file{Instances: append([]Instance{}, instances...), Users: users}
 	if s.aead != nil {
 		for i := range out.Instances {

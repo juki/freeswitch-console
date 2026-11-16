@@ -51,6 +51,11 @@ type Config struct {
 	Audit *audit.Log // nil disables the audit log
 
 	BackupDir string // config file backups of local-mode instances, one directory per instance
+
+	// Demo runs against simulated switches (internal/demo): no sign-in,
+	// the sample configuration as every instance's files, and changes to
+	// accounts, instances and files refused. See demo.go.
+	Demo bool
 }
 
 const (
@@ -81,6 +86,8 @@ type Server struct {
 
 	sessMu   sync.Mutex
 	sessions map[string]session
+	// demoOrder holds the tokens of demo sessions, oldest first (demo.go).
+	demoOrder []string
 
 	managed   []account  // from the environment; they hide file users of the same name
 	dummyHash string     // verified for unknown usernames so they cost the same
@@ -145,8 +152,9 @@ type instance struct {
 
 // newInstance starts the collector of sw. With a backlog the ESL log level is
 // raised to backlogLevel at once, so lines are kept before any stream opens.
-// recentCalls is the number of hang-up records kept.
-func newInstance(sw Switch, backlog, backlogLevel, recentCalls int) *instance {
+// recentCalls is the number of hang-up records kept; history is the load
+// history it starts with, oldest first.
+func newInstance(sw Switch, backlog, backlogLevel, recentCalls int, history []sample) *instance {
 	i := &instance{
 		sw:          sw,
 		done:        make(chan struct{}),
@@ -159,6 +167,9 @@ func newInstance(sw Switch, backlog, backlogLevel, recentCalls int) *instance {
 		callsSize:   recentCalls,
 		recent:      map[string]recentHangup{},
 		lateLog:     hangupLateLog,
+	}
+	for _, h := range history {
+		i.addSample(h)
 	}
 	events, logs, cancel := sw.Subscribe(1024)
 	if backlog > 0 {
@@ -220,6 +231,9 @@ func New(cfg Config) (*Server, error) {
 		}
 		s.managed = append(s.managed, account{User: store.User{ID: m.id, Username: m.name, Role: m.role, PasswordHash: hash}, Managed: true})
 	}
+	if cfg.Demo {
+		s.managed = []account{demoAccount}
+	}
 	dummy, err := randomPassword()
 	if err == nil {
 		s.dummyHash, err = hashPassword(dummy)
@@ -261,10 +275,16 @@ func eslContext(r *http.Request, d time.Duration) (context.Context, context.Canc
 
 // newInstance dials in and starts its collector. The handlers reach the
 // switch only through the instance, so every API call they make passes the
-// limiter.
+// limiter. In demo mode a simulated switch brings its load history along.
 func (s *Server) newInstance(in store.Instance) *instance {
 	sw := s.cfg.Dial(net.JoinHostPort(in.Host, strconv.Itoa(in.Port)), in.Password)
-	return newInstance(&limitedSwitch{Switch: sw, slots: make(chan struct{}, apiSlots), bgSlots: make(chan struct{}, backgroundSlots), wait: apiWait}, s.cfg.LogBacklog, s.cfg.LogBacklogLevel, s.cfg.RecentCalls)
+	var past []sample
+	if p, ok := sw.(pastLoad); ok && s.cfg.Demo {
+		p.History(func(at time.Time, sessions, rate int, idle float64) {
+			past = append(past, sample{T: at.Unix(), Sessions: sessions, Rate: rate, Idle: idle})
+		})
+	}
+	return newInstance(&limitedSwitch{Switch: sw, slots: make(chan struct{}, apiSlots), bgSlots: make(chan struct{}, backgroundSlots), wait: apiWait}, s.cfg.LogBacklog, s.cfg.LogBacklogLevel, s.cfg.RecentCalls, past)
 }
 
 // The API calls of one instance share one ESL connection, and a call that
@@ -349,6 +369,10 @@ func (s *Server) routes() {
 	s.handle(m, "GET /api/me", capRead, "", s.handleMe)
 	s.handle(m, "POST /api/me/password", capRead, "", s.handleChangePassword)
 	s.handle(m, "GET /api/version", capRead, "", func(w http.ResponseWriter, _ *http.Request, _ user) {
+		if s.cfg.Demo {
+			writeJSON(w, http.StatusOK, map[string]any{"version": s.cfg.Version, "demo": true})
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]string{"version": s.cfg.Version})
 	})
 

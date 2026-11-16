@@ -201,6 +201,9 @@ func clientKey(r *http.Request, username string) loginKey {
 // the audit event recorded when a signed-in account lacks c ("" for none).
 func (s *Server) handle(m *http.ServeMux, pattern string, c capability, action string, h func(http.ResponseWriter, *http.Request, user)) {
 	s.routeCaps[pattern] = c
+	if s.cfg.Demo && demoDisabled[pattern] {
+		h = disabledInDemo
+	}
 	m.HandleFunc(pattern, s.auth(c, action, h))
 }
 
@@ -209,10 +212,16 @@ func (s *Server) handlePublic(m *http.ServeMux, pattern string, h http.HandlerFu
 	m.HandleFunc(pattern, h)
 }
 
-// auth requires a session whose role has c.
+// auth requires a session whose role has c. In demo mode a request without
+// one gets a session of the demo account.
 func (s *Server) auth(c capability, action string, h func(http.ResponseWriter, *http.Request, user)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		u, ok := s.sessionUser(r)
+		if !ok && s.cfg.Demo {
+			if u, ok = s.demoSession(w, r); !ok {
+				return
+			}
+		}
 		if !ok {
 			writeError(w, http.StatusUnauthorized, "not logged in")
 			return
