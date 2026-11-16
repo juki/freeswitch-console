@@ -190,6 +190,10 @@ heartbeat (every 20 seconds by default).
 
 - An administrator can run any FreeSWITCH API command and edit its
   configuration. Treat the role like shell access to the switch.
+- An administrator also chooses the conf directory of an instance: any
+  directory the fsconsole process can read and write. Run fsconsole as an
+  unprivileged user that owns nothing but the FreeSWITCH configuration (the
+  Docker image runs as `nobody`), not as root.
 - Without `-tls-cert` and `-tls-key` fsconsole serves plain HTTP. Keep it on a
   trusted network or behind a TLS-terminating reverse proxy that sets
   `X-Forwarded-Proto: https`, so the session cookie is marked `Secure`.

@@ -144,6 +144,7 @@ fsconsole 连接 `mod_event_socket`（默认端口 8021）。原版 FreeSWITCH �
 ## 安全说明
 
 - 管理员可以执行任意 FreeSWITCH API 命令并编辑其配置。请把这个角色等同于交换机的 shell 权限来对待。
+- 实例的 conf 目录也由管理员指定：可以是 fsconsole 进程能读写的任何目录。请用一个除 FreeSWITCH 配置外不拥有其他文件的非特权用户运行 fsconsole（Docker 镜像以 `nobody` 运行），不要用 root。
 - 未设置 `-tls-cert` 和 `-tls-key` 时，fsconsole 提供的是明文 HTTP。请把它放在可信网络内，或放在会设置 `X-Forwarded-Proto: https` 的 TLS 反向代理之后，这样会话 Cookie 才会带上 `Secure` 标记。
 - 未设置 `FSCONSOLE_SECRET_KEY` 时，Event Socket 密码和代理令牌在数据文件里是明文；设置后用 AES-256-GCM 加密。如果文件里是加密值而密钥缺失或不对，fsconsole 会拒绝启动。无论哪种情况都要保护好数据文件：里面还有密码哈希。
 - 同一账号从同一地址在五分钟内登录失败五次，该组合会被锁定一分钟。在反向代理之后，所有客户端共用代理的地址，此时锁定相当于针对整个账号。
