@@ -33,7 +33,7 @@ English | [简体中文](README.zh-CN.md)
 | Config files | file tree and XML editor, search across files, a diff to review before saving, history and restore, apply actions that show FreeSWITCH's answer | files on the host, directly or through `fsconsole-agent` |
 | Runtime settings | log level, session limits, pause and resume, global variables, each confirmed and marked as lasting until restart | `fsctl`, `global_setvar` |
 | Logs | live tail with the recent backlog, level, severity and text filters | `log <level>` |
-| Console | any API command, with Tab completion and syntax hints like `fs_cli` | `api <command>`, `console_complete_xml` |
+| Console | any API command, with Tab completion and syntax hints like `fs_cli`; commands run in the background, so a slow one does not hold up the rest of the console | `bgapi <command>`, `console_complete_xml` |
 | Accounts and audit | administrator, operator and read-only roles; a searchable record of every sign-in and change | |
 
 The read-only views lead to the source: from a configuration, a dialplan
@@ -264,7 +264,18 @@ fsconsole that path.
 ```sh
 go vet ./... && go test -race ./...
 ./fsconsole -static web/static     # serve the frontend from disk while working on it
+
+# the same stack against a real FreeSWITCH you can place test calls on
+FSCONSOLE_TEST_ESL=127.0.0.1:18021 go test -race -run Real ./cmd/fsconsole/
 ```
+
+The unit and end-to-end tests use a fake FreeSWITCH. The `Real` tests are
+skipped unless `FSCONSOLE_TEST_ESL` names an Event Socket (password in
+`FSCONSOLE_TEST_ESL_PASSWORD`, default `ClueCon`). They cover the read views,
+a call from `originate` to its hang-up record, the log stream, a cut and a
+stalled connection, 30 calls at once and a slow command. They place and hang
+up calls on the loopback endpoint, so point them at a test switch; the Docker
+recipe above is enough.
 
 No third-party Go modules and no frontend build step: `web/static` is plain
 ES modules, served as is. Interface text lives in

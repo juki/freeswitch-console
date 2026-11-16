@@ -26,7 +26,7 @@
 | 配置文件 | 文件树和 XML 编辑器、跨文件搜索、保存前差异确认、历史与回滚、生效操作并显示 FreeSWITCH 的应答 | 主机上的文件，直接访问或经 `fsconsole-agent` |
 | 运行参数 | 日志级别、会话上限、暂停与恢复、全局变量；每项都需确认，并注明重启后失效 | `fsctl`、`global_setvar` |
 | 日志 | 实时日志并回放最近的内容，可按级别、严重程度、文本筛选 | `log <level>` |
-| 控制台 | 任意 API 命令，像 `fs_cli` 一样支持 Tab 补全和语法提示 | `api <command>`、`console_complete_xml` |
+| 控制台 | 任意 API 命令，像 `fs_cli` 一样支持 Tab 补全和语法提示；命令在后台执行，慢命令不会拖住控制台的其他操作 | `bgapi <command>`、`console_complete_xml` |
 | 账号与审计 | 管理员、操作员、只读三种角色；每次登录和变更都可检索 | |
 
 只读页面可以直达源文件：在配置项、拨号计划的分机、目录里的用户或全局变量上点“编辑源文件”，会打开定义它的那个文件并定位到对应行。
@@ -194,7 +194,12 @@ docker exec freeswitch-test fs_cli -x 'bgapi originate loopback/9196/default &pa
 ```sh
 go vet ./... && go test -race ./...
 ./fsconsole -static web/static     # 开发前端时直接从磁盘提供文件
+
+# 用同一套代码对接一台可以打测试电话的真实 FreeSWITCH
+FSCONSOLE_TEST_ESL=127.0.0.1:18021 go test -race -run Real ./cmd/fsconsole/
 ```
+
+单元测试和端到端测试用的是模拟的 FreeSWITCH。`Real` 开头的测试只有在 `FSCONSOLE_TEST_ESL` 指向一个 Event Socket 时才运行（密码用 `FSCONSOLE_TEST_ESL_PASSWORD`，默认 `ClueCon`），覆盖只读视图、一通电话从 `originate` 到挂断记录的全过程、日志流、连接被切断和被卡住、30 通并发通话以及慢命令。这些测试会在 loopback 端点上发起并挂断通话，请指向测试用的交换机；上文的 Docker 配方就够用。
 
 没有第三方 Go 模块，前端没有构建步骤：`web/static` 是原生 ES 模块，原样提供。界面文案在 `web/static/js/locales/`，有测试保证各语言词条一致。
 
