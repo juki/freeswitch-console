@@ -59,6 +59,16 @@ type Server struct {
 	mux          *http.ServeMux
 	loginDelay   time.Duration
 	pingInterval time.Duration
+	// streamCheck is how often an open stream checks its session again.
+	streamCheck time.Duration
+
+	// Open event streams, at most maxSessionStreams per session token and
+	// maxStreams in all.
+	streamsMu         sync.Mutex
+	sessionStreams    map[string]int
+	openStreams       int
+	maxSessionStreams int
+	maxStreams        int
 
 	mu    sync.Mutex // guards insts and serializes instance changes
 	insts map[string]*instance
@@ -72,6 +82,13 @@ type Server struct {
 
 	verifySlots chan struct{} // one token per password hash or check in progress
 	verifyWait  time.Duration // how long a request waits for a slot before 503
+
+	// verifyIP counts the sign-in password checks in progress per client
+	// address, at most verifyPerIP each, so one address cannot hold every
+	// slot. An address is removed at zero.
+	verifyIPMu  sync.Mutex
+	verifyIP    map[string]int
+	verifyPerIP int
 
 	routeCaps map[string]capability // pattern -> capability, for the route table test
 
@@ -149,8 +166,13 @@ func New(cfg Config) (*Server, error) {
 		cfg:          cfg,
 		loginDelay:   500 * time.Millisecond,
 		pingInterval: 20 * time.Second,
+		streamCheck:  5 * time.Second,
 		insts:        map[string]*instance{},
 		sessions:     map[string]session{},
+
+		sessionStreams:    map[string]int{},
+		maxSessionStreams: 8,
+		maxStreams:        512,
 
 		loginFails:    map[loginKey]*loginRecord{},
 		loginMaxFails: 5,
@@ -160,6 +182,8 @@ func New(cfg Config) (*Server, error) {
 		routeCaps:     map[string]capability{},
 		verifySlots:   make(chan struct{}, 4),
 		verifyWait:    2 * time.Second,
+		verifyIP:      map[string]int{},
+		verifyPerIP:   2,
 	}
 	for _, m := range []struct{ id, name, role, password string }{
 		{managedAdminID, "admin", store.RoleAdmin, cfg.AdminPassword},
@@ -213,10 +237,45 @@ func eslContext(r *http.Request, d time.Duration) (context.Context, context.Canc
 	return context.WithTimeout(context.WithoutCancel(r.Context()), d)
 }
 
-// newInstance dials in and starts its collector.
+// newInstance dials in and starts its collector. The handlers reach the
+// switch only through the instance, so every API call they make passes the
+// limiter.
 func (s *Server) newInstance(in store.Instance) *instance {
 	sw := s.cfg.Dial(net.JoinHostPort(in.Host, strconv.Itoa(in.Port)), in.Password)
-	return newInstance(sw, s.cfg.LogBacklog, s.cfg.LogBacklogLevel)
+	return newInstance(&limitedSwitch{Switch: sw, slots: make(chan struct{}, apiSlots), wait: apiWait}, s.cfg.LogBacklog, s.cfg.LogBacklogLevel)
+}
+
+// The API calls of one instance share one ESL connection, and a call that
+// passes its deadline drops that connection for everyone. So at most
+// apiSlots calls from handlers are in flight per instance; a call waits at
+// most apiWait for a slot.
+const (
+	apiSlots = 16
+	apiWait  = 5 * time.Second
+)
+
+var errInstanceBusy = errors.New("too many requests to this instance at once; try again in a moment")
+
+// limitedSwitch bounds the API calls in flight. The ESL client's own
+// commands (probe, log level) and the collector do not go through API.
+type limitedSwitch struct {
+	Switch
+	slots chan struct{}
+	wait  time.Duration
+}
+
+func (l *limitedSwitch) API(ctx context.Context, command string) (string, error) {
+	t := time.NewTimer(l.wait)
+	defer t.Stop()
+	select {
+	case l.slots <- struct{}{}:
+	case <-t.C:
+		return "", errInstanceBusy
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+	defer func() { <-l.slots }()
+	return l.Switch.API(ctx, command)
 }
 
 func (s *Server) routes() {

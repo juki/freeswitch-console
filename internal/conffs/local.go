@@ -180,6 +180,13 @@ func readFile(r *os.Root, c string, follow bool) ([]byte, fs.FileInfo, error) {
 			return nil, nil, invalid("%s is a symbolic link; edit the file it points to", c)
 		}
 	}
+	// Opening a FIFO blocks until a writer appears, so the type is checked
+	// before the open as well as after it.
+	if st, err := r.Stat(c); err != nil {
+		return nil, nil, rootError(err, "file")
+	} else if !st.Mode().IsRegular() {
+		return nil, nil, invalid("%s is not a regular file", c)
+	}
 	f, err := r.Open(c)
 	if err != nil {
 		return nil, nil, rootError(err, "file")

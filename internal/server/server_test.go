@@ -40,6 +40,9 @@ type fakeSwitch struct {
 	subs      map[int]chan esl.Message
 	nextSub   int
 	closed    bool
+	// hold, when set, keeps API calls waiting until it is closed; a call
+	// whose context ends first drops the connection, as esl.Client does.
+	hold chan struct{}
 }
 
 const statusJSON = `{"command":"status","data":"","status":"success","response":{"systemStatus":"ready","uptime":{"days":1},"version":"1.10.12","sessions":{"count":{"total":5,"active":1,"peak":2,"peak5Min":1,"limit":1000},"rate":{"current":0,"max":30,"peak":1,"peak5Min":0}},"idleCPU":{"used":0,"allowed":99.1},"stackSizeKB":{"current":240,"max":8192}}}`
@@ -95,10 +98,21 @@ func (f *fakeSwitch) State() esl.State {
 	return f.state
 }
 
-func (f *fakeSwitch) API(_ context.Context, cmd string) (string, error) {
+func (f *fakeSwitch) API(ctx context.Context, cmd string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.sent = append(f.sent, cmd)
+	if hold := f.hold; hold != nil && f.state.Connected {
+		f.mu.Unlock()
+		select {
+		case <-hold:
+			f.mu.Lock()
+		case <-ctx.Done():
+			f.mu.Lock()
+			f.state.Connected = false
+			return "", ctx.Err()
+		}
+	}
 	switch {
 	case !f.state.Connected:
 		return "", esl.ErrNotConnected
@@ -540,22 +554,32 @@ func TestInstanceCRUD(t *testing.T) {
 	}
 
 	// Update with an empty password keeps the stored one and reconnects.
-	r = h.do("PUT", "/api/instances/"+created.ID, admin, `{"name":"v6b","host":"fs.example.com","port":9000,"password":""}`)
+	r = h.do("PUT", "/api/instances/"+created.ID, admin, `{"name":"v6b","host":"::1","port":8022,"password":""}`)
 	expect(t, r, 200, "")
 	var updated instanceView
 	r.json(t, &updated)
-	if updated.ID != created.ID || updated.Name != "v6b" || updated.Host != "fs.example.com" || updated.Port != 9000 {
+	if updated.ID != created.ID || updated.Name != "v6b" || updated.Host != "::1" || updated.Port != 8022 {
 		t.Fatalf("updated %+v", updated)
 	}
 	if _, _, _, closed := h.fake(1).snapshot(); !closed {
 		t.Fatal("old switch not closed on update")
 	}
-	if f := h.fake(2); f.addr != "fs.example.com:9000" || f.password != eslPW {
+	if f := h.fake(2); f.addr != "[::1]:8022" || f.password != eslPW {
 		t.Fatalf("redial %s %s", f.addr, f.password)
 	}
+	// The stored password is never sent to a new address.
+	for _, body := range []string{
+		`{"name":"v6b","host":"fs.example.com","port":8022,"password":""}`,
+		`{"name":"v6b","host":"::1","port":9000}`,
+	} {
+		expect(t, h.do("PUT", "/api/instances/"+created.ID, admin, body), 400, `{"error":"enter the Event Socket password again when the address changes"}`)
+	}
+	if in, _ := h.st.Get(created.ID); in.Host != "::1" || in.Port != 8022 || in.Password != eslPW {
+		t.Fatalf("refused update stored %+v", in)
+	}
 	expect(t, h.do("PUT", "/api/instances/"+created.ID, admin, `{"name":"v6b","host":"fs.example.com","port":9000,"password":"new-pw"}`), 200, "")
-	if f := h.fake(3); f.password != "new-pw" {
-		t.Fatalf("redial password %q", f.password)
+	if f := h.fake(3); f.addr != "fs.example.com:9000" || f.password != "new-pw" {
+		t.Fatalf("redial %s %s", f.addr, f.password)
 	}
 	expect(t, h.do("PUT", "/api/instances/0000000000000000", admin, `{"name":"a","host":"h","port":1}`), 404, "")
 	expect(t, h.do("PUT", "/api/instances/"+created.ID, admin, `{"name":"a","host":"","port":1}`), 400, "")
@@ -1155,6 +1179,7 @@ func TestLoginRateLimitWindow(t *testing.T) {
 
 func TestLoginRateLimitConcurrent(t *testing.T) {
 	h := newHarness(t)
+	h.srv.verifyPerIP = 20 // all from one address
 	codes := make(chan int, 20)
 	var wg sync.WaitGroup
 	for i := 0; i < 20; i++ {
@@ -1339,7 +1364,7 @@ func TestHistoryCollectorLifetime(t *testing.T) {
 	old := h.instance(h.id)
 	h.fake(0).publish(heartbeat)
 	waitFor(t, "sample", func() bool { return len(old.samples()) == 1 })
-	expect(t, h.do("PUT", p, admin, `{"name":"fs01","host":"10.0.0.6","port":8021,"password":""}`), 200, "")
+	expect(t, h.do("PUT", p, admin, `{"name":"fs01","host":"10.0.0.6","port":8021,"password":"`+eslPW+`"}`), 200, "")
 	if !stopped(old) {
 		t.Fatal("collector running after update")
 	}

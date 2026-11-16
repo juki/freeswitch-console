@@ -143,6 +143,36 @@ func (i *instance) applyLogLevel() {
 	}
 }
 
+// acquireStream counts a stream of the session token; it answers 429 and
+// returns false when the session or the server has too many open.
+func (s *Server) acquireStream(w http.ResponseWriter, token string) bool {
+	s.streamsMu.Lock()
+	defer s.streamsMu.Unlock()
+	msg := ""
+	switch {
+	case s.sessionStreams[token] >= s.maxSessionStreams:
+		msg = "too many event streams open in this session; close another console tab"
+	case s.openStreams >= s.maxStreams:
+		msg = "too many event streams open on the server; try again later"
+	}
+	if msg != "" {
+		writeError(w, http.StatusTooManyRequests, msg)
+		return false
+	}
+	s.sessionStreams[token]++
+	s.openStreams++
+	return true
+}
+
+func (s *Server) releaseStream(token string) {
+	s.streamsMu.Lock()
+	defer s.streamsMu.Unlock()
+	if s.sessionStreams[token]--; s.sessionStreams[token] <= 0 {
+		delete(s.sessionStreams, token)
+	}
+	s.openStreams--
+}
+
 func (s *Server) handleStream(w http.ResponseWriter, r *http.Request, u user) {
 	level := -1 // no log events
 	q := r.URL.Query()
@@ -167,12 +197,19 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request, u user) {
 	if inst == nil {
 		return
 	}
+	token := sessionToken(r)
+	if !s.acquireStream(w, token) {
+		return
+	}
+	defer s.releaseStream(token)
 	lines, st := inst.openStream(level, replay)
 	defer inst.closeStream(st)
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	rc := http.NewResponseController(w)
-	_ = rc.SetWriteDeadline(time.Time{}) // a server WriteTimeout would cut the stream
+	// Neither a server WriteTimeout nor a ReadTimeout applies to the stream.
+	_ = rc.SetWriteDeadline(time.Time{})
+	_ = rc.SetReadDeadline(time.Time{})
 	w.WriteHeader(http.StatusOK)
 	write := func(event string, v any) error {
 		data, err := json.Marshal(v) // single line: newlines in strings are escaped
@@ -209,11 +246,20 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request, u user) {
 
 	ping := time.NewTicker(s.pingInterval)
 	defer ping.Stop()
+	// Signing out, or a change to the account, ends the session; the stream
+	// ends with it, and a stream with log lines when the role loses capLogs.
+	check := time.NewTicker(s.streamCheck)
+	defer check.Stop()
 	for {
 		var err error
 		select {
 		case <-r.Context().Done():
 			return
+		case <-check.C:
+			cur, ok := s.sessionUser(r)
+			if !ok || (level >= 0 && !allowed(cur.Role, capLogs)) {
+				return
+			}
 		case <-inst.done:
 			return
 		case <-inst.collected: // the switch was closed

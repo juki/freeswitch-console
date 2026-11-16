@@ -209,8 +209,8 @@ type stack struct {
 }
 
 // startStack wires the real ESL client and the real HTTP server to a fake
-// FreeSWITCH, as main does; edit adjusts the configuration.
-func startStack(t *testing.T) stack {
+// FreeSWITCH, as main does; edit adjusts the HTTP server before it starts.
+func startStack(t *testing.T, edit ...func(*http.Server)) stack {
 	t.Helper()
 	host, port := fakeFreeSWITCH(t)
 	dir := t.TempDir()
@@ -239,7 +239,12 @@ func startStack(t *testing.T) stack {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ts := httptest.NewServer(app.Handler())
+	ts := httptest.NewUnstartedServer(nil)
+	ts.Config = newHTTPServer("", app.Handler(), nil)
+	for _, e := range edit {
+		e(ts.Config)
+	}
+	ts.Start()
 	t.Cleanup(func() {
 		app.Close()
 		ts.Close()
@@ -623,5 +628,64 @@ func TestEndToEndConfigFiles(t *testing.T) {
 		if code, body := o.do(rq.method, rq.path, rq.body); code != http.StatusForbidden {
 			t.Fatalf("operator %s %s: %d %s", rq.method, rq.path, code, body)
 		}
+	}
+}
+
+// TestReadTimeout runs the HTTP server as main builds it with a short
+// ReadTimeout: a request body that never arrives is cut off, while an open
+// event stream outlives the timeout.
+func TestReadTimeout(t *testing.T) {
+	if s := newHTTPServer("x", nil, nil); s.ReadTimeout != 30*time.Second || s.IdleTimeout != 120*time.Second || s.ReadHeaderTimeout != 10*time.Second || s.WriteTimeout != 0 {
+		t.Fatalf("timeouts %v %v %v %v", s.ReadTimeout, s.IdleTimeout, s.ReadHeaderTimeout, s.WriteTimeout)
+	}
+	const timeout = 300 * time.Millisecond
+	sk := startStack(t, func(s *http.Server) { s.ReadTimeout = timeout })
+	c := sk.client(t, "admin", "admin-pw")
+	code, body := c.do("POST", "/api/instances", map[string]any{"name": "test", "host": sk.host, "port": sk.port, "password": eslPassword})
+	var inst struct{ ID string }
+	if err := json.Unmarshal(body, &inst); code != http.StatusCreated || err != nil {
+		t.Fatalf("create instance: %d %s", code, body)
+	}
+
+	resp, err := c.http.Get(sk.ts.URL + "/api/instances/" + inst.ID + "/stream")
+	if err != nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("stream: %v %v", resp, err)
+	}
+	opened := time.Now()
+	lines := make(chan string)
+	go func() {
+		defer close(lines)
+		sc := bufio.NewScanner(resp.Body)
+		for sc.Scan() {
+			lines <- sc.Text()
+		}
+	}()
+	// The fake sends a heartbeat every 50ms once connected.
+	for late := false; !late; {
+		select {
+		case line, ok := <-lines:
+			if !ok {
+				t.Fatalf("stream ended after %v", time.Since(opened))
+			}
+			late = line == "event: heartbeat" && time.Since(opened) > 5*timeout
+		case <-time.After(2 * time.Second):
+			t.Fatal("no heartbeat")
+		}
+	}
+	resp.Body.Close()
+	for range lines {
+	}
+
+	conn, err := net.Dial("tcp", sk.ts.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	io.WriteString(conn, "POST /api/login HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{")
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	start := time.Now()
+	_, err = io.ReadAll(conn)
+	if ne, ok := err.(net.Error); ok && ne.Timeout() {
+		t.Fatalf("a request whose body never arrives was not cut off after %v", time.Since(start))
 	}
 }

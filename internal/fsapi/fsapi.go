@@ -103,7 +103,8 @@ func Hostname(ctx context.Context, c Commander) (string, error) {
 	return output(ctx, c, "hostname")
 }
 
-// Rows returns the rows of "show <kind> as json"; never nil.
+// Rows returns the rows of "show <kind> as json"; never nil. The string values
+// of channels and calls are masked as maskInline does.
 func Rows(ctx context.Context, c Commander, kind string) ([]map[string]any, error) {
 	if !rowKinds[kind] {
 		return nil, fmt.Errorf("%w: unknown kind %q", ErrInvalidArgument, kind)
@@ -121,6 +122,17 @@ func Rows(ctx context.Context, c Commander, kind string) ([]map[string]any, erro
 	}
 	if reply.Rows == nil {
 		reply.Rows = []map[string]any{}
+	}
+	if kind == "channels" || kind == "calls" {
+		// application_data and the like carry dial strings such as
+		// {sip_auth_password=x}sofia/...
+		for _, row := range reply.Rows {
+			for k, v := range row {
+				if s, ok := v.(string); ok {
+					row[k] = maskInline(s)
+				}
+			}
+		}
 	}
 	return reply.Rows, nil
 }

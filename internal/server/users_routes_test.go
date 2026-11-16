@@ -211,6 +211,37 @@ func TestAdminGuardsConcurrent(t *testing.T) {
 	}
 }
 
+// TestDeleteUserGuardUnderLock changes the account after the handler first
+// read it but before it holds usersMu: the guard sees it as it is then.
+func TestDeleteUserGuardUnderLock(t *testing.T) {
+	h := newHarness(t, noEnvAccounts)
+	root := h.addUser("root", store.RoleAdmin)
+	target := h.addUser("target", store.RoleViewer)
+	tok := h.login("root", userPW)
+
+	h.srv.usersMu.Lock()
+	done := make(chan response, 1)
+	go func() { done <- h.do("DELETE", "/api/users/"+target, tok, "") }()
+	// Time for the handler to read target as a viewer and wait for the lock.
+	time.Sleep(200 * time.Millisecond)
+	// target becomes the last enabled admin.
+	for id, change := range map[string]func(*store.User){
+		target: func(u *store.User) { u.Role = store.RoleAdmin },
+		root:   func(u *store.User) { u.Disabled = true },
+	} {
+		u, _ := h.st.User(id)
+		change(&u)
+		if err := h.st.UpdateUser(u); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.srv.usersMu.Unlock()
+	expect(t, <-done, 409, `{"error":"the last enabled admin cannot be deleted, disabled or demoted"}`)
+	if _, ok := h.st.User(target); !ok || h.srv.enabledAdmins() != 1 {
+		t.Fatal("the last enabled admin was deleted")
+	}
+}
+
 func TestLogsNeedOperator(t *testing.T) {
 	h := newHarness(t, noEnvAccounts)
 	f := h.fake(0)

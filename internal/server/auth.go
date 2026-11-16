@@ -140,6 +140,26 @@ func (s *Server) acquireVerify(r *http.Request) bool {
 
 func (s *Server) releaseVerify() { <-s.verifySlots }
 
+// acquireIP counts a sign-in password check for the client address ip; it
+// fails when the address already has verifyPerIP in progress.
+func (s *Server) acquireIP(ip string) bool {
+	s.verifyIPMu.Lock()
+	defer s.verifyIPMu.Unlock()
+	if s.verifyIP[ip] >= s.verifyPerIP {
+		return false
+	}
+	s.verifyIP[ip]++
+	return true
+}
+
+func (s *Server) releaseIP(ip string) {
+	s.verifyIPMu.Lock()
+	defer s.verifyIPMu.Unlock()
+	if s.verifyIP[ip]--; s.verifyIP[ip] <= 0 {
+		delete(s.verifyIP, ip)
+	}
+}
+
 func writeBusy(w http.ResponseWriter) {
 	w.Header().Set("Retry-After", "1")
 	writeError(w, http.StatusServiceUnavailable, "too many password checks at once; try again in a moment")
@@ -345,19 +365,27 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.accountByName(req.Username); ok {
 		known = req.Username
 	}
+	ip := clientIP(r)
+	if !s.acquireIP(ip) {
+		writeBusy(w)
+		return
+	}
 	if !s.acquireVerify(r) {
+		s.releaseIP(ip)
 		writeBusy(w)
 		return
 	}
 	key := clientKey(r, req.Username)
 	if wait := s.loginAttempt(key, time.Now()); wait > 0 {
 		s.releaseVerify()
+		s.releaseIP(ip)
 		secs := writeBlocked(w, wait)
 		s.audit(r, audit.Entry{User: known, Action: "login.blocked", Target: known, Detail: fmt.Sprintf("retry in %ds", secs), Result: audit.Denied})
 		return
 	}
 	acc, ok, why := s.checkLogin(req.Username, req.Password)
 	s.releaseVerify()
+	s.releaseIP(ip)
 	if !ok {
 		s.audit(r, audit.Entry{User: known, Action: "login.failed", Target: known, Detail: why, Result: audit.Denied})
 		select {

@@ -106,13 +106,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// No WriteTimeout: the event stream is a long-lived response.
-	srv := &http.Server{
-		Addr:              *listen,
-		Handler:           app.Handler(),
-		ReadHeaderTimeout: 10 * time.Second,
-		TLSConfig:         tlsConfig,
-	}
+	srv := newHTTPServer(*listen, app.Handler(), tlsConfig)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -154,6 +148,19 @@ func loadTLS(certFile, keyFile string) (*tls.Config, error) {
 		return nil, fmt.Errorf("load TLS certificate: %w", err)
 	}
 	return &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{cert}}, nil
+}
+
+// newHTTPServer has no WriteTimeout: the event stream is a long-lived
+// response, and it lifts the ReadTimeout for itself as well.
+func newHTTPServer(addr string, h http.Handler, tlsConfig *tls.Config) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           h,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		TLSConfig:         tlsConfig,
+	}
 }
 
 func dial(addr, password string) server.Switch {

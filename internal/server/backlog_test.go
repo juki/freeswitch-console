@@ -162,7 +162,7 @@ func TestBacklogLevelFloor(t *testing.T) {
 	}
 
 	// Update and create apply the floor to the new switch at once.
-	expect(t, h.do("PUT", "/api/instances/"+h.id, admin, `{"name":"fs01","host":"10.0.0.6","port":8021,"password":""}`), 200, "")
+	expect(t, h.do("PUT", "/api/instances/"+h.id, admin, `{"name":"fs01","host":"10.0.0.6","port":8021,"password":"`+eslPW+`"}`), 200, "")
 	expectLevels(h.fake(1), 6)
 	expect(t, h.do("POST", "/api/instances", admin, `{"name":"b","host":"h","port":1,"password":"p"}`), 201, "")
 	expectLevels(h.fake(2), 6)

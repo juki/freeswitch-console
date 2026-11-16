@@ -129,6 +129,22 @@ func TestRows(t *testing.T) {
 	}
 }
 
+func TestRowsMaskChannelsAndCalls(t *testing.T) {
+	ctx := context.Background()
+	row := `{"uuid":"a1","application":"bridge","application_data":"{sip_auth_username=u,sip_auth_password=secret}sofia/gateway/gw/1000","b_application_data":"{sip_auth_password=secret}sofia/gateway/gw/2000","read_codec":"PCMA","secure":"","callstate":3}`
+	for _, kind := range []string{"channels", "calls"} {
+		rows, err := Rows(ctx, reply("show "+kind+" as json", `{"row_count":1,"rows":[`+row+`]}`), kind)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, _ := json.Marshal(rows)
+		want := `[{"application":"bridge","application_data":"{sip_auth_username=u,sip_auth_password=********}sofia/gateway/gw/1000","b_application_data":"{sip_auth_password=********}sofia/gateway/gw/2000","callstate":3,"read_codec":"PCMA","secure":"","uuid":"a1"}]`
+		if string(got) != want {
+			t.Errorf("%s:\n got %s\nwant %s", kind, got, want)
+		}
+	}
+}
+
 const sofiaStatusReply = `<?xml version="1.0" encoding="ISO-8859-1"?>
 <profiles>
 <profile>
@@ -284,6 +300,15 @@ func TestMaskVars(t *testing.T) {
 		{"api-key", "x", Mask},
 		{"auth_key", "x", Mask},
 		{"aws_credentials", "x", Mask},
+		{"cred", "x", Mask},
+		{"verto_cookie", "x", Mask},
+		{"pin", "x", Mask},
+		{"moderator-pin", "x", Mask},
+		{"conference_pin", "x", Mask},
+		{"ping", "30", "30"},
+		{"pinned", "yes", "yes"},
+		{"credit", "5", "5"},
+		{"x-cred", "6", "6"},
 		{"domain", "example.com", "example.com"},
 		{"url", "mysql://root:pw@db:3306/fs", "mysql://root:" + Mask + "@db:3306/fs"},
 		{"url2", "odbc://user:p@ss@host/db", "odbc://user:" + Mask + "@host/db"},
@@ -390,6 +415,24 @@ func TestMaskXML(t *testing.T) {
 			in:       `<action application="bridge" data="{sip_auth_username=u1,sip_auth_password=p@ss1,absolute_codec_string=PCMA}sofia/gateway/gw/$1|[api_key=k2]sofia/gateway/gw2/$1"/>`,
 			contains: []string{`{sip_auth_username=u1,sip_auth_password=********,absolute_codec_string=PCMA}sofia/gateway/gw/$1|[api_key=********]sofia/gateway/gw2/$1`},
 			absent:   []string{"p@ss1", "k2"},
+		},
+		{
+			name:     "text of an element named like a secret",
+			in:       `<aws-s3><access-key-id>AKIA1</access-key-id><secret-access-key>sk-value-1</secret-access-key><region>eu</region></aws-s3>`,
+			contains: []string{`<access-key-id>AKIA1</access-key-id>`, `<secret-access-key>********</secret-access-key>`, `<region>eu</region>`},
+			absent:   []string{"sk-value-1"},
+		},
+		{
+			name:     "cred, cookie and pin params",
+			in:       `<s><param name="cred" value="v-cred"/><param name="session-cookie" value="v-cookie"/><param name="pin" value="v-pin"/><param name="moderator-pin" value="v-mod"/><param name="conference_pin" value="v-conf"/><param name="ping" value="30"/><param name="pinned" value="yes"/><param name="credit" value="5"/><param name="x-cred" value="6"/></s>`,
+			contains: []string{`name="cred" value="********"`, `name="session-cookie" value="********"`, `name="pin" value="********"`, `name="moderator-pin" value="********"`, `name="conference_pin" value="********"`, `name="ping" value="30"`, `name="pinned" value="yes"`, `name="credit" value="5"`, `name="x-cred" value="6"`},
+			absent:   []string{"v-cred", "v-cookie", "v-pin", "v-mod", "v-conf"},
+		},
+		{
+			name:     "cred, cookie and pin assignments",
+			in:       `<a><action application="set" data="cred=v-cred"/><action application="bridge" data="{sip_h_X-Cookie=v-cookie,pin=v-pin,moderator-pin=v-mod}user/1000"/><action application="set" data="ping=10"/><action application="set" data="pinned=true"/><action application="set" data="spin=8"/><action application="set" data="x-cred=7"/><action application="set" data="credit=5"/></a>`,
+			contains: []string{`data="cred=********"`, `data="{sip_h_X-Cookie=********,pin=********,moderator-pin=********}user/1000"`, `data="ping=10"`, `data="pinned=true"`, `data="spin=8"`, `data="x-cred=7"`, `data="credit=5"`},
+			absent:   []string{"v-cred", "v-cookie", "v-pin", "v-mod"},
 		},
 		{
 			name:     "assignment with a variable or a non-secret name stays",

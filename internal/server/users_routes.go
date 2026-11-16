@@ -216,7 +216,14 @@ func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request, me use
 	}
 	s.usersMu.Lock()
 	defer s.usersMu.Unlock()
-	if msg := s.guardAdmin(me, acc.User, false); msg != "" {
+	cur, ok := s.cfg.Store.User(id)
+	if !ok {
+		entry.Result, entry.Error = audit.Error, "user not found"
+		s.audit(r, entry)
+		writeError(w, http.StatusNotFound, "user not found")
+		return
+	}
+	if msg := s.guardAdmin(me, cur, false); msg != "" {
 		refuse(http.StatusConflict, msg)
 		return
 	}

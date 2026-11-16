@@ -28,7 +28,8 @@ type instanceView struct {
 
 // instanceRequest is the body of instance create and update. Without
 // configMode the config access stays as it is; an empty password or
-// agentToken keeps the stored one.
+// agentToken keeps the stored one, unless the address or the agent URL
+// changes.
 type instanceRequest struct {
 	Name       string  `json:"name"`
 	Host       string  `json:"host"`
@@ -137,7 +138,23 @@ func (s *Server) handleUpdateInstance(w http.ResponseWriter, r *http.Request, u 
 	id := r.PathValue("id")
 	entry := instanceEntry(u, "instance.update", id, req)
 	s.mu.Lock()
-	prev, _ := s.cfg.Store.Get(id)
+	prev, found := s.cfg.Store.Get(id)
+	// An empty secret keeps the stored one, which must not go to a new
+	// address.
+	msg := ""
+	switch {
+	case !found:
+	case req.Password == "" && prev.Password != "" && (req.Host != prev.Host || req.Port != prev.Port):
+		msg = "enter the Event Socket password again when the address changes"
+	case req.ConfigMode != nil && *req.ConfigMode == store.ConfigAgent && req.AgentToken == "" && prev.AgentToken != "" && req.AgentURL != prev.AgentURL:
+		msg = "enter the agent token again when the agent URL changes"
+	}
+	if msg != "" {
+		s.mu.Unlock()
+		s.record(r, entry, errors.New(msg))
+		writeError(w, http.StatusBadRequest, msg)
+		return
+	}
 	err := s.cfg.Store.Update(req.instance(id, prev))
 	if err != nil {
 		s.mu.Unlock()

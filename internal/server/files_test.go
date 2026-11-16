@@ -62,9 +62,14 @@ func TestInstanceConfigAccess(t *testing.T) {
 	if in, _ := h.st.Get(h.id); in.ConfigMode != "agent" || in.AgentToken != agentToken {
 		t.Fatalf("kept %+v", in)
 	}
-	expect(t, h.do("PUT", p, admin, `{"name":"fs01b","host":"10.0.0.5","port":8021,"password":"","configMode":"agent","agentURL":"http://10.0.0.5:8025","agentToken":""}`), 200, "")
-	if in, _ := h.st.Get(h.id); in.AgentURL != "http://10.0.0.5:8025" || in.AgentToken != agentToken {
+	expect(t, h.do("PUT", p, admin, `{"name":"fs01b","host":"10.0.0.5","port":8021,"password":"","configMode":"agent","agentURL":"https://fs01.example.com:8025","agentToken":""}`), 200, "")
+	if in, _ := h.st.Get(h.id); in.AgentToken != agentToken {
 		t.Fatalf("token kept %+v", in)
+	}
+	// The stored token is never sent to another agent URL.
+	expect(t, h.do("PUT", p, admin, `{"name":"fs01b","host":"10.0.0.5","port":8021,"password":"","configMode":"agent","agentURL":"http://10.0.0.5:8025","agentToken":""}`), 400, `{"error":"enter the agent token again when the agent URL changes"}`)
+	if in, _ := h.st.Get(h.id); in.AgentURL != "https://fs01.example.com:8025" || in.AgentToken != agentToken {
+		t.Fatalf("refused update stored %+v", in)
 	}
 	for _, body := range []string{
 		`{"name":"a","host":"h","port":1,"configMode":"ftp"}`,

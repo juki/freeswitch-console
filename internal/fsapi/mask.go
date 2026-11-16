@@ -12,21 +12,24 @@ import (
 const Mask = "********"
 
 var (
-	// A bare "pass" would also hit inbound-bypass-media and pass-rfc2833.
-	sensitiveRe = regexp.MustCompile(`(?i)pass(w|phrase)|(^|[-_.])pass$|secret|a1-hash|token|dsn|api[-_]?key|auth[-_]?key|credential`)
+	// A bare "pass" would also hit inbound-bypass-media and pass-rfc2833, a
+	// bare "pin" ping and pinned.
+	sensitiveRe = regexp.MustCompile(`(?i)pass(w|phrase)|(^|[-_.])pass$|secret|a1-hash|token|dsn|api[-_]?key|auth[-_]?key|credential|^cred$|cookie|(^|[-_])pin$`)
 	// The password may itself contain '@'; the greedy match stops at the last
 	// '@' before the path.
 	urlPasswordRe = regexp.MustCompile(`([A-Za-z][A-Za-z0-9+.-]*://[^/?#@\s:]*):[^/?#\s]*@`)
 	// A secret assigned inside a longer value, as dialplans do:
 	// data="sip_auth_password=x" or {sip_auth_username=u,sip_auth_password=x}sofia/...
-	assignRe = regexp.MustCompile(`(?i)\b([\w.-]*(?:passw|passphrase|secret|token|a1-hash|dsn|api[-_]?key|auth[-_]?key|credential)[\w.-]*|(?:[\w.-]*[-_.])?pass)=([^,{}\s|&;'"\]]+)`)
+	// The first group is the character before the name, so a name is matched
+	// whole (cred, but not x-cred).
+	assignRe = regexp.MustCompile(`(?i)(^|[^\w.-])([\w.-]*(?:passw|passphrase|secret|token|a1-hash|dsn|api[-_]?key|auth[-_]?key|credential|cookie)[\w.-]*|(?:[\w.-]*[-_.])?pass|cred|(?:[\w.-]*[-_])?pin)=([^,{}\s|&;'"\]]+)`)
 )
 
 // maskInline masks secrets embedded in a value that is not secret as a
 // whole: URL passwords and name=value assignments with a secret-looking name.
 func maskInline(s string) string {
 	s = urlPasswordRe.ReplaceAllString(s, "${1}:"+Mask+"@")
-	return assignRe.ReplaceAllString(s, "${1}="+Mask)
+	return assignRe.ReplaceAllString(s, "${1}${2}="+Mask)
 }
 
 // MaskVars masks the value of every variable whose name looks secret, and
@@ -48,14 +51,16 @@ func MaskVars(vars []Var) []Var {
 type maskNode struct {
 	name     string
 	attrs    []xml.Attr
+	secret   bool // the element's local name looks secret: its text is masked
 	text     string
 	children []*maskNode
 }
 
 // MaskXML parses an XML document and re-emits it indented with secrets
 // masked: the value and data attributes of an element whose name attribute
-// looks secret, every attribute whose own name looks secret, and URL
-// passwords and secret-looking name=value assignments elsewhere. Comments, processing instructions and directives are
+// looks secret, every attribute whose own name looks secret, the text of an
+// element whose own name looks secret, and URL passwords and secret-looking
+// name=value assignments elsewhere. Comments, processing instructions and directives are
 // dropped (comments often hold commented-out credentials).
 func MaskXML(doc string) (string, error) {
 	d := newDecoder(doc)
@@ -73,7 +78,7 @@ func MaskXML(doc string) (string, error) {
 		switch t := tok.(type) {
 		case xml.StartElement:
 			st := maskStart(t)
-			n := &maskNode{name: st.Name.Local, attrs: st.Attr}
+			n := &maskNode{name: st.Name.Local, attrs: st.Attr, secret: sensitiveRe.MatchString(t.Name.Local)}
 			top.children = append(top.children, n)
 			stack = append(stack, n)
 		case xml.EndElement:
@@ -83,7 +88,12 @@ func MaskXML(doc string) (string, error) {
 			stack = stack[:len(stack)-1]
 		case xml.CharData:
 			if s := strings.TrimSpace(string(t)); s != "" {
-				top.children = append(top.children, &maskNode{text: maskInline(s)})
+				if top.secret {
+					s = Mask
+				} else {
+					s = maskInline(s)
+				}
+				top.children = append(top.children, &maskNode{text: s})
 			}
 		}
 	}
