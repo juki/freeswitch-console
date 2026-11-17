@@ -265,6 +265,12 @@ The image is amd64 only; on Apple silicon add `--platform linux/amd64`. To try
 the file editor as well, mount a host directory at `/etc/freeswitch` and give
 fsconsole that path.
 
+## Guides
+
+- [FreeSWITCH hang-up causes: what they mean and what to check](guides/hangup-causes.md):
+  which cause follows which SIP status, who hung up, and the first thing to
+  look at for each cause.
+
 ## How it compares
 
 | | What it is | Choose it when |

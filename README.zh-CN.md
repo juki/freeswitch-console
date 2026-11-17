@@ -187,6 +187,10 @@ docker exec freeswitch-test fs_cli -x 'bgapi originate loopback/9196/default &pa
 
 该镜像只有 amd64 版本；在 Apple 芯片的机器上加 `--platform linux/amd64`。如果还想试用文件编辑器，把宿主机的一个目录挂载到 `/etc/freeswitch`，并把这个路径填给 fsconsole。
 
+## 文章
+
+- [FreeSWITCH 挂断原因对照：各自意味着什么，先查哪里](guides/hangup-causes.zh-CN.md)：哪个 SIP 状态码对应哪个挂断原因、是谁挂的，以及每个原因先该看什么。
+
 ## 与同类工具的区别
 
 | | 它是什么 | 什么时候选它 |
