@@ -768,6 +768,15 @@ dialog.modal::backdrop { background: rgba(8, 9, 16, 0.5); -webkit-backdrop-filte
 .hu-log:focus-visible { outline-offset: 0; }
 .link-btn { padding: 0; border: 0; background: none; color: var(--accent); font: inherit; cursor: pointer; }
 .link-btn:hover { text-decoration: underline; }
+
+/* ---------- SIP events ---------- */
+
+.summary.sev-sum { grid-template-columns: repeat(3, minmax(0, 1fr)); margin-bottom: 0; }
+.sev-att { position: relative; display: inline-block; min-width: 96px; padding-bottom: 6px; }
+.sev-att .meter { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; border-radius: 2px; }
+.sev-att .num { position: relative; }
+.sev-users { display: inline-flex; align-items: center; gap: 4px; }
+.sev-more { padding: 8px 16px; font-size: 12.5px; }
 @keyframes slide { from { transform: translateX(32px); opacity: 0; } to { transform: none; opacity: 1; } }
 @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
 
@@ -1291,6 +1300,8 @@ mark.hit { padding: 0 1px; border-radius: 3px; background: color-mix(in srgb, va
   .stat-grid, .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .summary-item:nth-child(2) { border-right: 0; }
   .summary-item:nth-child(-n+2) { border-bottom: 1px solid var(--border); }
+  .sev-sum .summary-item:nth-child(2) { border-right: 1px solid var(--border); }
+  .sev-sum .summary-item { border-bottom: 0; }
   .grid-2 { grid-template-columns: minmax(0, 1fr); }
 }
 @media (max-width: 1100px) {
@@ -1325,6 +1336,7 @@ mark.hit { padding: 0 1px; border-radius: 3px; background: color-mix(in srgb, va
   .main-col { height: auto; min-height: 0; }
   .demo-banner { padding: 7px 16px; }
   .hu-tbl th:nth-child(6), .hu-tbl td:nth-child(6), .hu-tbl th:nth-child(8), .hu-tbl td:nth-child(8) { display: none; }
+  .sev-tbl th:nth-child(5), .sev-tbl td:nth-child(5), .sev-tbl th:nth-child(6), .sev-tbl td:nth-child(6) { display: none; }
   .users-tbl th:nth-child(4), .users-tbl td:nth-child(4), .audit-tbl th:nth-child(5), .audit-tbl td:nth-child(5), .audit-tbl th:nth-child(7), .audit-tbl td:nth-child(7) { display: none; }
   .main { height: auto; }
   .masthead-in { padding: 14px 16px 0; }
@@ -1335,7 +1347,13 @@ mark.hit { padding: 0 1px; border-radius: 3px; background: color-mix(in srgb, va
   .drawer .kv-row { grid-template-columns: 130px minmax(0, 1fr); }
 }
 @media (max-width: 640px) {
-  .stat-grid, .summary { grid-template-columns: minmax(0, 1fr); }
+  .stat-grid, .summary, .summary.sev-sum { grid-template-columns: minmax(0, 1fr); }
+  .sev-sum .summary-item:nth-child(n) { border-right: 0; border-bottom: 1px solid var(--border); }
+  .sev-sum .summary-item:last-child { border-bottom: 0; }
+  .sev-panel .panel-head { flex-wrap: wrap; }
+  .sev-panel .panel-head > .search { flex: 1 0 100%; min-width: 0; }
+  .sev-panel .panel-head > .segmented { flex: 1 0 100%; min-width: 0; max-width: 100%; overflow-x: auto; }
+  .sev-panel .panel-head > .segmented button { flex: 1 0 auto; justify-content: center; white-space: nowrap; }
   .conf { grid-template-columns: minmax(0, 1fr); height: auto; }
   .conf-side { max-height: 240px; border-right: 0; border-bottom: 1px solid var(--border); }
   .conf-view { height: 60vh; }

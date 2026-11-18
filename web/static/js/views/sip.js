@@ -1,11 +1,13 @@
-// SIP: profiles, gateways and registrations, refreshed every 10s.
+// SIP: profiles, gateways and registrations, refreshed every 10s. The
+// second mode, recent SIP events, is in sipevents.js.
 
 import { api, instPath, isAbort, rowsOf } from '../api.js';
 import { h, DASH, cellText, fmtDuration, fmtInt } from '../dom.js';
 import { icon } from '../icons.js';
 import { t } from '../i18n.js';
-import { clip, dataTable, detailBody, emptyState, openDrawer, openModal, panel, rowMatches, rowMenu, searchBox, sortState, statePill, tableHost, tag } from '../ui.js';
+import { clip, dataTable, detailBody, emptyState, openDrawer, openModal, panel, rowMatches, rowMenu, searchBox, segmented, sortState, statePill, tableHost, tag } from '../ui.js';
 import { operate } from '../actions.js';
+import { sipEventsMode } from './sipevents.js';
 
 // "sip:mod_sofia@10.0.4.21:5060;transport=ws" -> "10.0.4.21:5060"
 function listenAddress(data) {
@@ -41,7 +43,21 @@ export function mountSip({ id, scope, root, ctx }) {
   profiles.body.append(pHost.el, aliases);
   gateways.body.append(gHost.el);
   regs.body.append(rHost.el);
-  root.append(profiles.el, gateways.el, regs.el);
+  const events = sipEventsMode({ id, scope });
+  const modeSeg = segmented([{ key: 'status', label: t('sip.mode.status') }, { key: 'events', label: t('sip.mode.events') }], 'status', (k) => setMode(k));
+  root.append(h('div', { class: 'toolbar' }, modeSeg.el), profiles.el, gateways.el, regs.el, events.el);
+
+  function setMode(k) {
+    modeSeg.set(k);
+    for (const el of [profiles.el, gateways.el, regs.el]) el.hidden = k !== 'status';
+    events.show(k === 'events');
+  }
+
+  // showEvents opens the Events mode on one gateway's changes.
+  function showEvents(gateway) {
+    setMode('events');
+    events.focus(gateway, 'gateways');
+  }
 
   let sofiaRows = null;
   let gwRows = null;
@@ -203,6 +219,8 @@ export function mountSip({ id, scope, root, ctx }) {
         ctx.can('operate') ? {
           label: '', right: true,
           render: (r) => rowMenu(t('sip.op.menu', { name: cellText(r.name) }), [
+            { label: t('sip.gw.events'), icon: 'history', run: () => showEvents(cellText(r.name)) },
+            { sep: true },
             { label: t('sip.gw.register'), icon: 'refresh', run: () => gatewayOp(r, 'register') },
             { label: t('sip.gw.unregister'), icon: 'logout', run: () => gatewayOp(r, 'unregister') },
             canControl ? { sep: true } : null,
