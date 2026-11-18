@@ -12,6 +12,7 @@ import { mountFleet } from './views/fleet.js';
 import { mountInstance, normalizeTab } from './views/instance.js';
 import { mountUsers } from './views/users.js';
 import { mountAudit } from './views/audit.js';
+import { mountAlerts } from './views/alerts.js';
 import { accountMenu, SOURCE_URL } from './views/account.js';
 
 const app = document.getElementById('app');
@@ -24,7 +25,7 @@ const app = document.getElementById('app');
 //   control  the admin-only runtime operations: profile start/stop/restart,
 //            gateway removal, modules, switch settings, global variables
 //   console  the API console
-//   manage   add, edit and delete instances
+//   manage   add, edit and delete instances; the alert notification settings
 //   users    change user accounts
 //   audit    the audit log
 //   files    edit configuration files
@@ -37,10 +38,11 @@ const CAPABILITIES = {
 let me = null; // {username, role, managed}
 let version = '';
 let demo = false; // api/version says so: simulated switches, nobody signs in
+let versionReq = null; // the api/version request, once sent
 let appScope = null; // lives while signed in
 let viewScope = null;
 let current = null; // {kind, id, tab, view}
-let shell = null; // {main, list, count, fleetLink, adminLinks}
+let shell = null; // {main, list, count, fleetLink, alertsLink, alertCount, adminLinks}
 let instances = [];
 let loaded = false;
 let refresh = null;
@@ -54,6 +56,10 @@ const ctx = {
   },
   can(capability) {
     return ctx.access(capability) === 'ok';
+  },
+  // isDemo resolves to whether this is the demo, once api/version answered.
+  isDemo() {
+    return (versionReq || Promise.resolve()).then(() => demo);
   },
   get me() {
     return me;
@@ -96,6 +102,8 @@ function buildShell() {
   const list = h('div', { class: 'side-list' });
   const count = h('span', { class: 'count' });
   const fleetLink = h('a', { class: 'side-link', href: '#/', title: t('nav.all') }, icon('grid'), h('span', { class: 'name', text: t('nav.all') }));
+  const alertCount = h('span', { class: 'count bad', hidden: true });
+  const alertsLink = h('a', { class: 'side-link', href: '#/alerts', title: t('nav.alerts') }, icon('bell'), h('span', { class: 'name', text: t('nav.alerts') }), alertCount);
   const adminLinks = {};
   const admin = [];
   if (ctx.access('users') !== 'role') {
@@ -112,6 +120,7 @@ function buildShell() {
     h('a', { class: 'brand', href: '#/' }, brandMark(), h('span', { text: 'FreeSWITCH' }), h('span', { class: 'brand-tag', text: t('brand.tag') })),
     h('nav', { class: 'side-scroll', 'aria-label': t('nav.main') },
       fleetLink,
+      alertsLink,
       h('div', { class: 'side-label' }, t('nav.instances'), count),
       list,
       admin.length ? h('div', { class: 'side-label' }, t('nav.admin')) : null,
@@ -119,7 +128,7 @@ function buildShell() {
     foot);
   const col = h('div', { class: 'main-col' }, demo ? demoBanner() : null, main);
   app.replaceChildren(h('div', { class: 'shell' }, side, col));
-  shell = { main, list, count, fleetLink, adminLinks, foot, col };
+  shell = { main, list, count, fleetLink, alertsLink, alertCount, adminLinks, foot, col };
 }
 
 // demoBanner tops the main column on every page of the demo.
@@ -134,6 +143,14 @@ function renderSide() {
   const tab = current && current.kind === 'instance' ? current.tab : 'overview';
   const mark = (el, on) => (on ? el.setAttribute('aria-current', 'page') : el.removeAttribute('aria-current'));
   mark(shell.fleetLink, current && current.kind === 'fleet');
+  mark(shell.alertsLink, current && current.kind === 'alerts');
+  // the active alerts of all instances, as the instance poll reports them
+  const firing = instances.reduce((sum, inst) => sum + (Number(inst.state && inst.state.alerts) || 0), 0);
+  shell.alertCount.textContent = firing > 0 ? String(firing) : '';
+  shell.alertCount.hidden = firing <= 0;
+  const alertsTitle = firing > 0 ? t('nav.alertsActive', { n: firing }) : t('nav.alerts');
+  shell.alertsLink.title = alertsTitle;
+  shell.alertsLink.setAttribute('aria-label', alertsTitle);
   for (const [key, el] of Object.entries(shell.adminLinks)) mark(el, current && current.kind === 'admin' && current.page === key);
   shell.count.textContent = instances.length ? String(instances.length) : '';
   if (!instances.length) {
@@ -165,6 +182,7 @@ const ADMIN_PAGES = { users: { cap: 'users', mount: mountUsers }, audit: { cap: 
 function parseRoute() {
   const hash = location.hash.replace(/^#/, '') || '/';
   if (hash === '/') return { kind: 'fleet' };
+  if (/^\/alerts\/?$/.test(hash)) return { kind: 'alerts' };
   const a = hash.match(/^\/admin\/(\w+)\/?$/);
   if (a && ADMIN_PAGES[a[1]]) return { kind: 'admin', page: a[1] };
   // #/i/<id>/<tab>[/<sub>][?query] — see nav.js
@@ -228,6 +246,11 @@ function route() {
       current = { kind: 'instance', id: r.id, tab, view };
       view.showTab(tab, nav);
     }
+  } else if (r.kind === 'alerts') {
+    teardown();
+    viewScope = new Scope();
+    current = { kind: 'alerts' };
+    mountAlerts({ scope: viewScope, root: newPage(), ctx });
   } else if (r.kind === 'admin') {
     teardown();
     viewScope = new Scope();
@@ -294,7 +317,7 @@ async function start() {
   // The version decorates the account menu (without it the menu says less)
   // and tells whether this is the demo (banner, no Sign out).
   if (!version) {
-    api('GET', 'version', { signal: appScope.signal }).then((data) => {
+    versionReq = api('GET', 'version', { signal: appScope.signal }).then((data) => {
       if (!data || typeof data.version !== 'string' || !data.version || !shell) return;
       version = data.version;
       demo = data.demo === true;

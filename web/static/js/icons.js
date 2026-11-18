@@ -52,6 +52,7 @@ const ICONS = {
   play: ['M7 4.5v15l12-7.5z'],
   server: [['rect', { x: 3, y: 4, width: 18, height: 7, rx: 2 }], ['rect', { x: 3, y: 13, width: 18, height: 7, rx: 2 }], 'M7 7.5h.01', 'M7 16.5h.01'],
   alert: ['M12 4L2.8 20h18.4z', 'M12 10v4.5', 'M12 17.2h.01'],
+  bell: ['M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 2h-15z', 'M10 21a2.2 2.2 0 0 0 4 0'],
   info: [['circle', { cx: 12, cy: 12, r: 8.5 }], 'M12 11v5', 'M12 8h.01'],
   user: [['circle', { cx: 12, cy: 8, r: 3.6 }], 'M5 20a7 7 0 0 1 14 0'],
   cpu: [['rect', { x: 7, y: 7, width: 10, height: 10, rx: 1.6 }], 'M10 3.5V7', 'M14 3.5V7', 'M10 17v3.5', 'M14 17v3.5', 'M3.5 10H7', 'M3.5 14H7', 'M17 10h3.5', 'M17 14h3.5'],
