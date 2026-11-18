@@ -24,6 +24,7 @@ docker run --rm -p 127.0.0.1:8080:8080 ghcr.io/juki/freeswitch-console -demo
 | 实例 | 每台 FreeSWITCH 一张卡片：连接状态、会话数、CPU 空闲、运行时长、版本；连不上时用大白话说明原因 | `json status` |
 | 概览 | 最近两小时的会话数、会话速率、CPU 空闲和容量占用，SIP 与通话速览 | `json status`、`HEARTBEAT` 事件 |
 | SIP | Profile、网关、别名、注册；启动、停止、重启、重扫 Profile；网关注册、注销、移除；开关某个 Profile 的 SIP 跟踪 | `sofia xmlstatus`、`sofia profile …` |
+| SIP 事件 | 谁注册不上、网关什么时候掉的：最近 1000 条注册、过期、被拒绝的尝试和网关状态变化；被拒绝的尝试按来源地址汇总，有人在扫号猜密码还是只是输错了一次密码，一眼就能分清 | `sofia::register`、`sofia::register_failure`、`sofia::gateway_state` 等事件 |
 | 通话 | 通道和桥接通话，实时时长，侧边栏查看全部字段，挂断 | `show channels`、`show calls`、`uuid_kill` |
 | 最近挂断 | 不装 CDR 模块也能看出一通电话为什么结束：最近 500 个挂断的通道，用大白话解释挂断原因，并给出 SIP 状态码、谁挂的、通话时长、MOS、这通电话自己的日志行和全部变量 | `CHANNEL_HANGUP_COMPLETE` 事件 |
 | 配置 | FreeSWITCH 解析后的生效配置、全局变量、模块（加载、卸载、重载） | `xml_locate`、`global_getvar`、`show modules` |
@@ -43,6 +44,7 @@ docker run --rm -p 127.0.0.1:8080:8080 ghcr.io/juki/freeswitch-console -demo
 |---|---|
 | ![配置文件编辑器](assets/screenshots/files.png) | ![按条件和动作阅读的拨号计划](assets/screenshots/dialplan.png) |
 | ![最近挂断：原因与 SIP 状态码](assets/screenshots/hangups.png) | ![一通电话为什么结束：解释、要点和它自己的日志](assets/screenshots/hangup-detail.png) |
+| ![SIP 事件：注册失败来源、注册和网关变化](assets/screenshots/sip-events.png) | ![一次被拒绝的注册：谁、从哪里来、用的什么终端](assets/screenshots/sip-event-failed.png) |
 | ![带 Tab 补全的控制台](assets/screenshots/console.png) | ![中文界面、暗色主题下的实例页](assets/screenshots/fleet-zh.png) |
 
 ## 快速开始
@@ -138,8 +140,10 @@ fsconsole 连接 `mod_event_socket`（默认端口 8021）。原版 FreeSWITCH �
 | `-log-backlog` | `FSCONSOLE_LOG_BACKLOG` | `2000` | 每个实例保留并在打开日志页时回放的日志行数；`0` 关闭 |
 | `-log-backlog-level` | `FSCONSOLE_LOG_BACKLOG_LEVEL` | `6`（INFO） | 保留日志的最高级别，`0` 到 `7` |
 | `-recent-calls` | `FSCONSOLE_RECENT_CALLS` | `500` | 每个实例在内存中保留的挂断记录数，供“最近挂断”使用；`0` 表示关闭，且不订阅相关事件 |
+| `-sip-events` | `FSCONSOLE_SIP_EVENTS` | `1000` | 每个实例在内存中保留的 SIP 事件数，供 SIP 页的“事件”视图使用；`0` 表示关闭，且不订阅相关事件 |
 | `-tls-cert`、`-tls-key` | `FSCONSOLE_TLS_CERT`、`FSCONSOLE_TLS_KEY` | 未设置 | 用该 PEM 证书和私钥提供 HTTPS；必须同时设置或都不设置 |
 | | `FSCONSOLE_SECRET_KEY` | 未设置 | 加密数据文件中的 Event Socket 密码和代理令牌；至少 16 个字符 |
+| | `FSCONSOLE_METRICS_TOKEN` | 未设置 | `GET /metrics` 的 Bearer 令牌，至少 16 个字符；未设置时该地址返回 404 |
 | | `FSCONSOLE_ADMIN_PASSWORD` | 未设置 | 受管 `admin` 账号的密码 |
 | | `FSCONSOLE_VIEWER_PASSWORD` | 未设置 | 受管 `viewer` 账号的密码 |
 | `-demo` | `FSCONSOLE_DEMO=1` | 关闭 | 演示模式：模拟交换机、免登录、不保存任何数据；对账号、实例和文件的修改会被拒绝，访客在模拟交换机上做的改动两分钟后自动还原 |
@@ -147,6 +151,19 @@ fsconsole 连接 `mod_event_socket`（默认端口 8021）。原版 FreeSWITCH �
 | `-version` | | | 打印版本并退出 |
 
 开启日志保留后，fsconsole 会让每个实例的 Event Socket 连接的日志级别至少保持在 `-log-backlog-level`，所以即使没人在看日志页，FreeSWITCH 也会发送 INFO 级日志。`GET /healthz` 无需登录，返回 `{"status":"ok"}`，可用于负载均衡和容器健康检查。负载历史保存在内存里，FreeSWITCH 每次心跳（默认 20 秒）采样一次。
+
+### 指标
+
+设置 `FSCONSOLE_METRICS_TOKEN` 后，带有 `Authorization: Bearer <令牌>` 的请求可以从 `GET /metrics` 取到 Prometheus 文本格式的指标。每个实例包括：Event Socket 是否连接；最近一次心跳里的会话数、每秒会话数、空闲 CPU 和会话数上限；fsconsole 启动以来按原因统计的挂断数和按类型统计的 SIP 事件数。抓取只读取 fsconsole 已有的数据，不会向 FreeSWITCH 发送任何命令。
+
+```yaml
+scrape_configs:
+  - job_name: fsconsole
+    authorization:
+      credentials: 你设置的令牌
+    static_configs:
+      - targets: ['127.0.0.1:8080']
+```
 
 ## 安全说明
 
@@ -156,6 +173,7 @@ fsconsole 连接 `mod_event_socket`（默认端口 8021）。原版 FreeSWITCH �
 - 未设置 `FSCONSOLE_SECRET_KEY` 时，Event Socket 密码和代理令牌在数据文件里是明文；设置后用 AES-256-GCM 加密。如果文件里是加密值而密钥缺失或不对，fsconsole 会拒绝启动。无论哪种情况都要保护好数据文件：里面还有密码哈希。
 - 同一账号从同一地址在五分钟内登录失败五次，该组合会被锁定一分钟。在反向代理之后，所有客户端共用代理的地址，此时锁定相当于针对整个账号。
 - 审计日志记录登录（包括失败和被锁定的）、退出、实例和账号变更、挂断、运行时操作、配置文件变更（路径和哈希，不含内容）、被拒绝的请求，以及控制台里执行的每条完整命令。它从不记录密码、令牌或会话 Cookie，但控制台命令本身可能带有敏感信息：文件权限为 0600，且只有管理员能在控制台里查看。
+- 不设置 `FSCONSOLE_METRICS_TOKEN` 时 `/metrics` 不存在；设置后只响应带该令牌的请求。其中只有实例名、负载和计数，没有号码、用户或地址。
 - 配置文件按原样展示和编辑，其中的密码是明文；日志内容也不做脱敏。所以这两项只对上表中的相应角色开放。
 
 ## 用 Docker 里的原版 FreeSWITCH 试用
@@ -201,8 +219,8 @@ docker exec freeswitch-test fs_cli -x 'bgapi originate loopback/9196/default &pa
 
 ## 不在范围内
 
-- 通话记录和 SIP 抓包：“最近挂断”只是保存在内存里的排障辅助，重启即清空；其余由 Homer 和各类 CDR 工具覆盖。
-- 长期指标：Prometheus 和 Grafana 已经覆盖。
+- 通话记录和 SIP 抓包：“最近挂断”和“SIP 事件”只是保存在内存里的排障辅助，重启即清空；其余由 Homer 和各类 CDR 工具覆盖。
+- 长期指标：Prometheus 和 Grafana 已经覆盖，`/metrics` 负责把数据交给它们。
 - 生成配置：fsconsole 只编辑你已有的文件。
 
 ## 开发
@@ -215,7 +233,7 @@ go vet ./... && go test -race ./...
 FSCONSOLE_TEST_ESL=127.0.0.1:18021 go test -race -run Real ./cmd/fsconsole/
 ```
 
-单元测试和端到端测试用的是模拟的 FreeSWITCH。`Real` 开头的测试只有在 `FSCONSOLE_TEST_ESL` 指向一个 Event Socket 时才运行（密码用 `FSCONSOLE_TEST_ESL_PASSWORD`，默认 `ClueCon`），覆盖只读视图、一通电话从 `originate` 到挂断记录的全过程、日志流、连接被切断和被卡住、30 通并发通话以及慢命令。这些测试会在 loopback 端点上发起并挂断通话，请指向测试用的交换机；上文的 Docker 配方就够用。
+单元测试和端到端测试用的是模拟的 FreeSWITCH。`Real` 开头的测试只有在 `FSCONSOLE_TEST_ESL` 指向一个 Event Socket 时才运行（密码用 `FSCONSOLE_TEST_ESL_PASSWORD`，默认 `ClueCon`），覆盖只读视图、一通电话从 `originate` 到挂断记录的全过程、日志流、连接被切断和被卡住、30 通并发通话、慢命令以及网关事件。这些测试会在 loopback 端点上发起并挂断通话，请指向测试用的交换机；上文的 Docker 配方就够用。
 
 没有第三方 Go 模块，前端没有构建步骤：`web/static` 是原生 ES 模块，原样提供。界面文案在 `web/static/js/locales/`，有测试保证各语言词条一致。
 

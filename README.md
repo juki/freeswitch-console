@@ -34,6 +34,7 @@ docker run --rm -p 127.0.0.1:8080:8080 ghcr.io/juki/freeswitch-console -demo
 | Instances | one card per FreeSWITCH: connection, sessions, idle CPU, uptime, version; a plain-language reason when a switch cannot be reached | `json status` |
 | Overview | sessions, session rate, idle CPU and capacity over the last two hours, SIP and call summary | `json status`, `HEARTBEAT` events |
 | SIP | profiles, gateways, aliases, registrations; start, stop, restart and rescan profiles; register, unregister and remove gateways; switch the SIP trace of a profile on and off | `sofia xmlstatus`, `sofia profile …` |
+| SIP events | who cannot register, and when a gateway went down: the last 1,000 registrations, expiries, refused attempts and gateway state changes; refused attempts grouped by source address, so a scan guessing passwords stands out from one mistyped password | `sofia::register`, `sofia::register_failure`, `sofia::gateway_state` and related events |
 | Calls | channels and bridged calls with live durations, every field in a side panel, hang up | `show channels`, `show calls`, `uuid_kill` |
 | Recent hang-ups | why a call ended, without a CDR module: the last 500 channels that hung up, with the cause explained in plain language, the SIP status, who hung up, talk time, MOS, the call's own log lines and all its variables | `CHANNEL_HANGUP_COMPLETE` events |
 | Configuration | the effective configuration as FreeSWITCH parsed it, global variables, modules (load, unload, reload) | `xml_locate`, `global_getvar`, `show modules` |
@@ -57,6 +58,7 @@ as `sip_auth_password=…` in a dial string.
 |---|---|
 | ![Config file editor](assets/screenshots/files.png) | ![Dialplan read as conditions and actions](assets/screenshots/dialplan.png) |
 | ![Recent hang-ups with cause and SIP status](assets/screenshots/hangups.png) | ![Why a call ended: explanation, facts and its own log](assets/screenshots/hangup-detail.png) |
+| ![SIP events: failed registrations by source, registrations and gateway changes](assets/screenshots/sip-events.png) | ![A refused registration: who, from where, with which user agent](assets/screenshots/sip-event-failed.png) |
 | ![Console with Tab completion](assets/screenshots/console.png) | ![Instances in Chinese, dark theme](assets/screenshots/fleet-zh.png) |
 
 ## Quick start
@@ -188,8 +190,10 @@ shows them as managed by the environment and cannot change them.
 | `-log-backlog` | `FSCONSOLE_LOG_BACKLOG` | `2000` | log lines kept per instance and replayed when the Logs view opens; `0` disables |
 | `-log-backlog-level` | `FSCONSOLE_LOG_BACKLOG_LEVEL` | `6` (INFO) | highest log level kept in the backlog, `0` to `7` |
 | `-recent-calls` | `FSCONSOLE_RECENT_CALLS` | `500` | hang-ups kept in memory per instance for the Recent hang-ups view; `0` turns it off and does not subscribe to the events |
+| `-sip-events` | `FSCONSOLE_SIP_EVENTS` | `1000` | SIP events kept in memory per instance for the Events view of the SIP page; `0` turns it off and does not subscribe to the events |
 | `-tls-cert`, `-tls-key` | `FSCONSOLE_TLS_CERT`, `FSCONSOLE_TLS_KEY` | unset | serve HTTPS with this PEM certificate and key; both or neither |
 | | `FSCONSOLE_SECRET_KEY` | unset | encrypt the Event Socket passwords and agent tokens in the data file; at least 16 characters |
+| | `FSCONSOLE_METRICS_TOKEN` | unset | bearer token for `GET /metrics`, at least 16 characters; unset, the endpoint answers 404 |
 | | `FSCONSOLE_ADMIN_PASSWORD` | unset | password of the managed `admin` account |
 | | `FSCONSOLE_VIEWER_PASSWORD` | unset | password of the managed `viewer` account |
 | `-demo` | `FSCONSOLE_DEMO=1` | off | demo mode: simulated switches, no sign-in, nothing saved; changes to accounts, instances and files are refused, and what a visitor changes on a simulated switch is undone after two minutes |
@@ -202,6 +206,24 @@ even while nobody watches the Logs view. `GET /healthz` answers
 `{"status":"ok"}` without signing in, for load balancers and container health
 checks. The load history is kept in memory, one sample per FreeSWITCH
 heartbeat (every 20 seconds by default).
+
+### Metrics
+
+With `FSCONSOLE_METRICS_TOKEN` set, `GET /metrics` answers in the Prometheus
+text format to requests that carry `Authorization: Bearer <token>`. For every
+instance: whether its Event Socket is connected; sessions, sessions per
+second, idle CPU and the session limit from the last heartbeat; hang-ups by
+cause and SIP events by kind, counted since fsconsole started. A scrape reads
+what fsconsole already holds and sends nothing to FreeSWITCH.
+
+```yaml
+scrape_configs:
+  - job_name: fsconsole
+    authorization:
+      credentials: the-token-you-chose
+    static_configs:
+      - targets: ['127.0.0.1:8080']
+```
 
 ## Security notes
 
@@ -228,6 +250,9 @@ heartbeat (every 20 seconds by default).
   console command in full. It never records passwords, tokens or session
   cookies, but console commands can carry secrets: the file has mode 0600 and
   only administrators can read it in the console.
+- `/metrics` does not exist unless `FSCONSOLE_METRICS_TOKEN` is set, and then
+  answers only to that token. It carries instance names, load and counters;
+  no numbers, users or addresses.
 - Config files are shown and edited as they are, secrets included, and log
   lines are not masked; that is why both are limited to the roles above.
 
@@ -281,10 +306,11 @@ fsconsole that path.
 
 ## Not in scope
 
-- Call history and SIP capture. The recent hang-ups are a troubleshooting
-  aid kept in memory and gone after a restart; Homer and CDR tools cover the
-  rest.
-- Long-term metrics. Prometheus and Grafana cover those.
+- Call history and SIP capture. The recent hang-ups and SIP events are
+  troubleshooting aids kept in memory and gone after a restart; Homer and
+  CDR tools cover the rest.
+- Long-term metrics. Prometheus and Grafana cover those; `/metrics` gives
+  them the numbers.
 - Generating configuration. fsconsole edits the files you have.
 
 ## Development
@@ -301,7 +327,7 @@ The unit and end-to-end tests use a fake FreeSWITCH. The `Real` tests are
 skipped unless `FSCONSOLE_TEST_ESL` names an Event Socket (password in
 `FSCONSOLE_TEST_ESL_PASSWORD`, default `ClueCon`). They cover the read views,
 a call from `originate` to its hang-up record, the log stream, a cut and a
-stalled connection, 30 calls at once and a slow command. They place and hang
+stalled connection, 30 calls at once, a slow command and gateway events. They place and hang
 up calls on the loopback endpoint, so point them at a test switch; the Docker
 recipe above is enough.
 
