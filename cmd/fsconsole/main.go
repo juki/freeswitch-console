@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -136,12 +137,17 @@ func main() {
 		}
 	}()
 
+	// Bind before announcing, so "listening on" means the port is open.
+	ln, err := net.Listen("tcp", *listen)
+	if err != nil {
+		log.Fatal(err)
+	}
 	if tlsConfig != nil {
 		log.Printf("fsconsole %s listening on https://%s", version, *listen)
-		err = srv.ListenAndServeTLS("", "")
+		err = srv.ServeTLS(ln, "", "")
 	} else {
 		log.Printf("fsconsole %s listening on http://%s", version, *listen)
-		err = srv.ListenAndServe()
+		err = srv.Serve(ln)
 	}
 	if !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)

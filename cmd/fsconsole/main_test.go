@@ -109,6 +109,20 @@ func TestSecretKeyStartup(t *testing.T) {
 	}
 }
 
+// TestBusyPort checks main stops without announcing it listens when the port
+// is taken.
+func TestBusyPort(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	env := []string{"FSCONSOLE_LISTEN=" + ln.Addr().String(), "FSCONSOLE_DATA=" + filepath.Join(t.TempDir(), "d.json"), "FSCONSOLE_ADMIN_PASSWORD=admin-password", "FSCONSOLE_AUDIT=", "FSCONSOLE_SECRET_KEY=0123456789abcdef-key"}
+	if out, ok := startupOutput(t, env); ok || !strings.Contains(out, ln.Addr().String()) {
+		t.Fatalf("busy port:\n%s", out)
+	}
+}
+
 func TestLoadTLS(t *testing.T) {
 	dir := t.TempDir()
 	certFile, keyFile := writeCert(t, dir)
