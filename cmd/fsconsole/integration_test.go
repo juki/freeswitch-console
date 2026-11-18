@@ -26,6 +26,7 @@ import (
 	"maps"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"regexp"
 	"slices"
@@ -83,14 +84,17 @@ type realStack struct {
 }
 
 // startReal starts the console with main's defaults for the backlog, the
-// recent calls and the SIP events, adds an instance for dialAddr (the real switch or a forwarder
+// recent calls and the SIP events, changed by configure, adds an instance for dialAddr (the real switch or a forwarder
 // to it) and waits until it is connected.
-func startReal(t *testing.T, dialAddr string) *realStack {
+func startReal(t *testing.T, dialAddr string, configure ...func(*server.Config)) *realStack {
 	t.Helper()
 	addr, password := realSwitch(t)
 	sk := startConsole(t, func(cfg *server.Config) {
 		cfg.Dial = dialer(500, 1000)
 		cfg.LogBacklog, cfg.LogBacklogLevel, cfg.RecentCalls, cfg.SipEvents = 2000, 6, 500, 1000
+		for _, c := range configure {
+			c(cfg)
+		}
 	})
 	c := sk.client(t, "admin", "admin-pw")
 	codes := &statusLog{base: http.DefaultTransport.(*http.Transport).Clone()}
@@ -1151,5 +1155,110 @@ func TestRealSipEvents(t *testing.T) {
 	}
 	if !present() {
 		t.Fatal("example.com is not back after the rescan")
+	}
+}
+
+// TestRealAlerts cuts the connection to the switch with the rule
+// instanceDown at 0 s: the alert fires and resolves, and both reach a
+// webhook on this host.
+func TestRealAlerts(t *testing.T) {
+	addr, _ := realSwitch(t)
+	type hook struct {
+		Event, Rule, Subject, Summary, Reason, Since, At string
+		Instance                                         struct{ ID, Name string }
+		DurationSeconds                                  int64
+	}
+	var mu sync.Mutex
+	var got []hook
+	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var h hook
+		if r.Header.Get("Content-Type") != "application/json" || !strings.HasPrefix(r.Header.Get("User-Agent"), "fsconsole/") || json.NewDecoder(r.Body).Decode(&h) != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		got = append(got, h)
+		mu.Unlock()
+		io.WriteString(w, "ok")
+	}))
+	defer receiver.Close()
+	hooks := func() []hook {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]hook(nil), got...)
+	}
+
+	fw := newForwarder(t, addr)
+	r := startReal(t, fw.addr(), func(cfg *server.Config) { cfg.AlertInterval = 100 * time.Millisecond })
+	off := map[string]any{"enabled": false, "forSeconds": 60}
+	code, body := r.c.do("PUT", "/api/alerts/settings", map[string]any{
+		"rules": map[string]any{
+			"instanceDown": map[string]any{"enabled": true, "forSeconds": 0},
+			"gatewayDown":  off,
+			"idleCpuLow":   map[string]any{"enabled": false, "forSeconds": 60, "below": 10},
+			"sessionsHigh": map[string]any{"enabled": false, "forSeconds": 60, "above": 90},
+		},
+		"targets": []map[string]any{{"name": "local", "format": "json", "language": "en", "enabled": true, "url": receiver.URL + "/hook/token-in-the-path"}},
+	})
+	if code != http.StatusOK || strings.Contains(string(body), "token-in-the-path") {
+		t.Fatalf("settings: %d %s", code, clip(body))
+	}
+	// One tick passes, so the targets are running before the cut.
+	time.Sleep(300 * time.Millisecond)
+
+	start := time.Now()
+	if n := fw.closeAll(); n == 0 {
+		t.Fatal("the forwarder carries no connection")
+	}
+	for len(hooks()) < 2 {
+		if time.Since(start) > 15*time.Second {
+			t.Fatalf("webhooks after 15s: %+v; instance %+v", hooks(), r.state())
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	h := hooks()
+	fired, resolved := h[0], h[1]
+	if fired.Event != "firing" || fired.Rule != "instanceDown" || fired.Instance.ID != r.id || fired.Instance.Name != "real" || fired.Reason == "" ||
+		!strings.HasPrefix(fired.Summary, "[FreeSWITCH Console] DOWN: real cannot be reached: ") {
+		t.Fatalf("firing %+v", fired)
+	}
+	if resolved.Event != "resolved" || resolved.Since != fired.Since || !strings.HasPrefix(resolved.Summary, "[FreeSWITCH Console] OK: real is connected again · was down for ") {
+		t.Fatalf("resolved %+v", resolved)
+	}
+	t.Logf("webhooks after %v:\n  %s\n  %s", time.Since(start).Round(time.Millisecond), fired.Summary, resolved.Summary)
+
+	var alerts struct {
+		Active  []json.RawMessage
+		History []struct {
+			Event      string
+			Deliveries []struct {
+				Target string
+				OK     bool
+				Status int
+			}
+		}
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		alerts.History = nil
+		body := r.c.get("/api/alerts", http.StatusOK, &alerts)
+		if strings.Contains(string(body), "token-in-the-path") {
+			t.Fatalf("alerts leak the URL: %s", body)
+		}
+		if len(alerts.History) == 2 && len(alerts.History[0].Deliveries) == 1 && len(alerts.History[1].Deliveries) == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("alerts %s", clip(body))
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	for _, e := range alerts.History {
+		if d := e.Deliveries[0]; d.Target != "local" || !d.OK || d.Status != 200 {
+			t.Fatalf("%s delivery %+v", e.Event, d)
+		}
+	}
+	if len(alerts.Active) != 0 || alerts.History[0].Event != "resolved" || !r.state().Connected {
+		t.Fatalf("after the reconnect: %+v %+v", alerts, r.state())
 	}
 }

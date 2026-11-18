@@ -1,9 +1,12 @@
 package server
 
 import (
+	"cmp"
 	"crypto/rand"
 	"encoding/hex"
 	"net/http"
+	"slices"
+	"strconv"
 	"time"
 
 	"github.com/juki/freeswitch-console/internal/store"
@@ -13,7 +16,9 @@ import (
 // session gets one for the built-in account demo, an admin. At most
 // demoMaxSessions are open at once; a new one beyond that ends the oldest,
 // whose visitor gets a new one on the next request. Changes to accounts,
-// instances and files are refused with 403.
+// instances, files and the alert settings, and webhook tests, are refused
+// with 403. The alert history starts with a few incidents of the hours
+// before (demoAlertHistory).
 
 const demoMaxSessions = 5000
 
@@ -33,6 +38,8 @@ var demoDisabled = map[string]bool{
 	"PUT /api/instances/{id}/files/content":    true,
 	"DELETE /api/instances/{id}/files/content": true,
 	"POST /api/instances/{id}/files/restore":   true,
+	"PUT /api/alerts/settings":                 true,
+	"POST /api/alerts/test":                    true,
 }
 
 func disabledInDemo(w http.ResponseWriter, _ *http.Request, _ user) {
@@ -79,4 +86,62 @@ func (s *Server) demoSession(w http.ResponseWriter, r *http.Request) (user, bool
 	}
 	r.AddCookie(&http.Cookie{Name: cookieName, Value: token})
 	return demoAccount.user(), true
+}
+
+// demoIncidents are the alerts the demo history starts with: what happened
+// on the simulated switches in the hours before the start, by instance
+// name. ago is when the condition began, lasted how long it held; fired and
+// resolved carry the details of the two entries. Each fired after the
+// default 60 s.
+var demoIncidents = []struct {
+	instance, rule, subject string
+	ago, lasted             time.Duration
+	fired, resolved         alertView
+}{
+	{"pbx-west-2", ruleGatewayDown, "carrier-a", 6*time.Hour + 41*time.Minute, 17*time.Minute + 24*time.Second,
+		alertView{State: "FAIL_WAIT", Ping: "DOWN"}, alertView{State: "REGED", Ping: "UP"}},
+	{"pbx-east-1", ruleIdleCPULow, "", 4*time.Hour + 6*time.Minute, 11*time.Minute + 40*time.Second,
+		alertView{Value: 6.4, Threshold: 10}, alertView{Value: 38.5, Threshold: 10}},
+	{"pbx-west-2", ruleInstanceDown, "", 2*time.Hour + 32*time.Minute, 2*time.Minute + 51*time.Second,
+		alertView{Reason: "esl: no answer from FreeSWITCH"}, alertView{}},
+}
+
+// demoAlertHistory fills the history with demoIncidents, before the
+// evaluator adds what it finds at its first evaluation.
+func (s *Server) demoAlertHistory(now time.Time) {
+	ids := map[string]string{}
+	for _, in := range s.cfg.Store.List() {
+		ids[in.Name] = in.ID
+	}
+	var entries []*alertEntry
+	pairs := map[*alertEntry]*alertEntry{} // firing -> resolved
+	for _, inc := range demoIncidents {
+		id, ok := ids[inc.instance]
+		if !ok {
+			continue
+		}
+		since := now.Add(-inc.ago)
+		fired := since.Add(time.Minute)
+		entry := func(v alertView, event string, at time.Time) *alertEntry {
+			v.Rule, v.InstanceID, v.Instance, v.Subject = inc.rule, id, inc.instance, inc.subject
+			v.Since, v.FiredAt = since.UnixMilli(), fired.UnixMilli()
+			return &alertEntry{alertView: v, T: at.UnixMilli(), Event: event, Deliveries: []alertDelivery{}}
+		}
+		f, r := entry(inc.fired, "firing", fired), entry(inc.resolved, "resolved", fired.Add(inc.lasted))
+		r.DurationMs = inc.lasted.Milliseconds()
+		pairs[f] = r
+		entries = append(entries, f, r)
+	}
+	slices.SortFunc(entries, func(a, b *alertEntry) int { return cmp.Compare(a.T, b.T) })
+	s.alertMu.Lock()
+	defer s.alertMu.Unlock()
+	for _, e := range entries {
+		s.alertSeq++
+		e.Seq = s.alertSeq
+		if r := pairs[e]; r != nil {
+			e.ID = strconv.FormatUint(e.Seq, 10)
+			r.ID = e.ID
+		}
+		s.pushAlertEntry(e)
+	}
 }

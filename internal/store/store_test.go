@@ -3,8 +3,10 @@ package store
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"runtime"
 	"strings"
@@ -442,5 +444,86 @@ func TestConfigAccessFields(t *testing.T) {
 	data, _ = os.ReadFile(plain.path)
 	if strings.Contains(string(data), "config") || strings.Contains(string(data), "agent") {
 		t.Fatalf("shape %s", data)
+	}
+}
+
+func alertSettings(urls ...string) AlertSettings {
+	on := AlertRule{Enabled: true, ForSeconds: 60}
+	a := AlertSettings{Rules: AlertRules{InstanceDown: on, GatewayDown: AlertRule{ForSeconds: 0}, IdleCPULow: BelowRule{on, 10}, SessionsHigh: AboveRule{on, 90}}}
+	for i, u := range urls {
+		a.Targets = append(a.Targets, AlertTarget{Name: fmt.Sprintf("t%d", i), Format: "slack", Language: "en", Enabled: true, URL: u})
+	}
+	return a
+}
+
+func TestAlertSettingsRoundTrip(t *testing.T) {
+	const hook = "https://hooks.example.com/services/T000/B000/SECRETtoken"
+	for _, key := range []string{"", testKey} {
+		path := filepath.Join(t.TempDir(), "s.json")
+		var opts []Option
+		if key != "" {
+			opts = append(opts, WithSecretKey(key))
+		}
+		s, err := Open(path, opts...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := s.Alerts(); ok {
+			t.Fatal("settings before any were saved")
+		}
+		saved, err := s.SetAlerts(alertSettings(hook, "http://10.0.0.9:8080/hook"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(saved.Targets) != 2 || len(saved.Targets[0].ID) != 16 || saved.Targets[0].ID == saved.Targets[1].ID {
+			t.Fatalf("saved %+v", saved)
+		}
+		// An instance change keeps the settings.
+		if _, err := s.Add(Instance{Name: "a", Host: "h", Port: 1, Password: "pw"}); err != nil {
+			t.Fatal(err)
+		}
+		data, _ := os.ReadFile(path)
+		if sealed := !strings.Contains(string(data), "SECRETtoken"); sealed != (key != "") || (key != "" && strings.Count(string(data), `"url": "enc:v1:`) != 2) {
+			t.Fatalf("key %q: file %s", key, data)
+		}
+		r, err := Open(path, opts...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, ok := r.Alerts()
+		if !ok || !reflect.DeepEqual(got, saved) {
+			t.Fatalf("reopened %+v %v, want %+v", got, ok, saved)
+		}
+		// The copy returned is not the store's.
+		got.Targets[0].URL = "x"
+		if again, _ := r.Alerts(); again.Targets[0].URL != hook {
+			t.Fatal("Alerts returned the store's slice")
+		}
+	}
+
+	m := NewMemory()
+	if _, err := m.SetAlerts(alertSettings(hook)); err != nil {
+		t.Fatal(err)
+	}
+	if a, ok := m.Alerts(); !ok || a.Targets[0].URL != hook {
+		t.Fatalf("memory %+v", a)
+	}
+}
+
+func TestAlertSettingsChecked(t *testing.T) {
+	s, path := openTemp(t)
+	bad := alertSettings("ftp://h/x")
+	if _, err := s.SetAlerts(bad); !errors.Is(err, ErrInvalidAlerts) || strings.Contains(err.Error(), "ftp") {
+		t.Fatalf("SetAlerts: %v", err)
+	}
+	if _, ok := s.Alerts(); ok {
+		t.Fatal("invalid settings kept")
+	}
+	os.WriteFile(path, []byte(`{"instances":[],"alerts":{"rules":{"idleCpuLow":{"below":0},"sessionsHigh":{"above":90}},"targets":[]}}`), 0o600)
+	if _, err := Open(path); !errors.Is(err, ErrInvalidAlerts) {
+		t.Fatalf("Open: %v", err)
+	}
+	if _, err := s.SetAlerts(alertSettings("https://a.example/x", "https://b.example/y", "https://c.example/z", "https://d.example/w", "https://e.example/v", "https://f.example/u")); err == nil {
+		t.Fatal("six targets saved")
 	}
 }

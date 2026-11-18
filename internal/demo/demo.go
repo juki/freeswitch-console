@@ -31,6 +31,9 @@ const (
 	heartbeatEvery = 20 * time.Second
 	// tickEvery is how often a live switch catches up with the wall clock.
 	tickEvery = 250 * time.Millisecond
+	// downFor is how long before the start a switch that never connects
+	// has been unreachable.
+	downFor = 3*time.Hour + 12*time.Minute
 )
 
 // spec describes one simulated switch.

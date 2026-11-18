@@ -29,13 +29,17 @@ type pastLoad interface {
 
 // collect is the only subscriber of the switch. It records a sample per
 // HEARTBEAT, a record per CHANNEL_HANGUP_COMPLETE and per CUSTOM event of a
-// SIP subclass kept (SipSubclasses), keeps the log backlog
+// SIP subclass kept (SipSubclasses), keeps the gateway states and seeds them
+// after every connect, keeps the log backlog
 // and forwards state changes, heartbeats and log lines to the open streams,
 // until the switch is closed. Log lines come on a channel of their own, so a
 // flood of them cannot crowd out the events.
 func (i *instance) collect(events, logs <-chan esl.Message, cancel func()) {
 	defer close(i.collected)
 	defer cancel()
+	if i.sw.State().Connected {
+		i.seedGateways()
+	}
 	for {
 		select {
 		case <-i.done:
@@ -56,9 +60,14 @@ func (i *instance) collect(events, logs <-chan esl.Message, cancel func()) {
 				case "CHANNEL_HANGUP_COMPLETE":
 					i.addHangup(m.Headers)
 				case "CUSTOM":
-					i.addSipEvent(m.Headers, time.Now())
+					now := time.Now()
+					i.addSipEvent(m.Headers, now)
+					i.gatewayEvent(m.Headers, now)
 				}
 			case esl.KindState:
+				if m.Headers["connected"] == "true" {
+					i.seedGateways()
+				}
 				i.forward(streamItem{kind: "state"})
 			}
 		case m, ok := <-logs:

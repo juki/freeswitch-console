@@ -115,7 +115,6 @@ func newSwitch(addr string, seed int64, start time.Time) *Switch {
 		subs:     map[subscriber]struct{}{},
 		eslLevel: -1,
 		t:        start,
-		state:    esl.State{Since: start},
 	}
 	if s.sp == nil || s.sp.down != "" {
 		reason := "connection refused"
@@ -123,9 +122,15 @@ func newSwitch(addr string, seed int64, start time.Time) *Switch {
 			reason = s.sp.down
 		}
 		s.state.LastError = "dial tcp " + addr + ": connect: " + reason
+		// It has been unreachable for a while, so its alert shows from the
+		// console's first evaluation.
+		s.state.Since = start.Add(-downFor)
 		return s
 	}
-	s.state.Connected = true
+	// Connected since the oldest heartbeat History reports, so the SIP
+	// events and load it brings along fall in this connection: the alerts
+	// of the console count them.
+	s.state.Connected, s.state.Since = true, start.Add(-historyBeats*heartbeatEvery)
 	s.seed, s.rng = seed, rand.New(rand.NewSource(seed))
 	s.setup()
 	return s

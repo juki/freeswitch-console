@@ -106,6 +106,7 @@ type Store struct {
 	mu        sync.Mutex
 	instances []Instance
 	users     []User
+	alerts    *AlertSettings // nil until saved once
 }
 
 // NewMemory returns an empty store that writes no file: what it holds is
@@ -114,18 +115,20 @@ func NewMemory() *Store {
 	return &Store{memory: true}
 }
 
-// file is the on-disk shape. Users is omitted while there are none, so a file
-// written by an older version keeps its shape.
+// file is the on-disk shape. Users is omitted while there are none and
+// Alerts until the alert settings are saved, so a file written by an older
+// version keeps its shape.
 type file struct {
-	Instances []Instance `json:"instances"`
-	Users     []User     `json:"users,omitempty"`
+	Instances []Instance     `json:"instances"`
+	Users     []User         `json:"users,omitempty"`
+	Alerts    *AlertSettings `json:"alerts,omitempty"`
 }
 
 // Option configures Open.
 type Option func(*Store) error
 
-// WithSecretKey encrypts the ESL passwords in the file with AES-256-GCM under
-// the SHA-256 of secret. Plain values in an existing file are read as they are
+// WithSecretKey encrypts the ESL passwords, agent tokens and webhook URLs in
+// the file with AES-256-GCM under the SHA-256 of secret. Plain values in an existing file are read as they are
 // and encrypted on the next save.
 func WithSecretKey(secret string) Option {
 	return func(s *Store) error {
@@ -180,7 +183,18 @@ func Open(path string, opts ...Option) (*Store, error) {
 			}
 		}
 	}
-	s.instances, s.users = f.Instances, f.Users
+	if f.Alerts != nil {
+		for i := range f.Alerts.Targets {
+			t := &f.Alerts.Targets[i]
+			if t.URL, err = s.reveal(t.URL); err != nil {
+				return nil, fmt.Errorf("store %s: %w", path, err)
+			}
+		}
+		if err := CheckAlerts(*f.Alerts); err != nil {
+			return nil, fmt.Errorf("store %s: %w", path, err)
+		}
+	}
+	s.instances, s.users, s.alerts = f.Instances, f.Users, f.Alerts
 	return s, nil
 }
 
@@ -248,7 +262,7 @@ func (s *Store) Add(in Instance) (Instance, error) {
 		}
 	}
 	next := append(append([]Instance(nil), s.instances...), in)
-	if err := s.save(next, s.users); err != nil {
+	if err := s.save(next, s.users, s.alerts); err != nil {
 		return Instance{}, err
 	}
 	s.instances = next
@@ -276,7 +290,7 @@ func (s *Store) Update(in Instance) error {
 	}
 	next := append([]Instance(nil), s.instances...)
 	next[i] = in
-	if err := s.save(next, s.users); err != nil {
+	if err := s.save(next, s.users, s.alerts); err != nil {
 		return err
 	}
 	s.instances = next
@@ -291,7 +305,7 @@ func (s *Store) Delete(id string) error {
 		return ErrNotFound
 	}
 	next := append(append([]Instance(nil), s.instances[:i]...), s.instances[i+1:]...)
-	if err := s.save(next, s.users); err != nil {
+	if err := s.save(next, s.users, s.alerts); err != nil {
 		return err
 	}
 	s.instances = next
@@ -356,7 +370,7 @@ func (s *Store) AddUser(u User) (User, error) {
 		u.CreatedAt = time.Now().UTC().Truncate(time.Second)
 	}
 	next := append(append([]User(nil), s.users...), u)
-	if err := s.save(s.instances, next); err != nil {
+	if err := s.save(s.instances, next, s.alerts); err != nil {
 		return User{}, err
 	}
 	s.users = next
@@ -381,7 +395,7 @@ func (s *Store) UpdateUser(u User) error {
 	u.CreatedAt = s.users[i].CreatedAt
 	next := append([]User(nil), s.users...)
 	next[i] = u
-	if err := s.save(s.instances, next); err != nil {
+	if err := s.save(s.instances, next, s.alerts); err != nil {
 		return err
 	}
 	s.users = next
@@ -396,7 +410,7 @@ func (s *Store) DeleteUser(id string) error {
 		return ErrUserNotFound
 	}
 	next := append(append([]User(nil), s.users[:i]...), s.users[i+1:]...)
-	if err := s.save(s.instances, next); err != nil {
+	if err := s.save(s.instances, next, s.alerts); err != nil {
 		return err
 	}
 	s.users = next
@@ -414,12 +428,25 @@ func (s *Store) userIndex(match func(User) bool) int {
 
 // save writes a temp file in the target directory and renames it over the
 // store, so a crash never leaves a truncated file. CreateTemp uses mode 0600.
-func (s *Store) save(instances []Instance, users []User) error {
+func (s *Store) save(instances []Instance, users []User, alerts *AlertSettings) error {
 	if s.memory {
 		return nil
 	}
 	out := file{Instances: append([]Instance{}, instances...), Users: users}
+	if alerts != nil {
+		a := alerts.clone()
+		out.Alerts = &a
+	}
 	if s.aead != nil {
+		if out.Alerts != nil {
+			for i := range out.Alerts.Targets {
+				var err error
+				t := &out.Alerts.Targets[i]
+				if t.URL, err = s.seal(t.URL); err != nil {
+					return err
+				}
+			}
+		}
 		for i := range out.Instances {
 			var err error
 			in := &out.Instances[i]

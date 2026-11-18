@@ -3,6 +3,7 @@
 package server
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -55,6 +56,10 @@ type Config struct {
 	MetricsToken string
 
 	Audit *audit.Log // nil disables the audit log
+
+	// AlertInterval is how often the alert rules are evaluated; 0 is every
+	// 5 s, and a negative value evaluates never (tests evaluate by hand).
+	AlertInterval time.Duration
 
 	BackupDir string // config file backups of local-mode instances, one directory per instance
 
@@ -119,6 +124,31 @@ type Server struct {
 	loginWindow   time.Duration
 	loginBlock    time.Duration
 	loginMaxKeys  int
+
+	// Alerts (alerts.go) and their webhooks (notify.go). Lock order: s.mu
+	// before the Store's lock, logMu before callsMu, notifyMu before a
+	// target's mu, alertSetMu before the Store's lock. alertMu, histMu, gwMu
+	// and sipMu are taken alone; none of these locks is held while a message
+	// is sent. runAlerts owns the conditions; each target's worker owns its
+	// requests.
+	alertSetMu sync.Mutex // serializes changes of the alert settings
+	alertMu    sync.Mutex // guards the conditions, the history and its deliveries
+	alertConds map[alertKey]*alertCond
+	alertHist  []*alertEntry // ring; the oldest is at alertNext once full
+	alertNext  int
+	alertSeq   uint64
+	alertStop  chan struct{} // closed by Close
+	alertDone  chan struct{} // closed when runAlerts has returned; nil when it never ran
+	closeOnce  sync.Once
+
+	notifyMu     sync.Mutex
+	targets      map[string]*target // by target ID, the enabled ones
+	notifyClosed bool
+	workers      sync.WaitGroup
+	hookClient   *http.Client
+	hookTimeout  time.Duration
+	hookRetry    []time.Duration
+	queueSize    int
 }
 
 type instance struct {
@@ -170,6 +200,14 @@ type instance struct {
 	beat      sample
 	beatLimit int       // its Max-Sessions
 	beatAt    time.Time // zero before the first
+
+	// gwMu guards the gateway states for the gatewayDown rule: seeded after
+	// every (re)connect, kept by the gateway events (alerts.go).
+	gwMu     sync.Mutex
+	gateways map[string]*gatewayState
+	gwGen    uint64         // counts the gateway events
+	gwSeeded time.Time      // State.Since of the connection last seeded
+	seeding  sync.WaitGroup // the seeds in flight; started by the collector only
 }
 
 // newInstance starts the collector of sw. With a backlog the ESL log level is
@@ -194,6 +232,7 @@ func newInstance(sw Switch, backlog, backlogLevel, recentCalls, sipEvents int, h
 		hangupCounts: map[string]uint64{},
 		sipSize:      sipEvents,
 		sipCounts:    map[string]uint64{},
+		gateways:     map[string]*gatewayState{},
 	}
 	for _, h := range history {
 		i.addSample(h)
@@ -206,6 +245,9 @@ func newInstance(sw Switch, backlog, backlogLevel, recentCalls, sipEvents int, h
 		}
 	}
 	i.sipMu.Unlock()
+	for _, p := range past {
+		i.gatewayEvent(p.headers, p.at)
+	}
 	events, logs, cancel := sw.Subscribe(1024)
 	if backlog > 0 {
 		i.floor, i.applied = backlogLevel, backlogLevel
@@ -256,6 +298,16 @@ func New(cfg Config) (*Server, error) {
 		verifyWait:    2 * time.Second,
 		verifyIP:      map[string]int{},
 		verifyPerIP:   2,
+
+		alertConds:  map[alertKey]*alertCond{},
+		alertStop:   make(chan struct{}),
+		targets:     map[string]*target{},
+		hookTimeout: hookTimeout,
+		hookRetry:   hookRetry,
+		queueSize:   targetQueue,
+		hookClient: &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		}},
 	}
 	for _, m := range []struct{ id, name, role, password string }{
 		{managedAdminID, "admin", store.RoleAdmin, cfg.AdminPassword},
@@ -284,11 +336,27 @@ func New(cfg Config) (*Server, error) {
 		s.insts[in.ID] = s.newInstance(in)
 	}
 	s.routes()
+	if cfg.Demo {
+		s.demoAlertHistory(time.Now())
+	}
+	every := cmp.Or(cfg.AlertInterval, alertEvery)
+	if every > 0 {
+		s.alertDone = make(chan struct{})
+		go s.runAlerts(every)
+	}
 	return s, nil
 }
 
-// Close closes every Switch and ends every open stream.
+// Close stops the alerts and their webhooks, closes every Switch and ends
+// every open stream.
 func (s *Server) Close() {
+	s.closeOnce.Do(func() {
+		close(s.alertStop)
+		if s.alertDone != nil {
+			<-s.alertDone
+		}
+		s.stopTargets()
+	})
 	s.mu.Lock()
 	insts := s.insts
 	s.insts = map[string]*instance{}
@@ -302,6 +370,7 @@ func (i *instance) close() {
 	close(i.done)
 	i.sw.Close()
 	<-i.collected
+	i.seeding.Wait()
 }
 
 // eslContext bounds one ESL call. It deliberately does not follow the
@@ -430,6 +499,11 @@ func (s *Server) routes() {
 	s.handle(m, "DELETE /api/users/{id}", capUsers, "user.delete", s.handleDeleteUser)
 	s.handle(m, "GET /api/audit", capUsers, "audit.read", s.handleAudit)
 	s.registerFiles(m)
+
+	s.handle(m, "GET /api/alerts", capRead, "", s.handleAlerts)
+	s.handle(m, "GET /api/alerts/settings", capInstances, "", s.handleAlertSettings)
+	s.handle(m, "PUT /api/alerts/settings", capInstances, "alerts.update", s.handleUpdateAlertSettings)
+	s.handle(m, "POST /api/alerts/test", capInstances, "alerts.test", s.handleAlertTest)
 
 	s.handle(m, "GET /api/instances", capRead, "", s.handleListInstances)
 	s.handle(m, "POST /api/instances", capInstances, "instance.create", s.handleCreateInstance)

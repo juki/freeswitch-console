@@ -16,14 +16,14 @@ import (
 // instanceView is what the API exposes of an instance: never the ESL
 // password or the agent token.
 type instanceView struct {
-	ID         string    `json:"id"`
-	Name       string    `json:"name"`
-	Host       string    `json:"host"`
-	Port       int       `json:"port"`
-	State      esl.State `json:"state"`
-	ConfigMode string    `json:"configMode"`
-	ConfigPath string    `json:"configPath"`
-	AgentURL   string    `json:"agentURL"`
+	ID         string        `json:"id"`
+	Name       string        `json:"name"`
+	Host       string        `json:"host"`
+	Port       int           `json:"port"`
+	State      instanceState `json:"state"`
+	ConfigMode string        `json:"configMode"`
+	ConfigPath string        `json:"configPath"`
+	AgentURL   string        `json:"agentURL"`
 }
 
 // instanceRequest is the body of instance create and update. Without
@@ -52,11 +52,18 @@ func (req instanceRequest) instance(id string, old store.Instance) store.Instanc
 	return in
 }
 
-func view(in store.Instance, inst *instance) instanceView {
+// instanceState is the connection state and the number of active alerts.
+type instanceState struct {
+	esl.State
+	Alerts int `json:"alerts"`
+}
+
+func view(in store.Instance, inst *instance, alerts int) instanceView {
 	v := instanceView{ID: in.ID, Name: in.Name, Host: in.Host, Port: in.Port, ConfigMode: in.ConfigMode, ConfigPath: in.ConfigPath, AgentURL: in.AgentURL}
 	if inst != nil {
-		v.State = inst.sw.State()
+		v.State.State = inst.sw.State()
 	}
+	v.State.Alerts = alerts
 	return v
 }
 
@@ -74,9 +81,10 @@ func writeStoreError(w http.ResponseWriter, err error) {
 func (s *Server) handleListInstances(w http.ResponseWriter, _ *http.Request, _ user) {
 	list := s.cfg.Store.List()
 	views := make([]instanceView, 0, len(list))
+	alerts := s.alertCounts()
 	s.mu.Lock()
 	for _, in := range list {
-		views = append(views, view(in, s.insts[in.ID]))
+		views = append(views, view(in, s.insts[in.ID], alerts[in.ID]))
 	}
 	s.mu.Unlock()
 	writeJSON(w, http.StatusOK, views)
@@ -127,7 +135,7 @@ func (s *Server) handleCreateInstance(w http.ResponseWriter, r *http.Request, u 
 	s.insts[in.ID] = inst
 	s.mu.Unlock()
 	s.record(r, instanceEntry(u, "instance.create", in.ID, req), nil)
-	writeJSON(w, http.StatusCreated, view(in, inst))
+	writeJSON(w, http.StatusCreated, view(in, inst, 0))
 }
 
 func (s *Server) handleUpdateInstance(w http.ResponseWriter, r *http.Request, u user) {
@@ -178,7 +186,7 @@ func (s *Server) handleUpdateInstance(w http.ResponseWriter, r *http.Request, u 
 		old.close()
 	}
 	s.record(r, entry, nil)
-	writeJSON(w, http.StatusOK, view(in, inst))
+	writeJSON(w, http.StatusOK, view(in, inst, s.alertCounts()[id]))
 }
 
 func (s *Server) handleDeleteInstance(w http.ResponseWriter, r *http.Request, u user) {

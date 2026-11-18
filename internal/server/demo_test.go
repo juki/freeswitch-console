@@ -134,6 +134,8 @@ func TestDemoDisabledRoutes(t *testing.T) {
 		{"PUT /api/instances/{id}/files/content", "PUT", p + "/files/content", `{"path":"vars.xml","content":"<include/>","baseSha256":""}`},
 		{"DELETE /api/instances/{id}/files/content", "DELETE", p + "/files/content?path=vars.xml&baseSha256=", ""},
 		{"POST /api/instances/{id}/files/restore", "POST", p + "/files/restore", `{"path":"vars.xml","id":"x","baseSha256":""}`},
+		{"PUT /api/alerts/settings", "PUT", "/api/alerts/settings", `{"targets":[{"name":"x","format":"json","language":"en","enabled":true,"url":"http://127.0.0.1:1/x"}]}`},
+		{"POST /api/alerts/test", "POST", "/api/alerts/test", `{"id":"x"}`},
 	}
 	if len(table) != len(demoDisabled) {
 		t.Fatalf("%d routes tested, %d disabled", len(table), len(demoDisabled))
@@ -430,5 +432,52 @@ func TestDemoLab(t *testing.T) {
 	if len(list) != 3 || !list[0].State.Connected || list[2].State.Connected || list[0].ConfigMode != store.ConfigLocal {
 		body, _ := json.Marshal(list)
 		t.Fatalf("instances %s", body)
+	}
+}
+
+// TestDemoAlerts: pbx-lab and carrier-backup are active from the first
+// evaluation, after a history of a few incidents; the settings are read
+// only and there are no targets.
+func TestDemoAlerts(t *testing.T) {
+	h := newDemoHarness(t)
+	var a alertsReply
+	waitFor(t, "two active alerts", func() bool {
+		h.srv.evaluateAlerts(time.Now())
+		a = h.alerts("")
+		return len(a.Active) == 2
+	})
+	got := map[string]alertView{}
+	for _, al := range a.Active {
+		got[al.Instance+" "+al.Rule+" "+al.Subject] = al
+	}
+	lab, gw := got["pbx-lab instanceDown "], got["pbx-east-1 gatewayDown carrier-backup"]
+	if lab.ID == "" || !strings.Contains(lab.Reason, "connection refused") || gw.ID == "" || gw.Ping != "DOWN" || (gw.State != "FAIL_WAIT" && gw.State != "DOWN") {
+		t.Fatalf("active %+v", a.Active)
+	}
+	if len(a.History) != 2*len(demoIncidents)+2 || a.History[0].Event != "firing" || a.History[len(a.History)-1].Seq != 1 {
+		t.Fatalf("history %+v", a.History)
+	}
+	for i, e := range a.History[2:] {
+		if (i > 0 && e.T > a.History[i+1].T) || e.ID == "" || len(e.Deliveries) != 0 || e.InstanceID != h.ids[e.Instance] {
+			t.Fatalf("prefilled %+v", e)
+		}
+	}
+	var set struct {
+		GatewayEvents bool
+		Targets       []alertTargetView
+	}
+	h.do("GET", "/api/alerts/settings", "", "").json(t, &set)
+	if !set.GatewayEvents || len(set.Targets) != 0 {
+		t.Fatalf("settings %+v", set)
+	}
+	var list []struct {
+		Name  string
+		State struct{ Alerts int }
+	}
+	h.do("GET", "/api/instances", "", "").json(t, &list)
+	for _, in := range list {
+		if want := map[string]int{"pbx-lab": 1, "pbx-east-1": 1}[in.Name]; in.State.Alerts != want {
+			t.Errorf("%s: %d alerts", in.Name, in.State.Alerts)
+		}
 	}
 }
