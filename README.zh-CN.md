@@ -25,6 +25,7 @@ docker run --rm -p 127.0.0.1:8080:8080 ghcr.io/juki/freeswitch-console -demo
 | 概览 | 最近两小时的会话数、会话速率、CPU 空闲和容量占用，SIP 与通话速览 | `json status`、`HEARTBEAT` 事件 |
 | SIP | Profile、网关、别名、注册；启动、停止、重启、重扫 Profile；网关注册、注销、移除；开关某个 Profile 的 SIP 跟踪 | `sofia xmlstatus`、`sofia profile …` |
 | SIP 事件 | 谁注册不上、网关什么时候掉的：最近 1000 条注册、过期、被拒绝的尝试和网关状态变化；被拒绝的尝试按来源地址汇总，有人在扫号猜密码还是只是输错了一次密码，一眼就能分清 | `sofia::register`、`sofia::register_failure`、`sofia::gateway_state` 等事件 |
+| 告警 | 交换机断开、网关掉线、负载吃紧时第一时间知道：四条规则每隔几秒检查一次，列出进行中的告警和历史，并在触发和恢复时发到 Slack、钉钉、企业微信、飞书或自建的接收端 | 控制台已有的连接状态、`HEARTBEAT` 和 `sofia::gateway_state` 事件 |
 | 通话 | 通道和桥接通话，实时时长，侧边栏查看全部字段，挂断 | `show channels`、`show calls`、`uuid_kill` |
 | 最近挂断 | 不装 CDR 模块也能看出一通电话为什么结束：最近 500 个挂断的通道，用大白话解释挂断原因，并给出 SIP 状态码、谁挂的、通话时长、MOS、这通电话自己的日志行和全部变量 | `CHANNEL_HANGUP_COMPLETE` 事件 |
 | 配置 | FreeSWITCH 解析后的生效配置、全局变量、模块（加载、卸载、重载） | `xml_locate`、`global_getvar`、`show modules` |
@@ -45,6 +46,7 @@ docker run --rm -p 127.0.0.1:8080:8080 ghcr.io/juki/freeswitch-console -demo
 | ![配置文件编辑器](assets/screenshots/files.png) | ![按条件和动作阅读的拨号计划](assets/screenshots/dialplan.png) |
 | ![最近挂断：原因与 SIP 状态码](assets/screenshots/hangups.png) | ![一通电话为什么结束：解释、要点和它自己的日志](assets/screenshots/hangup-detail.png) |
 | ![SIP 事件：注册失败来源、注册和网关变化](assets/screenshots/sip-events.png) | ![一次被拒绝的注册：谁、从哪里来、用的什么终端](assets/screenshots/sip-event-failed.png) |
+| ![告警：正在发生的和之前发生过的](assets/screenshots/alerts.png) | ![告警规则与 Webhook](assets/screenshots/alert-notifications.png) |
 | ![带 Tab 补全的控制台](assets/screenshots/console.png) | ![中文界面、暗色主题下的实例页](assets/screenshots/fleet-zh.png) |
 
 ## 快速开始
@@ -115,16 +117,41 @@ fsconsole 连接 `mod_event_socket`（默认端口 8021）。原版 FreeSWITCH �
 
 限制：只支持 `.xml .lua .conf .tpl .txt .json .cfg .ini`，单个文件不超过 1 MiB 的 UTF-8 文本；不能访问配置目录之外的内容，符号链接也不行。由 `mod_xml_curl` 或数据库下发的配置不在文件里，需要到它的源头去改。修改 Profile 的端口、地址或 TLS 需要重启该 Profile，会中断它上面的通话；fsconsole 会先说明并要求确认。
 
+## 告警
+
+“告警”页列出所有实例当前需要处理的问题，以及之前发生过的。共四条规则，对所有实例生效：
+
+| 规则 | 触发条件 | 默认值 |
+|---|---|---|
+| 实例断开 | 控制台连不上交换机的 Event Socket | 持续 60 秒 |
+| 网关故障 | 网关注册失败（`FAIL_WAIT`、`FAILED`、`EXPIRED`、`TIMEOUT`、`DOWN`），或不再响应探测 | 持续 60 秒 |
+| 空闲 CPU 过低 | 交换机上报的空闲 CPU 低于阈值 | 低于 10%，持续 60 秒 |
+| 会话数过高 | 会话数达到交换机会话数上限的一定比例 | 高于 90%，持续 60 秒 |
+
+条件持续满这段时间后告警才会触发，恢复也一样，所以网关重试或负载尖峰不会让告警来回跳。规则只读取控制台已经收到的数据，不会额外轮询 FreeSWITCH。进行中的告警和最近 200 条历史保存在内存里：fsconsole 重启后，仍然成立的条件会重新触发。“网关故障”依赖 SIP 事件（`-sip-events` 大于 0）。
+
+管理员可以开关规则、调整阈值，并添加最多五个 Webhook。每条告警在触发和恢复时各发送一次：
+
+| 类型 | 消息体 |
+|---|---|
+| Slack（Mattermost、Rocket.Chat 同样适用） | `{"text": "…"}` |
+| 钉钉、企业微信 | `{"msgtype": "text", "text": {"content": "…"}}` |
+| 飞书 | `{"msg_type": "text", "content": {"text": "…"}}` |
+| JSON | 一个对象，包含 `event`（`firing`、`resolved`）、`rule`、`instance`、`subject`、`summary`、`state`、`value`、`threshold`、`since`、`at` |
+
+每条消息都以 `[FreeSWITCH Console]` 开头，中文还是英文可以按 Webhook 分别设置；群机器人如果开了关键词校验，关键词填 `FreeSWITCH` 即可。不支持要求加签的机器人。每次发送最多尝试三次；对方返回了错误码（`errcode`、`code`）时，即使状态码是 200 也算失败，历史里会显示哪个 Webhook 失败以及原因。**测试**按钮会立刻发一条消息并显示对方的应答。
+
 ## 账号
 
 | | 只读 | 操作员 | 管理员 |
 |---|---|---|---|
 | 状态、SIP、通话、配置、拨号计划、用户目录（已脱敏）、负载历史 | 是 | 是 | 是 |
 | 日志 | 否 | 是 | 是 |
+| 告警及其历史 | 是 | 是 | 是 |
 | 挂断、重载 XML、重载 ACL、重扫 Profile、网关注册与注销 | 否 | 是 | 是 |
 | Profile 启停与重启、移除网关、模块、运行参数 | 否 | 否 | 是 |
 | 控制台 | 否 | 否 | 是 |
-| 管理实例和账号、查看审计日志、编辑配置文件 | 否 | 否 | 是 |
+| 管理实例和账号、告警规则和 Webhook、查看审计日志、编辑配置文件 | 否 | 否 | 是 |
 
 账号保存在数据文件里。密码长度 10 到 256 个字符，以 PBKDF2-SHA256 哈希存储。修改账号的角色或密码、禁用或删除账号，都会让它在所有地方退出登录。任何人都不能删除、禁用或降级自己当前登录的账号，最后一个可用的管理员也会被保留。
 
@@ -173,6 +200,7 @@ scrape_configs:
 - 未设置 `FSCONSOLE_SECRET_KEY` 时，Event Socket 密码和代理令牌在数据文件里是明文；设置后用 AES-256-GCM 加密。如果文件里是加密值而密钥缺失或不对，fsconsole 会拒绝启动。无论哪种情况都要保护好数据文件：里面还有密码哈希。
 - 同一账号从同一地址在五分钟内登录失败五次，该组合会被锁定一分钟。在反向代理之后，所有客户端共用代理的地址，此时锁定相当于针对整个账号。
 - 审计日志记录登录（包括失败和被锁定的）、退出、实例和账号变更、挂断、运行时操作、配置文件变更（路径和哈希，不含内容）、被拒绝的请求，以及控制台里执行的每条完整命令。它从不记录密码、令牌或会话 Cookie，但控制台命令本身可能带有敏感信息：文件权限为 0600，且只有管理员能在控制台里查看。
+- Webhook 地址里通常带有令牌。它和 Event Socket 密码一样保存（设置了 `FSCONSOLE_SECRET_KEY` 时加密），保存后不再显示，也不会写进审计日志（只记录主机名）。管理员可以让 fsconsole 向它能访问到的任意地址发送 POST 请求，**测试**按钮会显示应答的前 300 个字符；不跟随重定向。
 - 不设置 `FSCONSOLE_METRICS_TOKEN` 时 `/metrics` 不存在；设置后只响应带该令牌的请求。其中只有实例名、负载和计数，没有号码、用户或地址。
 - 配置文件按原样展示和编辑，其中的密码是明文；日志内容也不做脱敏。所以这两项只对上表中的相应角色开放。
 
@@ -220,7 +248,7 @@ docker exec freeswitch-test fs_cli -x 'bgapi originate loopback/9196/default &pa
 ## 不在范围内
 
 - 通话记录和 SIP 抓包：“最近挂断”和“SIP 事件”只是保存在内存里的排障辅助，重启即清空；其余由 Homer 和各类 CDR 工具覆盖。
-- 长期指标：Prometheus 和 Grafana 已经覆盖，`/metrics` 负责把数据交给它们。
+- 长期指标和告警路由：Prometheus、Grafana 和 Alertmanager 已经覆盖，`/metrics` 负责把数据交给它们。内置告警只有四条固定规则，没有排班和升级。
 - 生成配置：fsconsole 只编辑你已有的文件。
 
 ## 开发
@@ -233,7 +261,7 @@ go vet ./... && go test -race ./...
 FSCONSOLE_TEST_ESL=127.0.0.1:18021 go test -race -run Real ./cmd/fsconsole/
 ```
 
-单元测试和端到端测试用的是模拟的 FreeSWITCH。`Real` 开头的测试只有在 `FSCONSOLE_TEST_ESL` 指向一个 Event Socket 时才运行（密码用 `FSCONSOLE_TEST_ESL_PASSWORD`，默认 `ClueCon`），覆盖只读视图、一通电话从 `originate` 到挂断记录的全过程、日志流、连接被切断和被卡住、30 通并发通话、慢命令以及网关事件。这些测试会在 loopback 端点上发起并挂断通话，请指向测试用的交换机；上文的 Docker 配方就够用。
+单元测试和端到端测试用的是模拟的 FreeSWITCH。`Real` 开头的测试只有在 `FSCONSOLE_TEST_ESL` 指向一个 Event Socket 时才运行（密码用 `FSCONSOLE_TEST_ESL_PASSWORD`，默认 `ClueCon`），覆盖只读视图、一通电话从 `originate` 到挂断记录的全过程、日志流、连接被切断和被卡住、30 通并发通话、慢命令、网关事件，以及一条告警送达 Webhook 的全过程。这些测试会在 loopback 端点上发起并挂断通话，请指向测试用的交换机；上文的 Docker 配方就够用。
 
 没有第三方 Go 模块，前端没有构建步骤：`web/static` 是原生 ES 模块，原样提供。界面文案在 `web/static/js/locales/`，有测试保证各语言词条一致。
 

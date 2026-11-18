@@ -35,6 +35,7 @@ docker run --rm -p 127.0.0.1:8080:8080 ghcr.io/juki/freeswitch-console -demo
 | Overview | sessions, session rate, idle CPU and capacity over the last two hours, SIP and call summary | `json status`, `HEARTBEAT` events |
 | SIP | profiles, gateways, aliases, registrations; start, stop, restart and rescan profiles; register, unregister and remove gateways; switch the SIP trace of a profile on and off | `sofia xmlstatus`, `sofia profile …` |
 | SIP events | who cannot register, and when a gateway went down: the last 1,000 registrations, expiries, refused attempts and gateway state changes; refused attempts grouped by source address, so a scan guessing passwords stands out from one mistyped password | `sofia::register`, `sofia::register_failure`, `sofia::gateway_state` and related events |
+| Alerts | know when a switch drops, a gateway goes down or the load runs out: four rules checked every few seconds, listed with their history, and sent to Slack, DingTalk, WeCom, Feishu or your own receiver when they fire and when they resolve | the connection, `HEARTBEAT` and `sofia::gateway_state` events the console already holds |
 | Calls | channels and bridged calls with live durations, every field in a side panel, hang up | `show channels`, `show calls`, `uuid_kill` |
 | Recent hang-ups | why a call ended, without a CDR module: the last 500 channels that hung up, with the cause explained in plain language, the SIP status, who hung up, talk time, MOS, the call's own log lines and all its variables | `CHANNEL_HANGUP_COMPLETE` events |
 | Configuration | the effective configuration as FreeSWITCH parsed it, global variables, modules (load, unload, reload) | `xml_locate`, `global_getvar`, `show modules` |
@@ -59,6 +60,7 @@ as `sip_auth_password=…` in a dial string.
 | ![Config file editor](assets/screenshots/files.png) | ![Dialplan read as conditions and actions](assets/screenshots/dialplan.png) |
 | ![Recent hang-ups with cause and SIP status](assets/screenshots/hangups.png) | ![Why a call ended: explanation, facts and its own log](assets/screenshots/hangup-detail.png) |
 | ![SIP events: failed registrations by source, registrations and gateway changes](assets/screenshots/sip-events.png) | ![A refused registration: who, from where, with which user agent](assets/screenshots/sip-event-failed.png) |
+| ![Alerts: what is firing now and what fired before](assets/screenshots/alerts.png) | ![Alert rules and webhooks](assets/screenshots/alert-notifications.png) |
 | ![Console with Tab completion](assets/screenshots/console.png) | ![Instances in Chinese, dark theme](assets/screenshots/fleet-zh.png) |
 
 ## Quick start
@@ -160,16 +162,53 @@ Configuration served by `mod_xml_curl` or a database is not in files and has
 to be changed at its source. Changes to a profile's ports, addresses or TLS
 need a profile restart, which drops its calls; fsconsole says so and asks first.
 
+## Alerts
+
+The Alerts page lists what needs attention on any instance, and what did
+before. Four rules, the same for every instance:
+
+| Rule | Fires when | Default |
+|---|---|---|
+| Instance down | the console cannot reach the switch's Event Socket | for 60 seconds |
+| Gateway down | a gateway fails to register (`FAIL_WAIT`, `FAILED`, `EXPIRED`, `TIMEOUT`, `DOWN`) or stops answering pings | for 60 seconds |
+| Idle CPU low | the switch reports less idle CPU than the threshold | below 10 % for 60 seconds |
+| Sessions high | sessions reach a share of the switch's session limit | above 90 % for 60 seconds |
+
+An alert fires, and later resolves, only after its condition has held for
+that long, so a gateway that retries or a load spike does not flap. The rules
+read what the console already receives; nothing is polled from FreeSWITCH.
+Active alerts and the last 200 entries of the history are kept in memory: after
+a restart of fsconsole a condition that still holds fires again. The gateway
+rule needs the SIP events (`-sip-events` above 0).
+
+An administrator switches rules on and off, changes the thresholds and adds
+up to five webhooks. Each alert is sent when it fires and when it resolves:
+
+| Type | Body |
+|---|---|
+| Slack (also Mattermost, Rocket.Chat) | `{"text": "…"}` |
+| DingTalk, WeCom | `{"msgtype": "text", "text": {"content": "…"}}` |
+| Feishu | `{"msg_type": "text", "content": {"text": "…"}}` |
+| JSON | an object with `event` (`firing`, `resolved`), `rule`, `instance`, `subject`, `summary`, `state`, `value`, `threshold`, `since`, `at` |
+
+Every message starts with `[FreeSWITCH Console]`, in English or Chinese per
+webhook; a chat robot that checks a keyword can use `FreeSWITCH`. Robots that
+require a signature are not supported. A delivery is tried up to three times;
+an answer that carries an error code (`errcode`, `code`) counts as a failure
+even with status 200, and the history shows which webhook failed and why.
+**Test** sends a message right away and shows the answer.
+
 ## Accounts
 
 | | Read only | Operator | Administrator |
 |---|---|---|---|
 | Status, SIP, calls, configuration, dialplan, directory (masked), load history | yes | yes | yes |
 | Logs | no | yes | yes |
+| Alerts and their history | yes | yes | yes |
 | Hang up, Reload XML, Reload ACL, profile rescan, gateway register and unregister | no | yes | yes |
 | Profile start, stop, restart; remove gateways; modules; runtime settings | no | no | yes |
 | Console | no | no | yes |
-| Manage instances and accounts, read the audit log, edit config files | no | no | yes |
+| Manage instances and accounts, alert rules and webhooks, read the audit log, edit config files | no | no | yes |
 
 Accounts live in the data file. Passwords are 10 to 256 characters, stored as
 PBKDF2-SHA256 hashes. Changing an account's role or password, disabling or
@@ -250,6 +289,12 @@ scrape_configs:
   console command in full. It never records passwords, tokens or session
   cookies, but console commands can carry secrets: the file has mode 0600 and
   only administrators can read it in the console.
+- Webhook addresses usually contain a token. They are stored like the Event
+  Socket passwords (encrypted with `FSCONSOLE_SECRET_KEY`), never shown again
+  and never written to the audit log, which records the host only. An
+  administrator can make fsconsole send a POST to any address it can reach,
+  and **Test** shows the first 300 characters of the answer; redirects are
+  not followed.
 - `/metrics` does not exist unless `FSCONSOLE_METRICS_TOKEN` is set, and then
   answers only to that token. It carries instance names, load and counters;
   no numbers, users or addresses.
@@ -309,8 +354,9 @@ fsconsole that path.
 - Call history and SIP capture. The recent hang-ups and SIP events are
   troubleshooting aids kept in memory and gone after a restart; Homer and
   CDR tools cover the rest.
-- Long-term metrics. Prometheus and Grafana cover those; `/metrics` gives
-  them the numbers.
+- Long-term metrics and alert routing. Prometheus, Grafana and Alertmanager
+  cover those; `/metrics` gives them the numbers. The built-in alerts are
+  four fixed rules, without schedules or escalation.
 - Generating configuration. fsconsole edits the files you have.
 
 ## Development
@@ -327,7 +373,7 @@ The unit and end-to-end tests use a fake FreeSWITCH. The `Real` tests are
 skipped unless `FSCONSOLE_TEST_ESL` names an Event Socket (password in
 `FSCONSOLE_TEST_ESL_PASSWORD`, default `ClueCon`). They cover the read views,
 a call from `originate` to its hang-up record, the log stream, a cut and a
-stalled connection, 30 calls at once, a slow command and gateway events. They place and hang
+stalled connection, 30 calls at once, a slow command, gateway events and an alert delivered to a webhook. They place and hang
 up calls on the loopback endpoint, so point them at a test switch; the Docker
 recipe above is enough.
 
