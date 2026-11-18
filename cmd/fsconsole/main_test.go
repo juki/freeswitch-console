@@ -11,6 +11,8 @@ import (
 	"io"
 	"math/big"
 	"net"
+	"net/http"
+	"net/http/cookiejar"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -224,15 +226,25 @@ func TestBootstrapAndAuditDefault(t *testing.T) {
 }
 
 // TestDialerEvents checks the subscription the clients of main send: the
-// hang-up event only while recent calls are kept.
+// hang-up event only while recent calls are kept, the SIP subclasses only
+// while SIP events are, after CUSTOM and last.
 func TestDialerEvents(t *testing.T) {
-	for n, want := range map[int]string{500: "event json BACKGROUND_JOB HEARTBEAT CHANNEL_HANGUP_COMPLETE", 0: "event json BACKGROUND_JOB HEARTBEAT"} {
+	sip := " CUSTOM sofia::register sofia::unregister sofia::expire sofia::register_failure sofia::gateway_state sofia::gateway_add sofia::gateway_delete"
+	for _, tc := range []struct {
+		recentCalls, sipEvents int
+		want                   string
+	}{
+		{500, 1000, "event json BACKGROUND_JOB HEARTBEAT CHANNEL_HANGUP_COMPLETE" + sip},
+		{0, 1000, "event json BACKGROUND_JOB HEARTBEAT" + sip},
+		{500, 0, "event json BACKGROUND_JOB HEARTBEAT CHANNEL_HANGUP_COMPLETE"},
+		{0, 0, "event json BACKGROUND_JOB HEARTBEAT"},
+	} {
 		ln, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer ln.Close()
-		sw := dialer(n)(ln.Addr().String(), "ClueCon")
+		sw := dialer(tc.recentCalls, tc.sipEvents)(ln.Addr().String(), "ClueCon")
 		defer sw.Close()
 		conn, err := ln.Accept()
 		if err != nil {
@@ -256,8 +268,108 @@ func TestDialerEvents(t *testing.T) {
 				io.WriteString(conn, "Content-Type: command/reply\nReply-Text: +OK accepted\n\n")
 			}
 		}
-		if cmds[0] != "auth ClueCon" || cmds[1] != want {
-			t.Errorf("recent calls %d: commands %q, want %q", n, cmds, want)
+		if cmds[0] != "auth ClueCon" || cmds[1] != tc.want {
+			t.Errorf("recent calls %d, SIP events %d: commands %q, want %q", tc.recentCalls, tc.sipEvents, cmds, tc.want)
+		}
+	}
+}
+
+// TestSipEventsAndMetricsFlags starts main with -sip-events and
+// FSCONSOLE_SIP_EVENTS, and FSCONSOLE_METRICS_TOKEN, and checks they reach
+// the server; bad values stop the start.
+func TestSipEventsAndMetricsFlags(t *testing.T) {
+	dir := t.TempDir()
+	data := filepath.Join(dir, "fsconsole.json")
+	os.WriteFile(data, []byte(`{"instances":[{"id":"0123456789abcdef","name":"a","host":"127.0.0.1","port":1,"password":"ClueCon"}]}`), 0o600)
+	base := []string{"FSCONSOLE_DATA=" + data, "FSCONSOLE_ADMIN_PASSWORD=admin-password", "FSCONSOLE_AUDIT=", "FSCONSOLE_SECRET_KEY=0123456789abcdef-key"}
+	const token = "a-metrics-token-of-24ch"
+
+	// start runs main on a free port until it listens and returns its URL.
+	start := func(env []string, args ...string) string {
+		t.Helper()
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		addr := ln.Addr().String()
+		ln.Close()
+		_, sc := runMain(t, append(env, "FSCONSOLE_LISTEN="+addr), args...)
+		var out []string
+		for sc.Scan() {
+			out = append(out, sc.Text())
+			if strings.Contains(sc.Text(), "listening on") {
+				go func() {
+					for sc.Scan() {
+					}
+				}()
+				return "http://" + addr
+			}
+		}
+		t.Fatalf("no start:\n%s", strings.Join(out, "\n"))
+		return ""
+	}
+	capacity := func(base string) int {
+		t.Helper()
+		jar, _ := cookiejar.New(nil)
+		c := &testClient{t: t, base: base, http: &http.Client{Jar: jar, Timeout: 5 * time.Second}}
+		if code, body := c.do("POST", "/api/login", map[string]string{"username": "admin", "password": "admin-password"}); code != http.StatusOK {
+			t.Fatalf("login: %d %s", code, body)
+		}
+		var reply struct {
+			Enabled  bool
+			Capacity int
+		}
+		c.get("/api/instances/0123456789abcdef/sipevents", http.StatusOK, &reply)
+		return reply.Capacity
+	}
+	metrics := func(base, auth string) int {
+		t.Helper()
+		req, _ := http.NewRequest("GET", base+"/metrics", nil)
+		if auth != "" {
+			req.Header.Set("Authorization", auth)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	url := start(base)
+	if n := capacity(url); n != 1000 {
+		t.Errorf("default capacity %d", n)
+	}
+	if code := metrics(url, "Bearer "+token); code != http.StatusNotFound {
+		t.Errorf("/metrics without FSCONSOLE_METRICS_TOKEN: %d", code)
+	}
+	url = start(append(base, "FSCONSOLE_SIP_EVENTS=7", "FSCONSOLE_METRICS_TOKEN="+token))
+	if n := capacity(url); n != 7 {
+		t.Errorf("FSCONSOLE_SIP_EVENTS=7: capacity %d", n)
+	}
+	if ok, bad := metrics(url, "Bearer "+token), metrics(url, ""); ok != http.StatusOK || bad != http.StatusUnauthorized {
+		t.Errorf("/metrics: %d with the token, %d without", ok, bad)
+	}
+	if n := capacity(start(append(base, "FSCONSOLE_SIP_EVENTS=7"), "-sip-events", "9")); n != 9 {
+		t.Errorf("-sip-events 9: capacity %d", n)
+	}
+	if n := capacity(start(append(base, "FSCONSOLE_SIP_EVENTS=0"))); n != 0 {
+		t.Errorf("FSCONSOLE_SIP_EVENTS=0: capacity %d", n)
+	}
+
+	for _, tc := range []struct {
+		env  []string
+		args []string
+		want string
+	}{
+		{[]string{"FSCONSOLE_SIP_EVENTS=lots"}, nil, `FSCONSOLE_SIP_EVENTS: "lots" is not a number`},
+		{[]string{"FSCONSOLE_SIP_EVENTS=-1"}, nil, "SIP events must not be negative"},
+		{nil, []string{"-sip-events", "-5"}, "SIP events must not be negative"},
+		{[]string{"FSCONSOLE_METRICS_TOKEN=fifteen-chars-x"}, nil, "FSCONSOLE_METRICS_TOKEN) must be at least 16 characters"},
+		{[]string{"FSCONSOLE_METRICS_TOKEN=x"}, []string{"-demo"}, "FSCONSOLE_METRICS_TOKEN) must be at least 16 characters"},
+	} {
+		if out, ok := startupOutput(t, append(append(base, "FSCONSOLE_LISTEN=127.0.0.1:0"), tc.env...), tc.args...); ok || !strings.Contains(out, tc.want) {
+			t.Errorf("%q %q:\n%s", tc.env, tc.args, out)
 		}
 	}
 }

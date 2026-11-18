@@ -227,6 +227,11 @@ func (i *instance) addHangup(h map[string]string) {
 
 	i.callsMu.Lock()
 	defer i.callsMu.Unlock()
+	cause := c.row.Cause
+	if _, ok := i.hangupCounts[cause]; !ok && len(i.hangupCounts) >= maxCauses {
+		cause = "other"
+	}
+	i.hangupCounts[cause]++
 	if len(i.calls) < i.callsSize {
 		i.calls = append(i.calls, c)
 		return

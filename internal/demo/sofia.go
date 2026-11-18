@@ -315,10 +315,16 @@ func (s *Switch) profileCommand(name, verb string, args []string) string {
 			return "-ERR Invalid gateway!\n"
 		}
 		oldState, oldKilled := g.state, g.killed
-		s.changed("gateway:"+g.name, func() { g.state, g.killed = oldState, oldKilled })
+		s.changed("gateway:"+g.name, func() {
+			if g.killed && !oldKilled {
+				s.publishSip(gatewayListEvent(g, true))
+			}
+			g.state, g.killed = oldState, oldKilled
+		})
 		switch verb {
 		case "killgw":
 			g.killed = true
+			s.publishSip(gatewayListEvent(g, false))
 			return "+OK gateway marked for deletion.\n"
 		case "register":
 			g.state = "REGED"

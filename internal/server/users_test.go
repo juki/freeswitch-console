@@ -203,6 +203,7 @@ func routeTable(id string) []routeCase {
 	unknownUser := "/api/users/0000000000000000"
 	return []routeCase{
 		{"GET /healthz", "GET", "/healthz", "", capPublic},
+		{"GET /metrics", "GET", "/metrics", "", capPublic},
 		{"POST /api/login", "POST", "/api/login", `{"username":"nobody","password":"x"}`, capPublic},
 		{"/", "GET", "/", "", capPublic},
 		{"GET /api/me", "GET", "/api/me", "", capRead},
@@ -226,6 +227,9 @@ func routeTable(id string) []routeCase {
 		{"GET /api/instances/{id}/history", "GET", p + "/history", "", capRead},
 		{"GET /api/instances/{id}/hangups", "GET", p + "/hangups", "", capRead},
 		{"GET /api/instances/{id}/hangups/{uuid}", "GET", p + "/hangups/abc-123", "", capRead},
+		{"GET /api/instances/{id}/sipevents", "GET", p + "/sipevents", "", capRead},
+		{"GET /api/instances/{id}/sipevents/failures", "GET", p + "/sipevents/failures", "", capRead},
+		{"GET /api/instances/{id}/sipevents/{seq}", "GET", p + "/sipevents/1", "", capRead},
 		{"GET /api/instances/{id}/stream", "GET", p + "/stream?loglevel=7", "", capRead},
 		{"/api/", "GET", "/api/nope", "", capRead},
 		{"DELETE /api/instances/{id}/channels/{uuid}", "DELETE", p + "/channels/abc-123", "", capOperate},
@@ -318,8 +322,9 @@ func TestRoleMatrix(t *testing.T) {
 				}
 				switch {
 				case rc.cap == capPublic:
-					// The sign-in answers for the credentials, not a session.
-					if r.code != 200 && strings.TrimSpace(r.body) != `{"error":"invalid username or password"}` {
+					// The sign-in answers for the credentials, not a session;
+					// /metrics is not there without a token configured.
+					if r.code != 200 && strings.TrimSpace(r.body) != `{"error":"invalid username or password"}` && (rc.pattern != "GET /metrics" || r.code != 404) {
 						t.Errorf("%s: %d %s", rc.pattern, r.code, r.body)
 					}
 				case role == "":

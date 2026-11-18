@@ -177,6 +177,7 @@ func (s *Switch) setup() {
 	s.after(s.errorGap(), s.scanner)
 	s.after(s.expGap(), s.arrival)
 	s.prefill(sp.busy)
+	s.setupSip()
 }
 
 // resetGateway sets the state the configuration gives g.
@@ -301,11 +302,12 @@ func (s *Switch) refresh(r *registration) {
 }
 
 // registered logs that r has registered, with its SIP exchange when the
-// profile is traced.
+// profile is traced, and publishes its sofia::register event.
 func (s *Switch) registered(r *registration) {
 	s.logf(levelInfo, srcRegister, "", "Registered %s@%s from %s/%s:%d, expires in %ds (%s)", r.user, s.sp.ip, r.proto, r.ip, r.port, r.expires, r.agent)
 	s.sip("internal", true, r.proto, r.ip, r.port, "REGISTER sip:"+s.sp.ip+" SIP/2.0", r.user, s.sp.ip, r.callID, "2 REGISTER", r.agent)
 	s.sip("internal", false, r.proto, r.ip, r.port, "SIP/2.0 200 OK", r.user, s.sp.ip, r.callID, "2 REGISTER", "")
+	s.publishSip(s.registerEvent(r, r.expires))
 }
 
 // ping fails for carrier-backup, which is unreachable, every 30 seconds.
@@ -317,16 +319,29 @@ func (s *Switch) ping(g *gateway) {
 	s.logf(levelWarning, srcPing, "", "Ping failed %s with code 408 - count 0/1/0, state DOWN", g.name)
 }
 
-// scanner is a stranger trying to register now and then; it fails.
+// scanner is one of the attackers trying passwords now and then: a burst of
+// failed registrations, one user after another.
 func (s *Switch) scanner() {
 	s.after(s.errorGap(), s.scanner)
-	from := fmt.Sprintf("203.0.113.%d", 100+s.rng.Intn(100))
-	user := []string{"1099", "100", "admin", "9001"}[s.rng.Intn(4)]
+	who, n := attackers[s.rng.Intn(len(attackers))], 6+s.rng.Intn(25)
 	if !s.profile("internal").running {
 		return
 	}
-	s.logf(levelWarning, srcAuth, "", "SIP auth failure (REGISTER) on sofia profile 'internal' for [%s@%s] from ip %s", user, s.sp.ip, from)
-	s.logf(levelErr, srcFindUser, "", "Can't find user [%s@%s] from %s", user, s.sp.ip, from)
+	for _, a := range burst(s.sipRng, who, n) {
+		s.after(a.after, func() { s.authFailure(a) })
+	}
+}
+
+// authFailure logs and publishes one failed registration of a burst.
+func (s *Switch) authFailure(a attempt) {
+	if !s.profile("internal").running {
+		return
+	}
+	s.logf(levelWarning, srcAuth, "", "SIP auth failure (REGISTER) on sofia profile 'internal' for [%s@%s] from ip %s", a.user, s.sp.ip, a.ip)
+	if !directoryUser(a.user) {
+		s.logf(levelErr, srcFindUser, "", "Can't find user [%s@%s] from %s", a.user, s.sp.ip, a.ip)
+	}
+	s.publishSip(s.failureEvent(a))
 }
 
 // heartbeat publishes a HEARTBEAT event every 20 seconds of uptime.
@@ -477,7 +492,12 @@ func (s *Switch) uptime() (years, days, hours, minutes, seconds, ms, us int) {
 // eventHeaders are the headers every event carries.
 func (s *Switch) eventHeaders(name, file, fn string, line int) map[string]string {
 	s.eventSeq++
-	t := s.t.UTC()
+	return s.headersAt(name, file, fn, line, s.t, s.eventSeq)
+}
+
+// headersAt are the headers of an event at t with the sequence number seq.
+func (s *Switch) headersAt(name, file, fn string, line int, at time.Time, seq uint64) map[string]string {
+	t := at.UTC()
 	return map[string]string{
 		"Event-Name":                name,
 		"Core-UUID":                 s.coreUUID,
@@ -491,7 +511,7 @@ func (s *Switch) eventHeaders(name, file, fn string, line int) map[string]string
 		"Event-Calling-File":        file,
 		"Event-Calling-Function":    fn,
 		"Event-Calling-Line-Number": strconv.Itoa(line),
-		"Event-Sequence":            strconv.FormatUint(s.eventSeq, 10),
+		"Event-Sequence":            strconv.FormatUint(seq, 10),
 	}
 }
 

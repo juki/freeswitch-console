@@ -30,7 +30,8 @@ type Switch struct {
 	// The simulation; everything below is guarded by mu.
 	seed     int64 // of rng; History draws from a source of its own
 	rng      *rand.Rand
-	t        time.Time // simulated now
+	sipRng   *rand.Rand // of the live SIP events (sipevents.go)
+	t        time.Time  // simulated now
 	boot     time.Time
 	queue    eventQueue
 	seq      uint64 // orders events scheduled for the same time

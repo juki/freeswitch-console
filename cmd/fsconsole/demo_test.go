@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"net"
 	"net/http"
 	"net/http/cookiejar"
@@ -22,7 +23,8 @@ func TestDemoMode(t *testing.T) {
 	addr := ln.Addr().String()
 	ln.Close()
 	dir := t.TempDir()
-	cmd, sc := runMain(t, []string{"FSCONSOLE_DATA=" + dir + "/fsconsole.json", "FSCONSOLE_ADMIN_PASSWORD=an-admin-password", "FSCONSOLE_AUDIT=" + dir + "/audit.log"}, "-demo", "-listen", addr)
+	const token = "a-demo-metrics-token"
+	cmd, sc := runMain(t, []string{"FSCONSOLE_DATA=" + dir + "/fsconsole.json", "FSCONSOLE_ADMIN_PASSWORD=an-admin-password", "FSCONSOLE_AUDIT=" + dir + "/audit.log", "FSCONSOLE_METRICS_TOKEN=" + token}, "-demo", "-listen", addr)
 	var startup []string
 	for sc.Scan() {
 		startup = append(startup, sc.Text())
@@ -93,6 +95,47 @@ func TestDemoMode(t *testing.T) {
 		}
 	}
 	c.get(p+"/history", http.StatusOK, nil)
+
+	// An hour of SIP events is there from the start, failures among them.
+	var sip struct {
+		Capacity int
+		Rows     []struct {
+			Seq  int
+			Kind string
+		}
+	}
+	c.get(p+"/sipevents?limit=1000", http.StatusOK, &sip)
+	if sip.Capacity != 1000 || len(sip.Rows) < 40 {
+		t.Fatalf("SIP events: capacity %d, %d rows", sip.Capacity, len(sip.Rows))
+	}
+	var failures struct{ Rows []struct{ IP string } }
+	c.get(p+"/sipevents/failures", http.StatusOK, &failures)
+	if len(failures.Rows) < 2 {
+		t.Fatalf("failures %+v", failures)
+	}
+	c.get(p+"/sipevents/1", http.StatusOK, nil)
+
+	// The metrics, as in normal mode, with the token from the environment.
+	scrape := func(auth string) (int, string) {
+		req, _ := http.NewRequest("GET", "http://"+addr+"/metrics", nil)
+		req.Header.Set("Authorization", auth)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(b)
+	}
+	if code, _ := scrape(""); code != http.StatusUnauthorized {
+		t.Fatalf("metrics without the token: %d", code)
+	}
+	code, metrics := scrape("Bearer " + token)
+	for _, line := range []string{`fsconsole_instance_up{instance="pbx-east-1"} 1`, `fsconsole_instance_up{instance="pbx-lab"} 0`, `fsconsole_sip_events_total{instance="pbx-east-1",kind="register_failure"} `} {
+		if code != http.StatusOK || !strings.Contains(metrics, line) {
+			t.Fatalf("metrics: %d, no %s in\n%s", code, line, metrics)
+		}
+	}
 
 	var console struct{ Output string }
 	code, body := c.do("POST", p+"/console", map[string]string{"command": "originate user/1002 &park()"})

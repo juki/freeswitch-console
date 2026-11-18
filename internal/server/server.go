@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/juki/freeswitch-console/internal/audit"
 	"github.com/juki/freeswitch-console/internal/esl"
@@ -47,6 +48,11 @@ type Config struct {
 	LogBacklogLevel int // highest log level kept, 0..7
 
 	RecentCalls int // hang-up records kept per instance; 0 turns them off
+	SipEvents   int // SIP event records kept per instance; 0 turns them off
+
+	// MetricsToken is the bearer token GET /metrics requires
+	// (FSCONSOLE_METRICS_TOKEN); empty answers 404 there.
+	MetricsToken string
 
 	Audit *audit.Log // nil disables the audit log
 
@@ -148,13 +154,30 @@ type instance struct {
 	calls     []*hangup // ring; the oldest is at callsNext once full
 	callsSize int       // 0 turns the records off
 	callsNext int
+	// hangupCounts counts the hang-ups by cause for the metrics, at most
+	// maxCauses causes and the rest as "other"; guarded by callsMu.
+	hangupCounts map[string]uint64
+
+	// sipMu guards the SIP event records and their counts.
+	sipMu     sync.Mutex
+	sipEvents []*sipEvent // ring; the oldest is at sipNext once full
+	sipSize   int         // 0 turns the records off
+	sipNext   int
+	sipSeq    uint64            // sequence number of the last record
+	sipCounts map[string]uint64 // kind -> events received, for the metrics
+
+	// The last HEARTBEAT received, for the metrics; guarded by histMu.
+	beat      sample
+	beatLimit int       // its Max-Sessions
+	beatAt    time.Time // zero before the first
 }
 
 // newInstance starts the collector of sw. With a backlog the ESL log level is
 // raised to backlogLevel at once, so lines are kept before any stream opens.
-// recentCalls is the number of hang-up records kept; history is the load
-// history it starts with, oldest first.
-func newInstance(sw Switch, backlog, backlogLevel, recentCalls int, history []sample) *instance {
+// recentCalls and sipEvents are the numbers of hang-up and SIP event records
+// kept; history is the load history it starts with and past the SIP events
+// before it, both oldest first.
+func newInstance(sw Switch, backlog, backlogLevel, recentCalls, sipEvents int, history []sample, past []pastSipEvent) *instance {
 	i := &instance{
 		sw:          sw,
 		done:        make(chan struct{}),
@@ -167,10 +190,22 @@ func newInstance(sw Switch, backlog, backlogLevel, recentCalls int, history []sa
 		callsSize:   recentCalls,
 		recent:      map[string]recentHangup{},
 		lateLog:     hangupLateLog,
+
+		hangupCounts: map[string]uint64{},
+		sipSize:      sipEvents,
+		sipCounts:    map[string]uint64{},
 	}
 	for _, h := range history {
 		i.addSample(h)
 	}
+	// Events from before the console started are kept but not counted.
+	i.sipMu.Lock()
+	for _, p := range past {
+		if kind := sipKind(p.headers["Event-Subclass"]); kind != "" && sipEvents > 0 {
+			i.storeSipEvent(newSipEvent(kind, p.headers, p.at))
+		}
+	}
+	i.sipMu.Unlock()
 	events, logs, cancel := sw.Subscribe(1024)
 	if backlog > 0 {
 		i.floor, i.applied = backlogLevel, backlogLevel
@@ -191,6 +226,10 @@ func New(cfg Config) (*Server, error) {
 		return nil, errors.New("server: the log backlog level must be 0 to 7")
 	case cfg.RecentCalls < 0:
 		return nil, errors.New("server: the number of recent calls must not be negative")
+	case cfg.SipEvents < 0:
+		return nil, errors.New("server: the number of SIP events must not be negative")
+	case cfg.MetricsToken != "" && utf8.RuneCountInString(cfg.MetricsToken) < 16:
+		return nil, errors.New("server: the metrics token (FSCONSOLE_METRICS_TOKEN) must be at least 16 characters")
 	}
 	if cfg.Version == "" {
 		cfg.Version = "dev"
@@ -275,7 +314,8 @@ func eslContext(r *http.Request, d time.Duration) (context.Context, context.Canc
 
 // newInstance dials in and starts its collector. The handlers reach the
 // switch only through the instance, so every API call they make passes the
-// limiter. In demo mode a simulated switch brings its load history along.
+// limiter. In demo mode a simulated switch brings its load history and SIP
+// events along.
 func (s *Server) newInstance(in store.Instance) *instance {
 	sw := s.cfg.Dial(net.JoinHostPort(in.Host, strconv.Itoa(in.Port)), in.Password)
 	var past []sample
@@ -284,7 +324,13 @@ func (s *Server) newInstance(in store.Instance) *instance {
 			past = append(past, sample{T: at.Unix(), Sessions: sessions, Rate: rate, Idle: idle})
 		})
 	}
-	return newInstance(&limitedSwitch{Switch: sw, slots: make(chan struct{}, apiSlots), bgSlots: make(chan struct{}, backgroundSlots), wait: apiWait}, s.cfg.LogBacklog, s.cfg.LogBacklogLevel, s.cfg.RecentCalls, past)
+	var events []pastSipEvent
+	if p, ok := sw.(pastSipEvents); ok && s.cfg.Demo && s.cfg.SipEvents > 0 {
+		p.SipEvents(func(at time.Time, headers map[string]string) {
+			events = append(events, pastSipEvent{at: at, headers: headers})
+		})
+	}
+	return newInstance(&limitedSwitch{Switch: sw, slots: make(chan struct{}, apiSlots), bgSlots: make(chan struct{}, backgroundSlots), wait: apiWait}, s.cfg.LogBacklog, s.cfg.LogBacklogLevel, s.cfg.RecentCalls, s.cfg.SipEvents, past, events)
 }
 
 // The API calls of one instance share one ESL connection, and a call that
@@ -364,6 +410,8 @@ func (s *Server) routes() {
 	s.handlePublic(m, "GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
+	// Prometheus scrapes with a bearer token, not a session.
+	s.handlePublic(m, "GET /metrics", s.handleMetrics)
 	s.handlePublic(m, "POST /api/login", s.handleLogin)
 	s.handle(m, "POST /api/logout", capRead, "", s.handleLogout)
 	s.handle(m, "GET /api/me", capRead, "", s.handleMe)
@@ -407,6 +455,9 @@ func (s *Server) routes() {
 	// The call's log lines need capLogs, checked in the handler.
 	s.handle(m, "GET /api/instances/{id}/hangups", capRead, "", s.handleHangups)
 	s.handle(m, "GET /api/instances/{id}/hangups/{uuid}", capRead, "", s.handleHangupDetail)
+	s.handle(m, "GET /api/instances/{id}/sipevents", capRead, "", s.handleSipEvents)
+	s.handle(m, "GET /api/instances/{id}/sipevents/failures", capRead, "", s.handleSipFailures)
+	s.handle(m, "GET /api/instances/{id}/sipevents/{seq}", capRead, "", s.handleSipEventDetail)
 	// The stream is readable by every role; log lines need capLogs, checked
 	// in the handler.
 	s.handle(m, "GET /api/instances/{id}/stream", capRead, "", s.handleStream)

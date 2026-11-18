@@ -37,6 +37,7 @@ func main() {
 	backlog := flag.Int("log-backlog", envInt("FSCONSOLE_LOG_BACKLOG", 2000), "log lines kept per instance and replayed when the Logs view opens; 0 disables")
 	backlogLevel := flag.Int("log-backlog-level", envInt("FSCONSOLE_LOG_BACKLOG_LEVEL", 6), "highest log level kept in the backlog, 0 (console) to 7 (debug)")
 	recentCalls := flag.Int("recent-calls", envInt("FSCONSOLE_RECENT_CALLS", 500), "hang-ups kept per instance for the recent calls list; 0 disables")
+	sipEvents := flag.Int("sip-events", envInt("FSCONSOLE_SIP_EVENTS", 1000), "SIP events (registrations, failures, gateway states) kept per instance; 0 disables")
 	auditPath := flag.String("audit", "", "audit log file (default fsconsole-audit.log beside the data file; empty disables)")
 	demoMode := flag.Bool("demo", os.Getenv("FSCONSOLE_DEMO") == "1", "run with simulated switches for a demo: no sign-in, nothing saved, no real switch reachable")
 	showVersion := flag.Bool("version", false, "print the version and exit")
@@ -71,6 +72,8 @@ func main() {
 		LogBacklog:      *backlog,
 		LogBacklogLevel: *backlogLevel,
 		RecentCalls:     *recentCalls,
+		SipEvents:       *sipEvents,
+		MetricsToken:    os.Getenv("FSCONSOLE_METRICS_TOKEN"),
 	}
 	if *demoMode {
 		log.Print("demo mode: simulated switches, no sign-in, nothing is saved; -data, -audit, FSCONSOLE_SECRET_KEY, FSCONSOLE_ADMIN_PASSWORD and FSCONSOLE_VIEWER_PASSWORD are ignored")
@@ -108,7 +111,7 @@ func main() {
 			defer auditLog.Close()
 		}
 		cfg.AdminPassword, cfg.ViewerPassword = adminPassword, os.Getenv("FSCONSOLE_VIEWER_PASSWORD")
-		cfg.Store, cfg.Dial, cfg.Audit = st, dialer(*recentCalls), auditLog
+		cfg.Store, cfg.Dial, cfg.Audit = st, dialer(*recentCalls, *sipEvents), auditLog
 		cfg.BackupDir = filepath.Join(filepath.Dir(*data), "backups")
 	}
 
@@ -175,11 +178,16 @@ func newHTTPServer(addr string, h http.Handler, tlsConfig *tls.Config) *http.Ser
 }
 
 // dialer returns the Dial of the server: clients that subscribe to HEARTBEAT,
-// and to CHANNEL_HANGUP_COMPLETE when recent calls are kept.
-func dialer(recentCalls int) func(addr, password string) server.Switch {
+// to CHANNEL_HANGUP_COMPLETE when recent calls are kept, and to the SIP
+// subclasses when SIP events are kept. FreeSWITCH takes every name after
+// CUSTOM as a subclass, so they come last.
+func dialer(recentCalls, sipEvents int) func(addr, password string) server.Switch {
 	events := []string{"HEARTBEAT"}
 	if recentCalls > 0 {
 		events = append(events, "CHANNEL_HANGUP_COMPLETE")
+	}
+	if sipEvents > 0 {
+		events = append(append(events, "CUSTOM"), server.SipSubclasses...)
 	}
 	return func(addr, password string) server.Switch {
 		c := esl.NewClient(addr, password, events...)

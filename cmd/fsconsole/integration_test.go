@@ -9,8 +9,10 @@ package main
 // The switch must have the stock dialplan (9196 is the echo extension) and
 // the stock internal SIP profile. The tests place loopback calls and one SIP
 // call to 192.0.2.1 (TEST-NET, never answered), and hang up what they created
-// by its uuid; they change no configuration. Other calls on the switch do not
-// disturb them: they assert only things about their own channels.
+// by its uuid; they change no configuration. TestRealSipEvents kills the
+// stock gateway example.com and rescans the external profile, which adds it
+// back. Other calls on the switch do not disturb them: they assert only
+// things about their own channels.
 
 import (
 	"bufio"
@@ -80,15 +82,15 @@ type realStack struct {
 	codes    *statusLog
 }
 
-// startReal starts the console with main's defaults for the backlog and the
-// recent calls, adds an instance for dialAddr (the real switch or a forwarder
+// startReal starts the console with main's defaults for the backlog, the
+// recent calls and the SIP events, adds an instance for dialAddr (the real switch or a forwarder
 // to it) and waits until it is connected.
 func startReal(t *testing.T, dialAddr string) *realStack {
 	t.Helper()
 	addr, password := realSwitch(t)
 	sk := startConsole(t, func(cfg *server.Config) {
-		cfg.Dial = dialer(500)
-		cfg.LogBacklog, cfg.LogBacklogLevel, cfg.RecentCalls = 2000, 6, 500
+		cfg.Dial = dialer(500, 1000)
+		cfg.LogBacklog, cfg.LogBacklogLevel, cfg.RecentCalls, cfg.SipEvents = 2000, 6, 500, 1000
 	})
 	c := sk.client(t, "admin", "admin-pw")
 	codes := &statusLog{base: http.DefaultTransport.(*http.Transport).Clone()}
@@ -1069,4 +1071,85 @@ func TestRealSlowCommand(t *testing.T) {
 	}
 	t.Logf("console originate answered %d after %v: %q; %d status calls meanwhile, slowest %v",
 		a.code, a.took.Round(time.Millisecond), strings.TrimSpace(out.Output), polls, slowest.Round(time.Millisecond))
+}
+
+// TestRealSipEvents kills the stock gateway example.com and rescans the
+// external profile through the actions route: FreeSWITCH adds the gateway
+// again and deletes the killed one, and the console records both. The
+// gateway has register="false", so mod_sofia fires sofia::gateway_add and
+// sofia::gateway_delete for it, no sofia::gateway_state. REGISTERs cannot be
+// sent from here (the SIP port need not be reachable); registrations and
+// failed registrations stay a manual check.
+func TestRealSipEvents(t *testing.T) {
+	addr, _ := realSwitch(t)
+	r := startReal(t, addr)
+	present := func() bool {
+		out := r.console("sofia status gateway example.com")
+		return strings.Contains(out, "example.com") && !strings.Contains(out, "Invalid Gateway")
+	}
+	if !present() {
+		t.Skip("the switch has no gateway example.com on the external profile")
+	}
+	action := func(body map[string]string) {
+		t.Helper()
+		if code, out := r.c.do("POST", r.p+"/actions", body); code != http.StatusOK {
+			t.Fatalf("%v: status %d: %s", body, code, clip(out))
+		}
+	}
+	t.Cleanup(func() {
+		if !present() {
+			action(map[string]string{"action": "sofia_rescan", "profile": "external"})
+		}
+	})
+
+	type row struct {
+		Seq                    uint64
+		Kind, Profile, Gateway string
+	}
+	var list struct {
+		Enabled bool
+		Rows    []row
+	}
+	r.c.get(r.p+"/sipevents?limit=1", http.StatusOK, &list)
+	if !list.Enabled {
+		t.Fatal("SIP events are off")
+	}
+	var last uint64
+	if len(list.Rows) > 0 {
+		last = list.Rows[0].Seq
+	}
+
+	start := time.Now()
+	action(map[string]string{"action": "sofia_gateway", "op": "kill", "profile": "external", "gateway": "example.com"})
+	action(map[string]string{"action": "sofia_rescan", "profile": "external"})
+	seen := map[string]row{}
+	for seen["gateway_add"].Seq == 0 || seen["gateway_delete"].Seq == 0 {
+		if time.Since(start) > 15*time.Second {
+			t.Fatalf("no gateway_add and gateway_delete of example.com within 15s: %+v", seen)
+		}
+		time.Sleep(100 * time.Millisecond)
+		r.c.get(r.p+"/sipevents?kind=gateway_state,gateway_add,gateway_delete&limit=100", http.StatusOK, &list)
+		for _, e := range list.Rows {
+			if e.Seq > last && e.Gateway == "example.com" {
+				seen[e.Kind] = e
+			}
+		}
+	}
+	t.Logf("gateway events after %v: %+v", time.Since(start).Round(time.Millisecond), seen)
+	for _, kind := range []string{"gateway_add", "gateway_delete"} {
+		if e := seen[kind]; e.Profile != "external" {
+			t.Errorf("%s %+v", kind, e)
+		}
+	}
+	var detail struct {
+		Row     row
+		Headers map[string]string
+	}
+	r.c.get(fmt.Sprintf("%s/sipevents/%d", r.p, seen["gateway_delete"].Seq), http.StatusOK, &detail)
+	if detail.Row.Kind != "gateway_delete" || detail.Headers["Gateway"] != "example.com" || detail.Headers["profile-name"] != "external" || detail.Headers["Event-Name"] != "" {
+		t.Fatalf("detail %+v", detail)
+	}
+	if !present() {
+		t.Fatal("example.com is not back after the rescan")
+	}
 }

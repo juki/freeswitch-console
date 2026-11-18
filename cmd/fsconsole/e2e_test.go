@@ -24,7 +24,10 @@ import (
 	"github.com/juki/freeswitch-console/web"
 )
 
-const eslPassword = "s3cret-esl"
+const (
+	eslPassword     = "s3cret-esl"
+	e2eMetricsToken = "an-e2e-metrics-token"
+)
 
 var cannedAPI = map[string]string{
 	`json {"command":"status","data":""}`: `{"command":"status","data":"","status":"success","response":{"systemStatus":"ready","version":"1.10.12 64bit","uptime":{"years":0,"days":1,"hours":2,"minutes":3,"seconds":4,"milliseconds":5,"microseconds":6},"sessions":{"count":{"total":10,"active":1,"peak":2,"peak5Min":1,"limit":1000},"rate":{"current":0,"max":30,"peak":1,"peak5Min":0}},"idleCPU":{"used":0,"allowed":99.5}}}`,
@@ -52,9 +55,10 @@ var cannedAPI = map[string]string{
 
 // fakeFreeSWITCH speaks enough inbound ESL for the whole stack to run:
 // auth, api with canned bodies, bgapi with the canned body in a
-// BACKGROUND_JOB event, HEARTBEAT events and log lines, and for a client
+// BACKGROUND_JOB event, HEARTBEAT events and log lines, for a client
 // subscribed to CHANNEL_HANGUP_COMPLETE a log line and that event when
-// abc-123 is hung up.
+// abc-123 is hung up, and for one subscribed to sofia::register_failure one
+// such event as the test switch sent it.
 func fakeFreeSWITCH(t *testing.T) (host string, port int) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -171,6 +175,11 @@ func serveESL(conn net.Conn) {
 			hangups = strings.Contains(cmd, " CHANNEL_HANGUP_COMPLETE")
 			jobs = strings.Contains(cmd, " BACKGROUND_JOB")
 			reply("+OK event listener enabled json")
+			if _, subclasses, ok := strings.Cut(cmd, " CUSTOM "); ok && strings.Contains(" "+subclasses+" ", " sofia::register_failure ") {
+				ev := `{"Event-Name":"CUSTOM","Event-Subclass":"sofia::register_failure","Core-UUID":"6d8a3b0e-0000-4000-8000-000000000000","FreeSWITCH-Hostname":"fs-test","Event-Calling-File":"sofia_reg.c","Event-Sequence":"77",` +
+					`"profile-name":"internal","to-user":"1001","to-host":"192.0.2.1","network-ip":"203.0.113.45","network-port":"5070","user-agent":"friendly-scanner","registration-type":"REGISTER"}`
+				write(fmt.Sprintf("Content-Length: %d\nContent-Type: text/event-json\n\n%s", len(ev), ev))
+			}
 		default:
 			reply("+OK")
 		}
@@ -262,12 +271,14 @@ func startConsole(t *testing.T, configure func(*server.Config), edit ...func(*ht
 		AdminPassword:   "admin-pw",
 		ViewerPassword:  "viewer-pw",
 		Store:           st,
-		Dial:            dialer(100),
+		Dial:            dialer(100, 100),
 		Static:          web.Static(),
 		Version:         "1.2.3-test",
 		LogBacklog:      100,
 		LogBacklogLevel: 7,
 		RecentCalls:     100,
+		SipEvents:       100,
+		MetricsToken:    e2eMetricsToken,
 		Audit:           auditLog,
 		BackupDir:       filepath.Join(dir, "backups"),
 	}
@@ -419,6 +430,51 @@ func TestEndToEnd(t *testing.T) {
 	body = c.get(p+"/hangups/abc-123", http.StatusOK, nil)
 	if !bytes.Contains(body, []byte(`"uuid":"abc-123"`)) || !bytes.Contains(body, []byte(`"sip_auth_password":"********"`)) || !bytes.Contains(body, []byte(`"text":"Hangup sofia/internal`)) {
 		t.Fatalf("hang-up detail %s", body)
+	}
+
+	// The failed registration the fake sends on subscribing is recorded.
+	var sipEvents struct {
+		Enabled  bool
+		Capacity int
+		Rows     []struct {
+			Seq                                int
+			Kind, Profile, User, IP, UserAgent string
+			Port                               int
+		}
+	}
+	c.get(p+"/sipevents?kind=register_failure", http.StatusOK, &sipEvents)
+	if r := sipEvents.Rows; !sipEvents.Enabled || sipEvents.Capacity != 100 || len(r) == 0 || r[0].Kind != "register_failure" || r[0].User != "1001" || r[0].IP != "203.0.113.45" || r[0].Port != 5070 || r[0].UserAgent != "friendly-scanner" {
+		t.Fatalf("SIP events %+v", sipEvents)
+	}
+	body = c.get(fmt.Sprintf("%s/sipevents/%d", p, sipEvents.Rows[0].Seq), http.StatusOK, nil)
+	if !bytes.Contains(body, []byte(`"registration-type":"REGISTER"`)) || bytes.Contains(body, []byte("Core-UUID")) {
+		t.Fatalf("SIP event detail %s", body)
+	}
+
+	// The metrics, with the token and no session, once a heartbeat (every
+	// 50ms) has come.
+	var metrics []byte
+	for deadline := time.Now().Add(5 * time.Second); !bytes.Contains(metrics, []byte(`fsconsole_sessions{`)); time.Sleep(20 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("no heartbeat in the metrics:\n%s", metrics)
+		}
+		scrape, _ := http.NewRequest("GET", ts.URL+"/metrics", nil)
+		scrape.Header.Set("Authorization", "Bearer "+e2eMetricsToken)
+		scraped, err := http.DefaultClient.Do(scrape)
+		if err != nil {
+			t.Fatal(err)
+		}
+		metrics, _ = io.ReadAll(scraped.Body)
+		scraped.Body.Close()
+		if scraped.StatusCode != http.StatusOK {
+			t.Fatalf("metrics: %d %s", scraped.StatusCode, metrics)
+		}
+	}
+	for _, line := range []string{`fsconsole_build_info{version="1.2.3-test"} 1`, `fsconsole_instance_up{instance="test"} 1`, `fsconsole_sessions{instance="test"} 1`,
+		`fsconsole_hangups_total{instance="test",cause="NORMAL_CLEARING"} 1`, `fsconsole_sip_events_total{instance="test",kind="register_failure"} 1`} {
+		if !bytes.Contains(metrics, []byte(line+"\n")) {
+			t.Fatalf("metrics: no %s in\n%s", line, metrics)
+		}
 	}
 
 	// The backlog level is applied when the instance is created, so the

@@ -56,6 +56,7 @@ func newDemoHarness(t *testing.T) *demoHarness {
 		LogBacklog:      2000,
 		LogBacklogLevel: 6, // as main: debug lines would flood the buffers while a test races the clock
 		RecentCalls:     1000,
+		SipEvents:       1000,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -363,6 +364,56 @@ func TestDemoHistory(t *testing.T) {
 		c.Dial = func(string, string) Switch { return demo.New(demoEast, 1, time.Now()) }
 	})
 	expect(t, n.do("GET", "/api/instances/"+n.id+"/history", n.login("viewer", viewerPW), ""), 200, `{"samples":[]}`)
+}
+
+var _ pastSipEvents = (*demo.Switch)(nil)
+
+// TestDemoSipEvents reads the SIP events of a simulated switch right after
+// the start, the hour before it, then the live ones as its clock moves; a
+// simulated switch outside demo mode brings none.
+func TestDemoSipEvents(t *testing.T) {
+	h := newDemoHarness(t)
+	start := time.Date(2026, 11, 15, 10, 0, 0, 0, time.UTC)
+	p := "/api/instances/" + h.ids["pbx-east-1"] + "/sipevents"
+	var list sipReply
+	h.do("GET", p+"?limit=1000", "", "").json(t, &list)
+	n := len(list.Rows)
+	if n < 40 || list.Rows[n-1].Seq != 1 || list.Rows[0].Seq != uint64(n) {
+		t.Fatalf("%d prefilled rows", n)
+	}
+	for i, r := range list.Rows {
+		if r.T >= start.UnixMilli() || r.T <= start.Add(-time.Hour).UnixMilli() || i > 0 && r.T > list.Rows[i-1].T {
+			t.Fatalf("row %d %+v", i, r)
+		}
+	}
+	// The simulated clock is not the server's: the window is set here.
+	fails := h.instance(h.ids["pbx-east-1"]).sipFailures(start.Add(-time.Hour))
+	if len(fails) < 2 || fails[0].Attempts < 6 || len(fails[0].Users) == 0 {
+		t.Fatalf("failures %+v", fails)
+	}
+	expect(t, h.do("GET", p+"/1", "", ""), 200, "")
+
+	// Live events come through the subscription and number on.
+	sw := h.sw(demoEast)
+	for i := 0; i < 90; i++ {
+		sw.Advance(20 * time.Second)
+		if i%10 == 0 {
+			time.Sleep(time.Millisecond)
+		}
+	}
+	waitFor(t, "live events", func() bool {
+		h.do("GET", p+"?limit=1", "", "").json(t, &list)
+		return len(list.Rows) == 1 && list.Rows[0].Seq > uint64(n)
+	})
+	if list.Rows[0].T < start.UnixMilli() {
+		t.Fatalf("live row %+v", list.Rows[0])
+	}
+	expect(t, h.do("GET", "/api/instances/"+h.ids["pbx-lab"]+"/sipevents", "", ""), 200, `{"enabled":true,"capacity":1000,"rows":[]}`)
+
+	n2 := newHarness(t, withSipEvents(100), func(c *Config) {
+		c.Dial = func(string, string) Switch { return demo.New(demoEast, 1, time.Now()) }
+	})
+	expect(t, n2.do("GET", "/api/instances/"+n2.id+"/sipevents", n2.login("viewer", viewerPW), ""), 200, `{"enabled":true,"capacity":100,"rows":[]}`)
 }
 
 func TestDemoLab(t *testing.T) {

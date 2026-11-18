@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"math"
+	"net"
 	"net/http/httptest"
 	"reflect"
 	"runtime"
@@ -40,6 +41,7 @@ type recorder struct {
 	events, logs <-chan esl.Message
 	cancel       func()
 	hangups      []map[string]string
+	sip          []map[string]string // CUSTOM events
 	beats        int
 	lines        []esl.Message
 }
@@ -58,6 +60,8 @@ func (r *recorder) drain() {
 				r.hangups = append(r.hangups, m.Headers)
 			case "HEARTBEAT":
 				r.beats++
+			case "CUSTOM":
+				r.sip = append(r.sip, m.Headers)
 			}
 		case m := <-r.logs:
 			r.lines = append(r.lines, m)
@@ -871,5 +875,199 @@ func TestSampleConfiguration(t *testing.T) {
 		if !strings.Contains(conf, want) {
 			t.Errorf("configuration lacks %s", want)
 		}
+	}
+}
+
+// docNets are the documentation ranges every address of the demo is in,
+// besides the office phones' private addresses.
+var docNets = func() []*net.IPNet {
+	var out []*net.IPNet
+	for _, cidr := range []string{"192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24"} {
+		_, n, _ := net.ParseCIDR(cidr)
+		out = append(out, n)
+	}
+	return out
+}()
+
+func documentation(ip string) bool {
+	a := net.ParseIP(ip)
+	for _, n := range docNets {
+		if a != nil && n.Contains(a) {
+			return true
+		}
+	}
+	return false
+}
+
+// checkSipAddresses fails unless every address of the events h of the
+// switch at addr is a documentation address, or for a registration of one
+// of its phones that phone's address.
+func checkSipAddresses(t *testing.T, addr string, events []map[string]string) {
+	t.Helper()
+	phones := map[string]bool{}
+	for _, r := range specAt(addr).regs {
+		phones[r.ip] = true
+	}
+	for _, h := range events {
+		for _, k := range []string{"network-ip", "Register-Network-IP"} {
+			ip, ok := h[k]
+			if !ok {
+				continue
+			}
+			sub := h["Event-Subclass"]
+			if !documentation(ip) && (sub == "sofia::register_failure" || sub == "sofia::gateway_state" || !phones[ip]) {
+				t.Fatalf("%s from %s: %v", sub, ip, h)
+			}
+		}
+	}
+}
+
+// TestSipEvents runs east for three hours and a visitor's killgw: every kind
+// of SIP event appears, in the shapes mod_sofia gives them.
+func TestSipEvents(t *testing.T) {
+	s := New(eastAddr, 5, start)
+	defer s.Close()
+	r := record(s)
+	defer r.cancel()
+	r.run(s, 3*time.Hour, 10*time.Second)
+	api(t, s, "sofia profile external killgw carrier-b")
+	r.run(s, healAfter+time.Second, time.Second)
+
+	kinds := map[string]int{}
+	sources := map[string][]int64{} // failure times by source, microseconds
+	for _, h := range r.sip {
+		sub := h["Event-Subclass"]
+		kind, ok := strings.CutPrefix(sub, "sofia::")
+		if !ok || h["Core-UUID"] == "" || h["Event-Date-Timestamp"] == "" || h["FreeSWITCH-Hostname"] != "pbx-east-1" {
+			t.Fatalf("event %v", h)
+		}
+		kinds[kind]++
+		switch kind {
+		case "register", "unregister", "expire":
+			if !directoryUser(h["username"]) || h["profile-name"] != "internal" || h["call-id"] == "" || h["user-agent"] == "" || h["network-port"] == "" {
+				t.Fatalf("%s %v", kind, h)
+			}
+			if kind == "unregister" && (h["expires"] != "0" || !strings.Contains(h["user-agent"], "SoftDial")) {
+				t.Fatalf("unregister %v", h)
+			}
+		case "register_failure":
+			if h["registration-type"] != "REGISTER" || h["to-host"] != "192.0.2.11" || h["to-user"] == "" || h["user-agent"] == "" {
+				t.Fatalf("failure %v", h)
+			}
+			ts, _ := strconv.ParseInt(h["Event-Date-Timestamp"], 10, 64)
+			sources[h["network-ip"]] = append(sources[h["network-ip"]], ts)
+		case "gateway_state":
+			switch h["Gateway"] {
+			case "carrier-backup":
+				if st := h["State"]; st != "FAIL_WAIT" && st != "DOWN" || h["Ping-Status"] != "DOWN" || h["Register-Network-IP"] != "" {
+					t.Fatalf("carrier-backup %v", h)
+				}
+			case "carrier-a":
+				if h["Ping-Status"] != "UP" || h["Register-Network-IP"] != "198.51.100.40" || (h["State"] == "REGISTER") != (h["Status"] == "200" && h["Phrase"] == "OK") {
+					t.Fatalf("carrier-a %v", h)
+				}
+			default:
+				t.Fatalf("gateway %v", h)
+			}
+		case "gateway_add", "gateway_delete":
+			if h["Gateway"] != "carrier-b" || h["profile-name"] != "external" {
+				t.Fatalf("%s %v", kind, h)
+			}
+		default:
+			t.Fatalf("kind %s", kind)
+		}
+	}
+	for _, k := range []string{"register", "unregister", "expire", "register_failure", "gateway_state", "gateway_add", "gateway_delete"} {
+		if kinds[k] == 0 {
+			t.Errorf("no %s in %v", k, kinds)
+		}
+	}
+	if kinds["gateway_add"] != 1 || kinds["gateway_delete"] != 1 {
+		t.Errorf("kill and heal: %v", kinds)
+	}
+	// Two or three sources, each in bursts: many attempts within a minute.
+	if len(sources) < 2 || len(sources) > 3 {
+		t.Errorf("%d failure sources", len(sources))
+	}
+	for ip, times := range sources {
+		burst := 0
+		for i := range times {
+			n := 0
+			for j := i; j < len(times) && times[j]-times[i] < 60e6; j++ {
+				n++
+			}
+			burst = max(burst, n)
+		}
+		if burst < 6 {
+			t.Errorf("%s: at most %d attempts in a minute", ip, burst)
+		}
+	}
+	checkSipAddresses(t, eastAddr, r.sip)
+}
+
+type pastEvent struct {
+	at time.Time
+	h  map[string]string
+}
+
+func sipPrefill(s *Switch) []pastEvent {
+	var out []pastEvent
+	s.SipEvents(func(at time.Time, h map[string]string) { out = append(out, pastEvent{at, h}) })
+	return out
+}
+
+// TestSipEventsPrefill checks the hour of SIP events before the start:
+// deterministic, oldest first, inside the hour, every kind the simulation
+// produces without a visitor, in the documentation ranges.
+func TestSipEventsPrefill(t *testing.T) {
+	for _, addr := range []string{eastAddr, westAddr} {
+		s := New(addr, 1, start)
+		past := sipPrefill(s)
+		if len(past) < 40 {
+			t.Fatalf("%s: %d events", addr, len(past))
+		}
+		kinds := map[string]int{}
+		var events []map[string]string
+		lastBackup := ""
+		for i, p := range past {
+			if !p.at.After(start.Add(-sipPast)) || !p.at.Before(start) || i > 0 && p.at.Before(past[i-1].at) {
+				t.Fatalf("%s: event %d at %v", addr, i, p.at)
+			}
+			if ts := strconv.FormatInt(p.at.UnixMicro(), 10); p.h["Event-Date-Timestamp"] != ts || p.h["Event-Name"] != "CUSTOM" {
+				t.Fatalf("%s: event %d %v", addr, i, p.h)
+			}
+			kinds[strings.TrimPrefix(p.h["Event-Subclass"], "sofia::")]++
+			events = append(events, p.h)
+			if p.h["Gateway"] == "carrier-backup" {
+				lastBackup = p.h["State"]
+			}
+		}
+		for _, k := range []string{"register", "register_failure", "gateway_state"} {
+			if kinds[k] == 0 {
+				t.Errorf("%s: no %s in %v", addr, k, kinds)
+			}
+		}
+		if kinds["expire"]+kinds["unregister"] == 0 {
+			t.Errorf("%s: no phone left: %v", addr, kinds)
+		}
+		checkSipAddresses(t, addr, events)
+		// carrier-backup flapped into the state sofia shows now.
+		if addr == eastAddr && (lastBackup == "" || lastBackup != s.gateway("carrier-backup").state) {
+			t.Errorf("carrier-backup ends %q, is %s", lastBackup, s.gateway("carrier-backup").state)
+		}
+
+		if again := sipPrefill(New(addr, 1, start)); !reflect.DeepEqual(again, past) {
+			t.Errorf("%s: not deterministic", addr)
+		}
+		if other := sipPrefill(New(addr, 2, start)); reflect.DeepEqual(other, past) {
+			t.Errorf("%s: the same for another seed", addr)
+		}
+		s.Close()
+		if closed := sipPrefill(s); len(closed) != 0 {
+			t.Errorf("%s: %d events once closed", addr, len(closed))
+		}
+	}
+	if lab := sipPrefill(New(labAddr, 1, start)); len(lab) != 0 {
+		t.Fatalf("lab: %d events", len(lab))
 	}
 }

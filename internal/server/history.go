@@ -28,7 +28,8 @@ type pastLoad interface {
 }
 
 // collect is the only subscriber of the switch. It records a sample per
-// HEARTBEAT and a record per CHANNEL_HANGUP_COMPLETE, keeps the log backlog
+// HEARTBEAT, a record per CHANNEL_HANGUP_COMPLETE and per CUSTOM event of a
+// SIP subclass kept (SipSubclasses), keeps the log backlog
 // and forwards state changes, heartbeats and log lines to the open streams,
 // until the switch is closed. Log lines come on a channel of their own, so a
 // flood of them cannot crowd out the events.
@@ -47,10 +48,15 @@ func (i *instance) collect(events, logs <-chan esl.Message, cancel func()) {
 			case esl.KindEvent:
 				switch m.Headers["Event-Name"] {
 				case "HEARTBEAT":
-					i.addSample(heartbeatSample(m.Headers, time.Now()))
+					now := time.Now()
+					hb := heartbeatSample(m.Headers, now)
+					i.addSample(hb)
+					i.setBeat(hb, integer(m.Headers["Max-Sessions"]), now)
 					i.forward(streamItem{kind: "heartbeat", headers: m.Headers})
 				case "CHANNEL_HANGUP_COMPLETE":
 					i.addHangup(m.Headers)
+				case "CUSTOM":
+					i.addSipEvent(m.Headers, time.Now())
 				}
 			case esl.KindState:
 				i.forward(streamItem{kind: "state"})
@@ -81,6 +87,13 @@ func (i *instance) addSample(s sample) {
 	i.history[i.histNext] = s
 	i.histNext = (i.histNext + 1) % historySize
 	i.histLen = min(i.histLen+1, historySize)
+}
+
+// setBeat keeps the last heartbeat for the metrics.
+func (i *instance) setBeat(s sample, limit int, at time.Time) {
+	i.histMu.Lock()
+	defer i.histMu.Unlock()
+	i.beat, i.beatLimit, i.beatAt = s, limit, at
 }
 
 // samples returns the history oldest first; never nil.
